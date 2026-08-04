@@ -171,6 +171,12 @@ their pre-existing `require_tenant` / legacy-alias gating, listed in the
 
 All 5 endpoints (create/list/get/update/delete): `admin`.
 
+### Workspace name update — `app/api/api_v1/endpoints/workspace.py`
+
+| Method | Path | Min role | Notes |
+|---|---|---|---|
+| PUT | `/api/v1/workspace/name` | `config_only` | also accepts API-key principals; the one endpoint in this router (otherwise API-key-only) that accepts a JWT user |
+
 ### Web SDK domain whitelist — `app/api/api_v1/endpoints/allowed_domains.py`
 
 | Method | Path | Min role | Notes |

@@ -7,6 +7,7 @@ The middleware is bypassed for protected routes by mocking
 from __future__ import annotations
 
 import uuid
+from contextlib import contextmanager
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -15,7 +16,10 @@ from fastapi.testclient import TestClient
 from app.core.request_auth import AUTH_METHOD_JWT
 from app.core.workspace import Workspace
 from app.middleware.api_key_middleware import _attach_workspace_context
+from app.models.audit_log import AuditLog
+from app.models.role import Role
 from app.models.tenant import Tenant
+from app.models.user import User, user_tenant_association
 _API_KEY = "test-workspace-key"
 
 
@@ -65,6 +69,51 @@ def authed_client(client: TestClient, auth_tenant: Tenant):
         side_effect=_resolve,
     ):
         yield client
+
+
+def _make_jwt_user(db, tenant_id: uuid.UUID, role_name: str) -> User:
+    role = db.query(Role).filter(Role.name == role_name).first()
+    if role is None:
+        role = Role(name=role_name, description=role_name)
+        db.add(role)
+        db.commit()
+        db.refresh(role)
+
+    user = User(
+        email=f"{role_name}-{uuid.uuid4().hex[:8]}@example.com",
+        first_name=role_name.title(),
+        last_name="User",
+        hashed_password="",
+        current_tenant_id=tenant_id,
+    )
+    db.add(user)
+    db.flush()
+    db.execute(
+        user_tenant_association.insert().values(
+            user_id=user.id, tenant_id=tenant_id, role_id=role.id, is_creator=False
+        )
+    )
+    db.commit()
+    db.refresh(user)
+    return user
+
+
+@contextmanager
+def _jwt_auth_ctx(workspace: Workspace, user_id: uuid.UUID):
+    """Patch the JWT auth branch to attach the given workspace/user — bypasses
+    real token verification while still exercising the real DB-backed role
+    check inside require_config_or_api_key."""
+
+    async def _jwt_auth(request):
+        _attach_workspace_context(
+            request, workspace=workspace, auth_method=AUTH_METHOD_JWT, user_id=user_id,
+        )
+        return True
+
+    with patch(
+        "app.middleware.api_key_middleware._try_jwt_auth", side_effect=_jwt_auth
+    ):
+        yield
 
 
 @pytest.mark.usefixtures("db")
@@ -210,6 +259,48 @@ class TestUpdateWorkspaceName:
             headers=_headers(auth_tenant),
         )
         assert resp.status_code == 400
+
+    @pytest.mark.parametrize("role_name", ["admin", "manager", "config_only"])
+    def test_jwt_at_least_config_only_can_update(self, client, db, auth_tenant, role_name):
+        new_name = f"JwtRenamed-{role_name}-{uuid.uuid4().hex[:6]}"
+        user = _make_jwt_user(db, auth_tenant.id, role_name)
+        workspace = Workspace.from_tenant(auth_tenant)
+
+        with _jwt_auth_ctx(workspace, user.id):
+            resp = client.put(
+                "/api/v1/workspace/name",
+                json={"name": new_name},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["name"] == new_name
+
+        db.refresh(auth_tenant)
+        assert auth_tenant.name == new_name
+
+        audit_row = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.tenant_id == auth_tenant.id,
+                AuditLog.action == "workspace.updated",
+            )
+            .order_by(AuditLog.timestamp.desc())
+            .first()
+        )
+        assert audit_row is not None
+        assert audit_row.user_id == user.id
+
+    def test_jwt_read_only_forbidden(self, client, db, auth_tenant):
+        user = _make_jwt_user(db, auth_tenant.id, "read_only")
+        workspace = Workspace.from_tenant(auth_tenant)
+
+        with _jwt_auth_ctx(workspace, user.id):
+            resp = client.put(
+                "/api/v1/workspace/name",
+                json={"name": f"ShouldFail-{uuid.uuid4().hex[:6]}"},
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 403, resp.text
 
 
 @pytest.mark.usefixtures("db")

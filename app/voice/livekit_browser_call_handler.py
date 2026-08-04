@@ -182,7 +182,16 @@ class _LiveKitAgentAudioPublisher:
             return False
 
     async def publish_mulaw(self, mulaw_bytes: bytes, cancel: asyncio.Event | None = None) -> None:
-        """Push mu-law bytes into the outgoing track, converting to PCM16 per frame."""
+        """
+        Push mu-law bytes into the outgoing track, converting to PCM16 per frame.
+
+        Callable with an arbitrary-length buffer (legacy/whole-utterance
+        callers) or with a single already-frame-aligned MULAW_FRAME_BYTES
+        chunk (the incremental streaming path in
+        LiveKitBrowserCallHandler._publish_mulaw_stream) — either way, any
+        final partial frame is padded with mu-law silence (0xFF) rather than
+        dropped.
+        """
         if not self._connected or not self._source or not mulaw_bytes:
             return
         try:
@@ -498,31 +507,207 @@ class LiveKitBrowserCallHandler:
         return
 
     # ── TTS synthesis + LiveKit-native playback ─────────────────────────────
+    #
+    # _prefetch_tts_audio / _stream_tts_chunk below mirror
+    # TtsStreamMixin._prefetch_tts_audio / _stream_tts_chunk
+    # (app/voice/tts_stream_mixin.py) so this path gets the provider's *true*
+    # incremental streaming API (Rime/ElevenLabs async_stream_synthesize,
+    # Google's stream_text_to_speech) instead of buffering a whole
+    # utterance's mu-law bytes via generate_mulaw_tts() before publishing
+    # anything — the first audio now reaches the LiveKit room as soon as the
+    # provider emits its first chunk, matching the Twilio path's latency
+    # characteristics. generate_mulaw_tts() is kept imported only as a last-
+    # resort fallback for providers/paths that expose neither streaming API.
 
-    async def _prefetch_tts_audio(self, task: dict) -> bytes | None:
-        """Synthesize a TTS chunk to raw mu-law bytes (see module docstring for format rationale)."""
+    async def _prefetch_tts_audio(self, task: dict) -> Any:
+        """
+        Resolve the TTS provider's real streaming API for this chunk and
+        return an async iterator of raw mu-law byte fragments as they're
+        generated (or None on empty text / cancellation / unresolvable
+        provider). Never buffers the whole utterance itself — TtsPipeline
+        awaits this to get the iterator object, then _stream_tts_chunk
+        below actually drains it while publishing incrementally.
+        """
         text = (task.get("text") or "").strip()
         if not text or self._tts_cancel.is_set():
             return None
         use_ssml = bool(task.get("use_ssml", False))
+
         try:
+            from app.core.agent_runtime import resolve_tts_runtime
+            from app.services.google_tts_service import google_tts_service
+            from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+            from app.utils.tts_adapter import get_tts_adapter
+
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            audio_bytes = await generate_mulaw_tts(
-                text=text,
-                lang=lang,
-                voice=voice,
-                use_chirp3_hd=True,
+            tts_runtime = resolve_tts_runtime(self.agent, db=self.db)
+            tts_provider_slug = tts_runtime.adapter_slug
+
+            streaming_text = strip_ssml_tags(text) if use_ssml or text.lstrip().startswith("<speak>") else text
+            streaming_text = prepare_tts_text_for_provider(streaming_text, tts_provider_slug)
+            if not streaming_text or not streaming_text.strip():
+                return None
+
+            if tts_provider_slug and tts_provider_slug not in ("google", ""):
+                external_voice_id = tts_runtime.voice_external_id
+                if not external_voice_id:
+                    tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+                    external_voice_id = getattr(tts_voice, "external_voice_id", None)
+                if not external_voice_id and tts_provider_slug == "rime":
+                    external_voice_id = "mistv2_Wildflower"
+                if not external_voice_id:
+                    logger.warning(
+                        "[LiveKitBrowserCall] TTS voice not configured for streaming provider=%s",
+                        tts_provider_slug,
+                    )
+                    return None
+
+                adapter = get_tts_adapter(tts_provider_slug)
+                provider_settings = dict(tts_runtime.settings_json)
+                if tts_provider_slug == "elevenlabs":
+                    provider_settings.setdefault("output_format", "ulaw_8000")
+                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                    if previous_text:
+                        provider_settings["previous_text"] = previous_text[-500:]
+                elif tts_provider_slug == "rime":
+                    # Rime uses async_stream_synthesize — no output_format key needed
+                    # (mulaw 8 kHz is the default in RimeTTSAdapter).
+                    pass
+                else:
+                    provider_settings.setdefault("output_format", "ulaw_8000")
+
+                # Prefer true async streaming for providers that support it (Rime, ElevenLabs).
+                if hasattr(adapter, "async_stream_synthesize"):
+                    _cancel_ref = self._tts_cancel
+
+                    async def _async_provider_iter(
+                        _adapter=adapter,
+                        _text=streaming_text,
+                        _vid=external_voice_id,
+                        _cfg=provider_settings,
+                        _cancel=_cancel_ref,
+                    ):
+                        async for chunk in _adapter.async_stream_synthesize(
+                            text=_text,
+                            voice_external_id=_vid,
+                            settings_json=_cfg,
+                        ):
+                            if _cancel.is_set():
+                                break
+                            if chunk:
+                                yield chunk
+
+                    return _async_provider_iter()
+
+                sync_iter = adapter.stream_synthesize(
+                    text=streaming_text,
+                    voice_external_id=external_voice_id,
+                    settings_json=provider_settings,
+                )
+
+                async def _async_iter_from_sync(sync_source):
+                    iterator = iter(sync_source)
+                    sentinel = object()
+                    while True:
+                        if self._tts_cancel.is_set():
+                            break
+                        chunk = await asyncio.to_thread(next, iterator, sentinel)
+                        if chunk is sentinel:
+                            break
+                        if chunk:
+                            yield chunk
+
+                return _async_iter_from_sync(sync_iter)
+
+            # Google (or unresolved provider): native async streaming API.
+            tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
+            google_voice_name = getattr(tts_voice, "external_voice_id", None)
+            audio_iter = google_tts_service.stream_text_to_speech(
+                text=streaming_text,
+                language=lang,
+                voice_type=voice,
                 speaking_rate=1.0,
-                use_ssml=use_ssml,
-                add_office_bg=False,
-                agent=self.agent,
-                db=self.db,
+                output_format="mulaw",
+                use_chirp3_hd=True,
+                sample_rate_hz=_AGENT_AUDIO_SAMPLE_RATE,
+                voice_name_override=google_voice_name,
             )
-            return audio_bytes or None
+
+            async def _checked_async_iter(source_iter):
+                async for chunk in source_iter:
+                    if self._tts_cancel.is_set():
+                        break
+                    if chunk:
+                        yield chunk
+
+            return _checked_async_iter(audio_iter)
         except Exception as exc:
-            logger.warning("[LiveKitBrowserCall] TTS synthesis failed for %r: %s", text[:30], exc)
-            return None
+            logger.warning(
+                "[LiveKitBrowserCall] TTS streaming setup failed for %r: %s — "
+                "falling back to whole-utterance synthesis", text[:30], exc,
+            )
+            if self._tts_cancel.is_set():
+                return None
+            try:
+                lang = self.agent.language if self.agent and self.agent.language else "en"
+                voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
+                return await generate_mulaw_tts(
+                    text=text,
+                    lang=lang,
+                    voice=voice,
+                    use_chirp3_hd=True,
+                    speaking_rate=1.0,
+                    use_ssml=use_ssml,
+                    add_office_bg=False,
+                    agent=self.agent,
+                    db=self.db,
+                ) or None
+            except Exception as fallback_exc:
+                logger.warning(
+                    "[LiveKitBrowserCall] TTS fallback synthesis also failed for %r: %s",
+                    text[:30], fallback_exc,
+                )
+                return None
+
+    async def _publish_mulaw_stream(
+        self,
+        publisher: "_LiveKitAgentAudioPublisher",
+        audio_iter: Any,
+        cancel: asyncio.Event,
+    ) -> None:
+        """
+        Drain an async iterator of provider mu-law fragments and publish each
+        full MULAW_FRAME_BYTES frame into the LiveKit room as soon as it's
+        assembled — mirrors TtsStreamMixin._stream_tts_chunk's
+        stream_mulaw_from_audio_iter, but targets publisher.publish_mulaw()
+        instead of the Twilio WebSocket. Frames are aligned across provider
+        chunk boundaries (buffered, not padded per-chunk) so an arbitrary
+        provider fragment size never introduces mid-utterance silence
+        padding — only the final remainder gets padded.
+        """
+        byte_buf = bytearray()
+        async for chunk_bytes in audio_iter:
+            if cancel.is_set():
+                return
+            if not chunk_bytes:
+                continue
+            byte_buf.extend(chunk_bytes)
+            while len(byte_buf) >= MULAW_FRAME_BYTES:
+                frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
+                del byte_buf[:MULAW_FRAME_BYTES]
+                await publisher.publish_mulaw(frame, cancel=cancel)
+                if cancel.is_set():
+                    return
+
+        if cancel.is_set():
+            return
+
+        if byte_buf:
+            pad = MULAW_FRAME_BYTES - (len(byte_buf) % MULAW_FRAME_BYTES)
+            if pad != MULAW_FRAME_BYTES:
+                byte_buf.extend(bytes([0xFF]) * pad)
+            await publisher.publish_mulaw(bytes(byte_buf), cancel=cancel)
 
     async def _stream_tts_chunk(
         self,
@@ -545,18 +730,43 @@ class LiveKitBrowserCallHandler:
         async with self._tts_lock:
             self.is_speaking = True
             try:
-                mulaw_bytes = prefetched_bytes if isinstance(prefetched_bytes, (bytes, bytearray)) else None
-                if mulaw_bytes is None:
-                    mulaw_bytes = await self._prefetch_tts_audio({"text": text, "use_ssml": use_ssml})
-                if not mulaw_bytes or self._tts_cancel.is_set():
+                source = prefetched_bytes
+                if source is None:
+                    source = await self._prefetch_tts_audio({"text": text, "use_ssml": use_ssml})
+                if source is None or self._tts_cancel.is_set():
                     return
 
                 self._is_tts_playing = True
-                logger.debug(
-                    "[LiveKitBrowserCall] LiveKit playback: publishing %d mu-law bytes "
-                    "(call_session_id=%s)", len(mulaw_bytes), self.call_session_id,
-                )
-                await publisher.publish_mulaw(mulaw_bytes, cancel=self._tts_cancel)
+
+                if hasattr(source, "__aiter__"):
+                    logger.debug(
+                        "[LiveKitBrowserCall] LiveKit playback: streaming TTS chunk "
+                        "incrementally (call_session_id=%s)", self.call_session_id,
+                    )
+                    await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
+
+                    # Mirrors TtsStreamMixin._stream_tts_chunk: record the text
+                    # just streamed as ElevenLabs "previous_text" context for the
+                    # next chunk's prosody continuity, once streaming completes
+                    # (not at prefetch time — that runs concurrently with the
+                    # prior chunk still playing and would race the ordering).
+                    if not self._tts_cancel.is_set():
+                        try:
+                            from app.core.agent_runtime import resolve_tts_runtime
+
+                            if resolve_tts_runtime(self.agent, db=self.db).adapter_slug == "elevenlabs":
+                                self._elevenlabs_prev_tts_text = text.strip()[-500:]
+                        except Exception:  # noqa: S110 - best-effort continuity hint only
+                            pass
+                elif isinstance(source, (bytes, bytearray)) and source:
+                    # Defensive fallback: _prefetch_tts_audio always returns an
+                    # async iterator or None above, but keep this path so a
+                    # caller passing raw bytes directly (e.g. tests) still works.
+                    logger.debug(
+                        "[LiveKitBrowserCall] LiveKit playback: publishing %d mu-law bytes "
+                        "(call_session_id=%s)", len(source), self.call_session_id,
+                    )
+                    await publisher.publish_mulaw(source, cancel=self._tts_cancel)
             finally:
                 self.is_speaking = False
                 self._is_tts_playing = False
@@ -575,6 +785,82 @@ def _forced_browser_stt_runtime(resolved: Any) -> Any:
         sample_rate_hz=_STT_INPUT_SAMPLE_RATE,
         encoding=_STT_INPUT_ENCODING,
     )
+
+
+async def _start_browser_call_recording(db, call_session) -> str | None:
+    """
+    Start a room-composite egress on the call's own native LiveKit room
+    (room_{call_session.id} — already created for the caller/agent by
+    demo_call_token / _LiveKitAgentAudioPublisher.connect(), unlike the
+    Twilio path which has to stand up a *separate* mirror room + duplicate
+    publishers purely for recording since a plain Twilio call has no
+    native LiveKit room of its own).
+
+    Fail-open: any error here must never abort or degrade the actual call —
+    same convention as BidirectionalStreamHandler._start_livekit_recording.
+    Returns the egress_id on success, None otherwise (including when
+    recording is disabled for this call).
+    """
+    from app.services.recording_config_service import get_recording_enabled_for_call
+
+    try:
+        if not get_recording_enabled_for_call(db, call_session):
+            return None
+
+        from app.services.livekit_recording_service import livekit_recording_service
+        from app.services.s3_recording_service import build_s3_key
+
+        gcs_path = build_s3_key(
+            workspace_id=call_session.tenant_id,
+            call_id=call_session.id,
+            end_time=call_session.end_time,
+        )
+        egress_id = await livekit_recording_service.start_room_recording(
+            call_id=call_session.id,
+            workspace_id=call_session.tenant_id,
+            gcs_path=gcs_path,
+        )
+        if not egress_id:
+            return None
+
+        meta = dict(call_session.call_metadata or {})
+        # Same shape Twilio's _start_livekit_recording stores under
+        # call_metadata["recording"] — call_recording_upload_service reads
+        # exactly these two keys (egress_id, gcs_path) and needs no changes
+        # to pick up browser-call recordings.
+        meta["recording"] = {"egress_id": egress_id, "gcs_path": gcs_path}
+        call_session.call_metadata = meta
+        db.commit()
+        logger.info(
+            "[LiveKitBrowserCall] recording started: session=%s egress_id=%s",
+            call_session.id, egress_id,
+        )
+        return egress_id
+    except Exception as exc:
+        logger.warning(
+            "[LiveKitBrowserCall] could not start recording for session %s: %s",
+            call_session.id, exc,
+        )
+        return None
+
+
+async def _stop_browser_call_recording(call_session_id: uuid.UUID, egress_id: str | None) -> None:
+    """Stop the egress (if one was started) then schedule the S3 upload/finalize job."""
+    if not egress_id:
+        return
+    try:
+        from app.services.livekit_recording_service import livekit_recording_service
+
+        await livekit_recording_service.stop_room_recording(egress_id)
+    except Exception as exc:
+        logger.debug("[LiveKitBrowserCall] recording stop failed: %s", exc)
+
+    try:
+        from app.services.call_recording_upload_service import schedule_recording_upload
+
+        schedule_recording_upload(call_session_id)
+    except Exception as exc:
+        logger.debug("[LiveKitBrowserCall] schedule_recording_upload failed: %s", exc)
 
 
 async def _load_browser_call_context(db, call_session_id: uuid.UUID):
@@ -643,6 +929,7 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
     # attempt in dashboards/analytics and (via update_call_session_status)
     # trigger CRM write-back scheduling for a call nothing ever happened on.
     agent_joined = False
+    recording_egress_id: str | None = None
 
     try:
         call_session, agent, call_flow = await _load_browser_call_context(db, call_session_id)
@@ -681,6 +968,9 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
             logger.error("[LiveKitBrowserCall] failed to connect TTS publisher room=%s", room_name)
             return
         handler._agent_publisher = publisher
+
+        # ── Recording (fail-open — never aborts/degrades the call) ──────────
+        recording_egress_id = await _start_browser_call_recording(db, call_session)
 
         # Detect the caller leaving / our own connection dropping via the
         # publisher's room object (the one connection we own directly here).
@@ -764,6 +1054,13 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
                 await voice_orchestrator.shutdown()
         except Exception as exc:
             logger.debug("[LiveKitBrowserCall] voice_orchestrator shutdown failed: %s", exc)
+
+        # ── Recording teardown (mirrors Twilio's _full_shutdown ordering:
+        # stop the egress, then schedule the async S3 finalize/upload job) ──
+        try:
+            await _stop_browser_call_recording(call_session_id, recording_egress_id)
+        except Exception as exc:
+            logger.debug("[LiveKitBrowserCall] recording teardown failed: %s", exc)
 
         if audio_subscriber is not None:
             try:

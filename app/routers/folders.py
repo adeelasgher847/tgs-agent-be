@@ -8,7 +8,12 @@ from sqlalchemy.orm import Session
 from app.api.deps import get_db, require_tenant
 from app.core.request_auth import ApiKeyPrincipal
 from app.models.user import User
-from app.schemas.folder import AddFlowToFolderRequest, FolderCreate, FolderUpdate
+from app.schemas.folder import (
+    AddFlowToFolderRequest,
+    FolderCreate,
+    FolderUpdate,
+    MoveFlowRequest,
+)
 from app.services.folder_service import folder_service
 
 router = APIRouter()
@@ -45,7 +50,9 @@ def update_folder(
     return folder_service.update_folder(db, folder_id, _workspace_id(principal), body)
 
 
-@router.delete("/{folder_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+@router.delete(
+    "/{folder_id}", status_code=status.HTTP_204_NO_CONTENT, response_class=Response
+)
 def delete_folder(
     folder_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_tenant),
@@ -91,3 +98,16 @@ def remove_flow_from_folder(
         db, folder_id, _workspace_id(principal), flow_id
     )
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.put("/{folder_id}/flows/{flow_id}/move", status_code=status.HTTP_200_OK)
+def move_flow_to_folder(
+    folder_id: uuid.UUID,
+    flow_id: uuid.UUID,
+    body: MoveFlowRequest,
+    principal: User | ApiKeyPrincipal = Depends(require_tenant),
+    db: Session = Depends(get_db),
+):
+    return folder_service.move_flow_to_folder(
+        db, folder_id, body.target_folder_id, _workspace_id(principal), flow_id
+    )

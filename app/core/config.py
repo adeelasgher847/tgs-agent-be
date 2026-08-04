@@ -537,6 +537,13 @@ class Settings(BaseSettings):
     VOICE_TTS_FLUSH_MAX_WORDS: int = 6
     # If no sentence boundary yet, flush after this many seconds (once min words met).
     VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
+    # Browser "Share Demo Link" calls (app.voice.livekit_browser_call_handler) have no
+    # Twilio phone number, so recording_config_service.get_recording_enabled_for_call's
+    # NumberConfiguration lookup can never resolve for them (assistant_phone_number is
+    # the literal string "web_agent"). There is currently no per-tenant/agent/call-flow
+    # recording toggle independent of a phone number — this is a process-wide interim
+    # default until that's added via a proper schema change (flag for db-migration).
+    VOICE_BROWSER_DEMO_RECORDING_ENABLED: bool = True
     # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
     # without delaying real user speech by multiple seconds.
     VOICE_POST_PICKUP_STT_GRACE_SEC: float = 0.35

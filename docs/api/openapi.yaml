@@ -772,6 +772,27 @@ paths:
       description: Create a new workspace. Name must be unique among active workspaces
         (3–50 chars).
       operationId: create_workspace_api_v1_workspace_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                name:
+                  type: string
+                  maxLength: 50
+                  minLength: 3
+                  title: Name
+                  examples:
+                  - Acme Corp
+              additionalProperties: false
+              type: object
+              required:
+              - name
+              title: WorkspaceCreate
+              description: Request body for ``POST /api/v1/workspace``.
+            example:
+              name: Acme Corp
+        required: true
       responses:
         '201':
           description: 'Workspace created — flat body: {id, name, createdAt}'
@@ -875,6 +896,27 @@ paths:
       description: Update the name of the authenticated workspace. 409 on duplicate
         name.
       operationId: update_workspace_name_api_v1_workspace_name_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              properties:
+                name:
+                  type: string
+                  maxLength: 50
+                  minLength: 3
+                  title: Name
+                  examples:
+                  - Acme Corp
+              additionalProperties: false
+              type: object
+              required:
+              - name
+              title: WorkspaceUpdateName
+              description: Request body for ``PUT /api/v1/workspace/name``.
+            example:
+              name: Acme Corp
+        required: true
       responses:
         '200':
           description: Successful Response
@@ -1923,6 +1965,47 @@ paths:
       responses:
         '204':
           description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/folders/{folder_id}/flows/{flow_id}/move:
+    put:
+      tags:
+      - Folders
+      summary: Move Flow To Folder
+      operationId: move_flow_to_folder_api_v1_folders__folder_id__flows__flow_id__move_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: folder_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Folder Id
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MoveFlowRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
         '422':
           description: Validation Error
           content:
@@ -14649,6 +14732,17 @@ components:
       type: object
       title: ModelUpdate
       description: Schema for updating a model
+    MoveFlowRequest:
+      properties:
+        targetFolderId:
+          type: string
+          format: uuid
+          title: Targetfolderid
+      additionalProperties: false
+      type: object
+      required:
+      - targetFolderId
+      title: MoveFlowRequest
     N8nSecretResponse:
       properties:
         secret:

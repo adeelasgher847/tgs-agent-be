@@ -37,6 +37,12 @@ class AddFlowToFolderRequest(BaseModel):
     flow_id: uuid.UUID = Field(..., alias="flowId")
 
 
+class MoveFlowRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    target_folder_id: uuid.UUID = Field(..., alias="targetFolderId")
+
+
 class FolderListResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 

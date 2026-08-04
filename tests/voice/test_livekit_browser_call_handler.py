@@ -22,6 +22,8 @@ from app.voice.livekit_browser_call_handler import (
     LiveKitBrowserCallHandler,
     _LiveKitAgentAudioPublisher,
     _forced_browser_stt_runtime,
+    _start_browser_call_recording,
+    _stop_browser_call_recording,
     run_livekit_browser_call,
 )
 
@@ -185,22 +187,72 @@ class TestTurnHandling:
 # TTS synthesis + playback
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestTtsSynthesisAndPlayback:
-    @pytest.mark.asyncio
-    async def test_prefetch_tts_audio_uses_generate_mulaw_tts(self):
-        h = _base_handler()
-        with patch(
-            "app.voice.livekit_browser_call_handler.generate_mulaw_tts",
-            new=AsyncMock(return_value=b"\xff" * 160),
-        ) as mock_gen:
-            audio = await h._prefetch_tts_audio({"text": "Hello there", "use_ssml": False})
-        assert audio == b"\xff" * 160
-        mock_gen.assert_awaited_once()
+def _fake_tts_runtime(adapter_slug: str, voice_external_id: str | None = "voice-1"):
+    from app.core.agent_runtime import ResolvedTtsRuntime
 
+    return ResolvedTtsRuntime(
+        adapter_slug=adapter_slug,
+        voice_external_id=voice_external_id,
+        language="en",
+        settings_json={},
+        used_ticket_tts=False,
+    )
+
+
+class TestTtsSynthesisAndPlayback:
     @pytest.mark.asyncio
     async def test_prefetch_tts_audio_returns_none_for_empty_text(self):
         h = _base_handler()
         assert await h._prefetch_tts_audio({"text": "  "}) is None
+
+    @pytest.mark.asyncio
+    async def test_prefetch_tts_audio_uses_true_streaming_api_not_generate_mulaw_tts(self):
+        """
+        The main functional fix: _prefetch_tts_audio must resolve the
+        provider's real streaming API (async_stream_synthesize) and return
+        an async iterator — never buffer the whole utterance via
+        generate_mulaw_tts() first (that was the pre-fix behavior).
+        """
+        h = _base_handler()
+
+        async def fake_stream(**kwargs):
+            yield b"\x01" * 80
+            yield b"\x02" * 80
+
+        mock_adapter = MagicMock()
+        mock_adapter.async_stream_synthesize = fake_stream
+
+        with patch(
+            "app.core.agent_runtime.resolve_tts_runtime",
+            return_value=_fake_tts_runtime("rime"),
+        ), patch(
+            "app.utils.tts_adapter.get_tts_adapter", return_value=mock_adapter
+        ), patch(
+            "app.voice.livekit_browser_call_handler.generate_mulaw_tts",
+            new=AsyncMock(side_effect=AssertionError("must not buffer via generate_mulaw_tts")),
+        ):
+            result = await h._prefetch_tts_audio({"text": "Hello there"})
+
+        assert hasattr(result, "__aiter__"), "expected an async iterator, not a whole-blob bytes object"
+        chunks = [c async for c in result]
+        assert chunks == [b"\x01" * 80, b"\x02" * 80]
+
+    @pytest.mark.asyncio
+    async def test_prefetch_tts_audio_falls_back_to_generate_mulaw_tts_on_setup_failure(self):
+        """If provider streaming setup itself raises, fall back to whole-utterance synthesis
+        rather than dropping the chunk entirely."""
+        h = _base_handler()
+        with patch(
+            "app.core.agent_runtime.resolve_tts_runtime",
+            side_effect=RuntimeError("boom"),
+        ), patch(
+            "app.voice.livekit_browser_call_handler.generate_mulaw_tts",
+            new=AsyncMock(return_value=b"\xff" * 160),
+        ) as mock_gen:
+            audio = await h._prefetch_tts_audio({"text": "Hello there"})
+
+        assert audio == b"\xff" * 160
+        mock_gen.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_stream_tts_chunk_drops_when_no_publisher(self):
@@ -227,6 +279,49 @@ class TestTtsSynthesisAndPlayback:
         assert h._is_tts_playing is False
 
     @pytest.mark.asyncio
+    async def test_stream_tts_chunk_publishes_incrementally_as_provider_chunks_arrive(self):
+        """
+        Regression test for the main functional gap: when prefetched_bytes is
+        a true streaming async iterator (the TtsPipeline flow), each provider
+        chunk must be published to the room as it arrives — not buffered
+        until the whole utterance's audio has finished generating.
+        """
+        h = _base_handler()
+        publisher = MagicMock()
+        publisher.connected = True
+        publish_calls: list[bytes] = []
+
+        async def _record_publish(data: bytes, cancel=None):
+            publish_calls.append(bytes(data))
+
+        publisher.publish_mulaw = AsyncMock(side_effect=_record_publish)
+        h._agent_publisher = publisher
+
+        produced: list[int] = []
+
+        async def fake_provider_iter():
+            # Two full frames' worth of provider audio, produced one at a time —
+            # if the implementation buffered until StopAsyncIteration, we'd only
+            # ever see a single publish_mulaw call at the very end.
+            from app.utils.audio_utils import MULAW_FRAME_BYTES
+
+            for i in range(2):
+                produced.append(i)
+                yield bytes([i]) * MULAW_FRAME_BYTES
+
+        with patch("app.core.agent_runtime.resolve_tts_runtime", return_value=_fake_tts_runtime("rime")):
+            await h._stream_tts_chunk(
+                "hello there friend", is_final=True, prefetched_bytes=fake_provider_iter()
+            )
+
+        assert publisher.publish_mulaw.await_count >= 2, (
+            "expected multiple incremental publish_mulaw calls, not one whole-blob call"
+        )
+        from app.utils.audio_utils import MULAW_FRAME_BYTES
+        assert publish_calls[0] == bytes([0]) * MULAW_FRAME_BYTES
+        assert publish_calls[1] == bytes([1]) * MULAW_FRAME_BYTES
+
+    @pytest.mark.asyncio
     async def test_stream_tts_chunk_synthesizes_when_not_prefetched(self):
         h = _base_handler()
         publisher = MagicMock()
@@ -234,13 +329,19 @@ class TestTtsSynthesisAndPlayback:
         publisher.publish_mulaw = AsyncMock()
         h._agent_publisher = publisher
 
+        async def fake_stream(**kwargs):
+            yield b"\xff" * 160
+
+        mock_adapter = MagicMock()
+        mock_adapter.async_stream_synthesize = fake_stream
+
         with patch(
-            "app.voice.livekit_browser_call_handler.generate_mulaw_tts",
-            new=AsyncMock(return_value=b"\xff" * 160),
-        ):
+            "app.core.agent_runtime.resolve_tts_runtime",
+            return_value=_fake_tts_runtime("rime"),
+        ), patch("app.utils.tts_adapter.get_tts_adapter", return_value=mock_adapter):
             await h._stream_tts_chunk("hello there", is_final=False)
 
-        publisher.publish_mulaw.assert_awaited_once()
+        publisher.publish_mulaw.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_stream_tts_chunk_respects_cancel(self):
@@ -584,6 +685,14 @@ class TestRunLiveKitBrowserCall:
                  return_value=mock_subscriber_instance,
              ), \
              patch("app.services.call_session_service.call_session_service") as mock_svc, \
+             patch(
+                 "app.voice.livekit_browser_call_handler._start_browser_call_recording",
+                 new=AsyncMock(return_value=None),
+             ) as mock_start_rec, \
+             patch(
+                 "app.voice.livekit_browser_call_handler._stop_browser_call_recording",
+                 new=AsyncMock(),
+             ) as mock_stop_rec, \
              patch.object(
                  LiveKitBrowserCallHandler,
                  "generate_and_stream_response",
@@ -609,6 +718,10 @@ class TestRunLiveKitBrowserCall:
             mock_db, call_session_id, "completed"
         )
         mock_db.close.assert_called_once()
+        # Recording is gated (start attempted, teardown always runs even when
+        # nothing was actually started — mirrors Twilio's fail-open convention).
+        mock_start_rec.assert_awaited_once_with(mock_db, call_session)
+        mock_stop_rec.assert_awaited_once_with(call_session_id, None)
 
     @pytest.mark.asyncio
     async def test_agent_join_failure_is_caught_not_raised(self):
@@ -628,3 +741,182 @@ class TestRunLiveKitBrowserCall:
             await run_livekit_browser_call(call_session_id)
 
         mock_db.close.assert_called_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Browser-call recording (room-composite egress on the call's own native room)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestBrowserCallRecording:
+    def _call_session(self):
+        call_session = MagicMock()
+        call_session.id = uuid.uuid4()
+        call_session.tenant_id = uuid.uuid4()
+        call_session.end_time = None
+        call_session.call_metadata = {}
+        call_session.call_type = "web"
+        return call_session
+
+    @pytest.mark.asyncio
+    async def test_start_recording_skips_when_disabled(self):
+        """Gate: get_recording_enabled_for_call() returning False must skip
+        entirely — no egress call, no metadata write, no commit."""
+        call_session = self._call_session()
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.get_recording_enabled_for_call",
+            return_value=False,
+        ), patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_svc:
+            egress_id = await _start_browser_call_recording(db, call_session)
+
+        assert egress_id is None
+        mock_svc.start_room_recording.assert_not_called()
+        db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_start_recording_writes_call_metadata_shape_matching_twilio(self):
+        """
+        call_metadata["recording"] must be {"egress_id":..., "gcs_path":...} —
+        the exact shape call_recording_upload_service._get_recording_meta reads,
+        so no changes are needed there to pick up browser-call recordings.
+        """
+        call_session = self._call_session()
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.get_recording_enabled_for_call",
+            return_value=True,
+        ), patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc, patch(
+            "app.services.s3_recording_service.build_s3_key", return_value="path/to/recording.opus"
+        ):
+            mock_rec_svc.start_room_recording = AsyncMock(return_value="EG_123")
+            egress_id = await _start_browser_call_recording(db, call_session)
+
+        assert egress_id == "EG_123"
+        assert call_session.call_metadata["recording"] == {
+            "egress_id": "EG_123",
+            "gcs_path": "path/to/recording.opus",
+        }
+        db.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_recording_is_fail_open_on_egress_error(self):
+        """A recording-start failure must never raise — the call must proceed
+        unaffected (fail-open, same convention as Twilio's _start_livekit_recording)."""
+        call_session = self._call_session()
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.get_recording_enabled_for_call",
+            return_value=True,
+        ), patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc:
+            mock_rec_svc.start_room_recording = AsyncMock(side_effect=RuntimeError("egress API down"))
+            egress_id = await _start_browser_call_recording(db, call_session)
+
+        assert egress_id is None
+        db.commit.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_recording_noop_when_no_egress_id(self):
+        with patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc, patch(
+            "app.services.call_recording_upload_service.schedule_recording_upload"
+        ) as mock_schedule:
+            await _stop_browser_call_recording(uuid.uuid4(), None)
+
+        mock_rec_svc.stop_room_recording.assert_not_called()
+        mock_schedule.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stop_recording_stops_egress_then_schedules_upload(self):
+        call_session_id = uuid.uuid4()
+
+        with patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc, patch(
+            "app.services.call_recording_upload_service.schedule_recording_upload"
+        ) as mock_schedule:
+            mock_rec_svc.stop_room_recording = AsyncMock(return_value=True)
+            await _stop_browser_call_recording(call_session_id, "EG_123")
+
+        mock_rec_svc.stop_room_recording.assert_awaited_once_with("EG_123")
+        mock_schedule.assert_called_once_with(call_session_id)
+
+    @pytest.mark.asyncio
+    async def test_stop_recording_still_schedules_upload_when_egress_stop_fails(self):
+        """Fail-open: even if stop_room_recording() raises, still schedule the
+        upload job — LiveKit may already be tearing down the egress on its own."""
+        call_session_id = uuid.uuid4()
+
+        with patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc, patch(
+            "app.services.call_recording_upload_service.schedule_recording_upload"
+        ) as mock_schedule:
+            mock_rec_svc.stop_room_recording = AsyncMock(side_effect=RuntimeError("boom"))
+            await _stop_browser_call_recording(call_session_id, "EG_123")
+
+        mock_schedule.assert_called_once_with(call_session_id)
+
+
+class TestGetRecordingEnabledForCallBrowserGating:
+    """
+    get_recording_enabled_for_call's phone-number lookup can never resolve
+    for browser demo calls (assistant_phone_number is the literal sentinel
+    "web_agent", not a real Twilio number) — call_type == "web" now
+    short-circuits to a dedicated process-wide flag instead of falling
+    through to the NumberConfiguration/PhoneNumber join, which would always
+    return False for these calls.
+    """
+
+    def test_web_call_type_short_circuits_to_flag_when_enabled(self):
+        from app.services.recording_config_service import get_recording_enabled_for_call
+
+        call_session = MagicMock()
+        call_session.call_type = "web"
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.settings"
+        ) as mock_settings:
+            mock_settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED = True
+            assert get_recording_enabled_for_call(db, call_session) is True
+
+        db.execute.assert_not_called()
+
+    def test_web_call_type_short_circuits_to_flag_when_disabled_by_default(self):
+        from app.services.recording_config_service import get_recording_enabled_for_call
+
+        call_session = MagicMock()
+        call_session.call_type = "web"
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.settings"
+        ) as mock_settings:
+            mock_settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED = False
+            assert get_recording_enabled_for_call(db, call_session) is False
+
+        db.execute.assert_not_called()
+
+    def test_non_web_call_type_still_uses_phone_number_lookup(self):
+        """Twilio calls must be entirely unaffected by the new branch."""
+        from app.services.recording_config_service import get_recording_enabled_for_call
+
+        call_session = MagicMock()
+        call_session.call_type = "inbound"
+        call_session.assistant_phone_number = "+15551234567"
+        call_session.tenant_id = uuid.uuid4()
+        db = MagicMock()
+        db.execute.return_value.scalar_one_or_none.return_value = None
+
+        assert get_recording_enabled_for_call(db, call_session) is False
+        db.execute.assert_called_once()

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import uuid
 from contextlib import contextmanager
+from datetime import datetime
 from unittest.mock import patch
 
 import pytest
@@ -149,6 +150,41 @@ def _create_body(agent_id: uuid.UUID, **overrides) -> dict:
     }
     body.update(overrides)
     return body
+
+
+def _make_call_session(
+    db,
+    *,
+    tenant: Tenant,
+    agent: Agent,
+    status: str = "completed",
+    duration: int | None = None,
+    call_flow_id: uuid.UUID | None = None,
+) -> CallSession:
+    """Directly inserts a CallSession row for analytics-aggregation tests."""
+    user = User(
+        email=f"cs-user-{uuid.uuid4().hex[:8]}@example.com",
+        first_name="CS",
+        last_name="User",
+        hashed_password="",
+        current_tenant_id=tenant.id,
+    )
+    db.add(user)
+    db.flush()
+
+    session = CallSession(
+        user_id=user.id,
+        agent_id=agent.id,
+        tenant_id=tenant.id,
+        call_flow_id=call_flow_id,
+        status=status,
+        duration=duration,
+        start_time=datetime.utcnow(),
+    )
+    db.add(session)
+    db.commit()
+    db.refresh(session)
+    return session
 
 
 # ──────────────────────────────────────────────────────────────── tests ──
@@ -611,6 +647,183 @@ class TestListCallFlows:
             assert "agent" in item
             assert item["agent"]["name"] == test_agent.name
             assert item["folderIds"] == []
+
+
+@pytest.mark.usefixtures("db")
+class TestListCallFlowsAnalytics:
+    def test_analytics_key_present_with_expected_fields(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, name="Analytics Flow"),
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.get(
+            "/api/v1/call-flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert "analytics" in body
+        analytics = body["analytics"]
+        assert set(analytics.keys()) == {
+            "totalCalls",
+            "successRatePercent",
+            "averageDurationSeconds",
+        }
+
+    def test_analytics_zero_calls_returns_null_rate_and_duration(
+        self, authed_client, auth_tenant, test_agent
+    ):
+        authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, name="No Calls Flow"),
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.get(
+            "/api/v1/call-flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        analytics = resp.json()["analytics"]
+        assert analytics["totalCalls"] == 0
+        assert analytics["successRatePercent"] is None
+        assert analytics["averageDurationSeconds"] is None
+
+    def test_analytics_aggregates_across_flows_and_agents(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        # NOTE: `agent` has a single-row-per-tenant unique index in this test
+        # DB (sqlite doesn't honour the Postgres-only partial-index predicate
+        # on `uq_agent_single_follow_up_per_tenant`), so a second Agent per
+        # tenant can't be created here. Both flows below use the same
+        # `test_agent` — analytics is tenant-wide (not flow-scoped) so this
+        # still exercises aggregation across multiple call flows.
+        flow_1 = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, name="Flow One"),
+            headers=_headers(auth_tenant),
+        ).json()
+        flow_2 = authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, name="Flow Two"),
+            headers=_headers(auth_tenant),
+        ).json()
+
+        # 4 total calls: 2 completed (durations 100, 200), 1 failed (duration 300),
+        # 1 no_answer (no duration set).
+        _make_call_session(
+            db,
+            tenant=auth_tenant,
+            agent=test_agent,
+            status="completed",
+            duration=100,
+            call_flow_id=uuid.UUID(flow_1["id"]),
+        )
+        _make_call_session(
+            db,
+            tenant=auth_tenant,
+            agent=test_agent,
+            status="completed",
+            duration=200,
+            call_flow_id=uuid.UUID(flow_2["id"]),
+        )
+        _make_call_session(
+            db,
+            tenant=auth_tenant,
+            agent=test_agent,
+            status="failed",
+            duration=300,
+            call_flow_id=uuid.UUID(flow_2["id"]),
+        )
+        _make_call_session(
+            db,
+            tenant=auth_tenant,
+            agent=test_agent,
+            status="no_answer",
+            duration=None,
+            call_flow_id=uuid.UUID(flow_1["id"]),
+        )
+
+        resp = authed_client.get(
+            "/api/v1/call-flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        analytics = resp.json()["analytics"]
+        assert analytics["totalCalls"] == 4
+        # 2 completed / 4 total = 50%
+        assert analytics["successRatePercent"] == 50.0
+        # avg(100, 200, 300) = 200 — the no_answer row has no duration and is excluded
+        assert analytics["averageDurationSeconds"] == 200.0
+
+    def test_analytics_is_tenant_isolated(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        other_tenant = Tenant(
+            name=f"OtherFlowWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_flow_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        other_agent = Agent(
+            tenant_id=other_tenant.id,
+            name="Other Tenant Agent",
+            status="active",
+            llm_model="gpt-4o-mini",
+            tts_provider_slug="elevenlabs",
+            tts_voice_external_id="voice-z",
+            tts_language="en",
+        )
+        db.add(other_agent)
+        db.commit()
+        db.refresh(other_agent)
+
+        # Tenant A: 1 completed call, duration 100.
+        authed_client.post(
+            "/api/v1/call-flows",
+            json=_create_body(test_agent.id, name="Tenant A Flow"),
+            headers=_headers(auth_tenant),
+        )
+        _make_call_session(
+            db,
+            tenant=auth_tenant,
+            agent=test_agent,
+            status="completed",
+            duration=100,
+        )
+
+        # Tenant B: several calls with very different numbers — must not leak
+        # into tenant A's analytics.
+        for status, duration in [
+            ("completed", 10),
+            ("completed", 20),
+            ("failed", 999),
+            ("no_answer", None),
+        ]:
+            _make_call_session(
+                db,
+                tenant=other_tenant,
+                agent=other_agent,
+                status=status,
+                duration=duration,
+            )
+
+        resp = authed_client.get(
+            "/api/v1/call-flows",
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        analytics = resp.json()["analytics"]
+        assert analytics["totalCalls"] == 1
+        assert analytics["successRatePercent"] == 100.0
+        assert analytics["averageDurationSeconds"] == 100.0
 
 
 @pytest.mark.usefixtures("db")
