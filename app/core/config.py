@@ -543,7 +543,7 @@ class Settings(BaseSettings):
     # the literal string "web_agent"). There is currently no per-tenant/agent/call-flow
     # recording toggle independent of a phone number — this is a process-wide interim
     # default until that's added via a proper schema change (flag for db-migration).
-    VOICE_BROWSER_DEMO_RECORDING_ENABLED: bool = False
+    VOICE_BROWSER_DEMO_RECORDING_ENABLED: bool = True
     # Keep a short (but non-zero) guard after pickup so ringback artifacts are skipped
     # without delaying real user speech by multiple seconds.
     VOICE_POST_PICKUP_STT_GRACE_SEC: float = 0.35
