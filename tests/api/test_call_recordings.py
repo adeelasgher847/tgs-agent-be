@@ -224,7 +224,12 @@ class TestGetRecordingEnabledForCall:
         db.delete(session)
         db.commit()
 
-    def test_no_phone_number_returns_false(self, db, rec_tenant, rec_agent):
+    def test_web_call_follows_browser_demo_recording_flag(self, db, rec_tenant, rec_agent):
+        """Web (browser demo) calls have no phone number to resolve a
+        NumberConfiguration from, so they're gated on the process-wide
+        VOICE_BROWSER_DEMO_RECORDING_ENABLED flag instead — assert both
+        directions rather than hardcoding one, since the flag's own default
+        is expected to change independently of this test's intent."""
         session = CallSession(
             user_id=uuid.uuid4(),
             agent_id=rec_agent.id,
@@ -237,8 +242,17 @@ class TestGetRecordingEnabledForCall:
         db.commit()
         db.refresh(session)
 
-        result = get_recording_enabled_for_call(db, session)
-        assert result is False
+        with patch(
+            "app.services.recording_config_service.settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED",
+            True,
+        ):
+            assert get_recording_enabled_for_call(db, session) is True
+
+        with patch(
+            "app.services.recording_config_service.settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED",
+            False,
+        ):
+            assert get_recording_enabled_for_call(db, session) is False
 
         db.delete(session)
         db.commit()
