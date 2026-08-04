@@ -33,7 +33,7 @@ def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bo
     app.routers.sdk::demo_call_token), which would never match a real
     NumberConfiguration row. There is currently no per-tenant/agent/call-flow
     recording toggle for this path, so it's gated on a single process-wide
-    flag (VOICE_BROWSER_DEMO_RECORDING_ENABLED, default False) instead — an
+    flag (VOICE_BROWSER_DEMO_RECORDING_ENABLED, default True) instead — an
     interim default until a proper per-tenant/agent config field is added via
     a schema change (flag for db-migration).
     """
