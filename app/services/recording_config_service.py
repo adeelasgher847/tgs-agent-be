@@ -11,6 +11,7 @@ from __future__ import annotations
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.logger import logger
 from app.models.call_session import CallSession
 from app.models.phone_number import NumberConfiguration, PhoneNumber
@@ -18,15 +19,27 @@ from app.models.phone_number import NumberConfiguration, PhoneNumber
 
 def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bool:
     """
-    Return True if recording is enabled for the phone number on this call.
+    Return True if recording is enabled for this call.
 
-    Resolution order:
+    Twilio calls (inbound/outbound) resolution order:
     1. call_session.assistant_phone_number (set on outbound and inbound calls)
     2. call_session.to_number (fallback for inbound — the number the caller dialled)
     3. call_session.from_number (last resort for outbound)
-
     Returns False if no NumberConfiguration is found (safe default).
+
+    Browser "Share Demo Link" calls (app.voice.livekit_browser_call_handler,
+    call_session.call_type == "web") have no Twilio phone number at all —
+    assistant_phone_number is the literal sentinel "web_agent" (see
+    app.routers.sdk::demo_call_token), which would never match a real
+    NumberConfiguration row. There is currently no per-tenant/agent/call-flow
+    recording toggle for this path, so it's gated on a single process-wide
+    flag (VOICE_BROWSER_DEMO_RECORDING_ENABLED, default False) instead — an
+    interim default until a proper per-tenant/agent config field is added via
+    a schema change (flag for db-migration).
     """
+    if (call_session.call_type or "").lower() == "web":
+        return bool(settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED)
+
     phone_number_str = _resolve_phone_number(call_session)
     if not phone_number_str:
         return False

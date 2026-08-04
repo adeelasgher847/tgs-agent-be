@@ -15,6 +15,7 @@ from app.models.call_session import CallSession
 from app.models.prompt_version import PromptVersion
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.prompt_version_repository import PromptVersionRepository
+from app.services.call_history_service import call_history_service
 from app.schemas.agent import agent_to_out
 from app.schemas.ab_testing import (
     AbResultsResponse,
@@ -299,6 +300,10 @@ class CallFlowService:
         repo = CallFlowRepository(db)
         rows, total = repo.find_by_workspace(tenant_id, page=page, limit=limit)
         folder_ids_map = repo.find_folder_ids_map([f.id for f in rows])
+        # Tenant-wide across every call flow/agent — NOT scoped to this page's
+        # flows or affected by pagination. Callers must not assume it reflects
+        # only the `data` rows returned above.
+        metrics = call_history_service.get_metrics(db, tenant_id)
         return {
             "data": [
                 self.flow_to_list_item(f, folder_ids_map.get(f.id, [])) for f in rows
@@ -306,6 +311,11 @@ class CallFlowService:
             "total": total,
             "page": page,
             "pageSize": limit,
+            "analytics": {
+                "totalCalls": metrics.total_calls,
+                "successRatePercent": metrics.success_rate_percent,
+                "averageDurationSeconds": metrics.avg_duration_seconds,
+            },
         }
 
     def update_flow(

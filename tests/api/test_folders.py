@@ -469,3 +469,310 @@ class TestRemoveFlowFromFolder:
             headers=_headers(auth_tenant),
         )
         assert resp.status_code == 400
+
+
+@pytest.mark.usefixtures("db")
+class TestMoveFlowToFolder:
+    def _link(self, db, folder_id: uuid.UUID, flow_id: uuid.UUID) -> None:
+        db.add(FolderFlow(folder_id=folder_id, flow_id=flow_id))
+        db.commit()
+
+    def test_move_flow_success(self, authed_client, auth_tenant, test_agent, db):
+        folder_a = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Move Source"},
+            headers=_headers(auth_tenant),
+        ).json()
+        folder_b = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Move Target"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Move Flow")
+        authed_client.post(
+            f"/api/v1/folders/{folder_a['id']}/flows",
+            json={"flowId": str(flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder_a['id']}/flows/{flow.id}/move",
+            json={"targetFolderId": folder_b["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["flowId"] == str(flow.id)
+        assert body["sourceFolderId"] == folder_a["id"]
+        assert body["targetFolderId"] == folder_b["id"]
+
+        # No longer in source
+        source_flows = authed_client.get(
+            f"/api/v1/folders/{folder_a['id']}/flows",
+            headers=_headers(auth_tenant),
+        ).json()
+        assert source_flows["total"] == 0
+
+        # Now in target
+        target_flows = authed_client.get(
+            f"/api/v1/folders/{folder_b['id']}/flows",
+            headers=_headers(auth_tenant),
+        ).json()
+        assert target_flows["total"] == 1
+        assert target_flows["data"][0]["id"] == str(flow.id)
+
+    def test_move_flow_same_folder_returns_400(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Same Folder"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Same Folder Flow")
+        authed_client.post(
+            f"/api/v1/folders/{folder['id']}/flows",
+            json={"flowId": str(flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder['id']}/flows/{flow.id}/move",
+            json={"targetFolderId": folder["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 400
+
+    def test_move_flow_unknown_source_folder_returns_404(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder_b = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Target Only"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Orphan Flow")
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{uuid.uuid4()}/flows/{flow.id}/move",
+            json={"targetFolderId": folder_b["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_move_flow_unknown_target_folder_returns_404(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder_a = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Source Only"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Source Flow")
+        authed_client.post(
+            f"/api/v1/folders/{folder_a['id']}/flows",
+            json={"flowId": str(flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder_a['id']}/flows/{flow.id}/move",
+            json={"targetFolderId": str(uuid.uuid4())},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_move_unknown_flow_returns_404(self, authed_client, auth_tenant):
+        folder_a = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Move Src Unknown Flow"},
+            headers=_headers(auth_tenant),
+        ).json()
+        folder_b = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Move Tgt Unknown Flow"},
+            headers=_headers(auth_tenant),
+        ).json()
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder_a['id']}/flows/{uuid.uuid4()}/move",
+            json={"targetFolderId": folder_b["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_move_flow_not_in_source_folder_returns_404(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder_a = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Not Linked Source"},
+            headers=_headers(auth_tenant),
+        ).json()
+        folder_b = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Not Linked Target"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Not Linked Flow")
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder_a['id']}/flows/{flow.id}/move",
+            json={"targetFolderId": folder_b["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+    def test_move_flow_already_in_target_dedupes(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        folder_a = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Dedup Source"},
+            headers=_headers(auth_tenant),
+        ).json()
+        folder_b = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Dedup Target"},
+            headers=_headers(auth_tenant),
+        ).json()
+        flow = _make_flow(db, auth_tenant, test_agent, "Dedup Flow")
+
+        # Flow already linked to both source and target
+        authed_client.post(
+            f"/api/v1/folders/{folder_a['id']}/flows",
+            json={"flowId": str(flow.id)},
+            headers=_headers(auth_tenant),
+        )
+        authed_client.post(
+            f"/api/v1/folders/{folder_b['id']}/flows",
+            json={"flowId": str(flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        resp = authed_client.put(
+            f"/api/v1/folders/{folder_a['id']}/flows/{flow.id}/move",
+            json={"targetFolderId": folder_b["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+
+        # No duplicate row in target, and source link removed
+        target_links = (
+            db.query(FolderFlow)
+            .filter(
+                FolderFlow.folder_id == uuid.UUID(folder_b["id"]),
+                FolderFlow.flow_id == flow.id,
+            )
+            .count()
+        )
+        assert target_links == 1
+
+        source_link = (
+            db.query(FolderFlow)
+            .filter(
+                FolderFlow.folder_id == uuid.UUID(folder_a["id"]),
+                FolderFlow.flow_id == flow.id,
+            )
+            .first()
+        )
+        assert source_link is None
+
+        target_flows = authed_client.get(
+            f"/api/v1/folders/{folder_b['id']}/flows",
+            headers=_headers(auth_tenant),
+        ).json()
+        assert target_flows["total"] == 1
+
+    def test_move_flow_cross_tenant_returns_404(
+        self, authed_client, auth_tenant, test_agent, db
+    ):
+        """A tenant must not be able to move a flow using folder/flow ids
+        belonging to a different tenant — every combination should 404."""
+        other_tenant = Tenant(
+            name=f"OtherWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        other_agent = Agent(
+            tenant_id=other_tenant.id,
+            name="Other Tenant Agent",
+            status="active",
+            llm_model="gpt-4o-mini",
+            tts_provider_slug="elevenlabs",
+            tts_voice_external_id="voice-y",
+            tts_language="en",
+        )
+        db.add(other_agent)
+        db.commit()
+        db.refresh(other_agent)
+
+        # Folders/flow owned by the "other" tenant, created directly via DB
+        # (no authed client available for them in this test).
+        other_folder_a = Folder(tenant_id=other_tenant.id, name="Other Source")
+        other_folder_b = Folder(tenant_id=other_tenant.id, name="Other Target")
+        db.add_all([other_folder_a, other_folder_b])
+        db.commit()
+        db.refresh(other_folder_a)
+        db.refresh(other_folder_b)
+
+        other_flow = _make_flow(db, other_tenant, other_agent, "Other Tenant Flow")
+        self._link(db, other_folder_a.id, other_flow.id)
+
+        # Our own tenant's folders/flow for cross-combinations
+        own_folder = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Own Folder"},
+            headers=_headers(auth_tenant),
+        ).json()
+        own_folder_2 = authed_client.post(
+            "/api/v1/folders",
+            json={"name": "Own Folder Target"},
+            headers=_headers(auth_tenant),
+        ).json()
+        own_flow = _make_flow(db, auth_tenant, test_agent, "Own Flow")
+        authed_client.post(
+            f"/api/v1/folders/{own_folder['id']}/flows",
+            json={"flowId": str(own_flow.id)},
+            headers=_headers(auth_tenant),
+        )
+
+        # 1. Source folder belongs to other tenant -> 404
+        resp = authed_client.put(
+            f"/api/v1/folders/{other_folder_a.id}/flows/{own_flow.id}/move",
+            json={"targetFolderId": own_folder["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+        # 2. Target folder belongs to other tenant -> 404
+        resp = authed_client.put(
+            f"/api/v1/folders/{own_folder['id']}/flows/{own_flow.id}/move",
+            json={"targetFolderId": str(other_folder_b.id)},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+        # 3. Flow belongs to other tenant -> 404
+        resp = authed_client.put(
+            f"/api/v1/folders/{own_folder['id']}/flows/{other_flow.id}/move",
+            json={"targetFolderId": own_folder_2["id"]},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 404
+
+        # Sanity: the other tenant's flow is still linked to its own folder,
+        # untouched by any of the failed attempts above.
+        still_linked = (
+            db.query(FolderFlow)
+            .filter(
+                FolderFlow.folder_id == other_folder_a.id,
+                FolderFlow.flow_id == other_flow.id,
+            )
+            .first()
+        )
+        assert still_linked is not None

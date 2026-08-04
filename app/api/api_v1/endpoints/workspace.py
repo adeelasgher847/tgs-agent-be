@@ -1,6 +1,8 @@
 """Workspace (tenant) management endpoints — API-key authenticated.
 
-Every endpoint requires a valid API key resolved by :class:`ApiKeyMiddleware`.
+Every endpoint requires a valid API key resolved by :class:`ApiKeyMiddleware`,
+**except** ``PUT /name``, which additionally accepts a JWT user with at least
+``config_only`` rank in the workspace (see ``require_config_or_api_key``).
 Endpoints addressing a specific workspace return ``403`` if the authenticated
 workspace id does not match the URL/target workspace.
 """
@@ -13,12 +15,18 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, get_workspace_api_key, require_config
-from app.core.request_auth import get_workspace_from_request
+from app.api.deps import (
+    get_db,
+    get_workspace_api_key,
+    require_config,
+    require_config_or_api_key,
+)
+from app.core.request_auth import ApiKeyPrincipal, get_workspace_from_request
 from app.core.config import settings
 from app.core.logger import logger
 from app.core.workspace import Workspace
 from app.models.tenant import Tenant
+from app.models.user import User
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.schemas.base import SuccessResponse
 from app.schemas.integration import MakeSecretResponse, N8nSecretResponse
@@ -57,6 +65,10 @@ _DB_ERROR = HTTPException(
     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
     detail="Database error",
 )
+
+
+def _workspace_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
+    return principal.current_tenant_id
 
 
 def _ensure_same_workspace(target: uuid.UUID, authed: uuid.UUID) -> None:
@@ -111,6 +123,17 @@ async def _parse_update_name_body(request: Request) -> WorkspaceUpdateName:
     status_code=status.HTTP_201_CREATED,
     summary="Create a new workspace",
     responses={**_COMMON_ERROR_RESPONSES, 201: {"description": "Workspace created — flat body: {id, name, createdAt}"}},
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": WorkspaceCreate.model_json_schema(),
+                    "example": {"name": "Acme Corp"},
+                }
+            },
+        }
+    },
 )
 def create_workspace(
     request: Request,
@@ -189,17 +212,29 @@ def get_workspace_by_id(
     response_model_by_alias=True,
     summary="Update the authenticated workspace's name",
     responses=_COMMON_ERROR_RESPONSES,
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": WorkspaceUpdateName.model_json_schema(),
+                    "example": {"name": "Acme Corp"},
+                }
+            },
+        }
+    },
 )
 def update_workspace_name(
     request: Request,
     payload: WorkspaceUpdateName = Depends(_parse_update_name_body),
-    authed: Workspace = Depends(get_workspace_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     repo: WorkspaceRepository = Depends(_repository),
     db: Session = Depends(get_db),
 ):
     """Update the name of the authenticated workspace. 409 on duplicate name."""
+    workspace_id = _workspace_id(principal)
     try:
-        tenant = repo.find_by_id(authed.id)
+        tenant = repo.find_by_id(workspace_id)
         if tenant is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -230,10 +265,11 @@ def update_workspace_name(
     log_audit_event(
         db,
         request=request,
-        tenant_id=authed.id,
+        tenant_id=workspace_id,
+        actor_user_id=principal.id if isinstance(principal, User) else None,
         action="workspace.updated",
         resource_type="workspace",
-        resource_id=authed.id,
+        resource_id=workspace_id,
         old_value={"name": old_name},
         new_value={"name": payload.name},
     )
