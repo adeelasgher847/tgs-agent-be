@@ -75,6 +75,8 @@ Multi-tenant SaaS Voice Agent Backend. Tenants configure AI voice agents that ha
 
 ## Common Commands
 
+Activate the project's own venv first — `source venv/bin/activate` — the system `python3` does not have this repo's dependencies installed.
+
 ```bash
 # Dev server
 uvicorn app.main:app --reload
@@ -242,6 +244,19 @@ LiveKit audio → LiveKitAudioSubscriber
 ```
 
 Mixins (`BookingMixin`, `CallControlMixin`, `TtsStreamMixin`) are composed into orchestrator classes. State shared across turns is persisted in `callsession` + `transcript_message` tables — never held in memory across requests.
+
+**Two call transports share this pipeline, with two separate handler implementations:**
+
+| | `app/routers/bidirectional_stream.py`'s `BidirectionalStreamHandler` | `app/voice/livekit_browser_call_handler.py`'s `LiveKitBrowserCallHandler` |
+|---|---|---|
+| Transport | Twilio Media Streams (MULAW over WebSocket) | Browser WebRTC via LiveKit ("Share Demo Link" feature, `POST /api/v1/sdk/demo/{token}/call-token`) |
+| STT / LLM orchestration | `SttPipeline`, `ConversationOrchestrator`, `TtsPipeline` — **reused unmodified** by both handlers | same |
+| TTS synthesis-to-publish | `TtsStreamMixin._prefetch_tts_audio`/`_stream_tts_chunk` — true incremental provider streaming (`adapter.async_stream_synthesize()`), audio reaches the caller within ~100-300ms | Its own `_prefetch_tts_audio`/`_publish_mulaw_stream` — mirrors the same true-streaming approach as of the browser/Twilio parity work |
+| Call recording | `_start_livekit_recording()` creates a **separate mirror LiveKit room** + duplicate caller/agent publishers purely for egress, since a Twilio call has no native LiveKit room | `_start_browser_call_recording()` starts egress directly on the call's **own existing** room — no mirror room needed |
+
+Both handlers are deliberately parallel, not shared via inheritance (per `livekit_browser_call_handler.py`'s own module docstring) — when changing STT/LLM/TTS-scheduling behavior, changes to the shared classes apply to both transports automatically; transport-specific behavior (recording, barge-in publish mechanics, greeting/audio format) must be changed in each handler separately.
+
+Browser-call recording is gated by `recording_config_service.get_recording_enabled_for_call()`, which resolves via phone-number lookup for Twilio calls but short-circuits to `VOICE_BROWSER_DEMO_RECORDING_ENABLED` (env var, default off) for `call_type == "web"` — there is no per-tenant/agent recording toggle in the schema yet for browser calls.
 
 ### Smart Callback Scheduler
 
