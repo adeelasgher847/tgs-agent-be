@@ -1,8 +1,10 @@
 """Workspace (tenant) management endpoints — API-key authenticated.
 
 Every endpoint requires a valid API key resolved by :class:`ApiKeyMiddleware`,
-**except** ``PUT /name``, which additionally accepts a JWT user with at least
-``config_only`` rank in the workspace (see ``require_config_or_api_key``).
+**except** ``PUT /name`` and ``DELETE /{workspace_id}``, which additionally
+accept a JWT user with at least ``config_only`` (for ``PUT /name``) or
+``admin`` (for ``DELETE /{workspace_id}``) rank in the workspace (see
+``require_config_or_api_key`` / ``require_admin_or_api_key``).
 Endpoints addressing a specific workspace return ``403`` if the authenticated
 workspace id does not match the URL/target workspace.
 """
@@ -18,6 +20,7 @@ from sqlalchemy.orm import Session
 from app.api.deps import (
     get_db,
     get_workspace_api_key,
+    require_admin_or_api_key,
     require_config,
     require_config_or_api_key,
 )
@@ -385,11 +388,12 @@ def generate_n8n_integration_secret(
 def soft_delete_workspace(
     workspace_id: uuid.UUID,
     request: Request,
-    authed: Workspace = Depends(get_workspace_api_key),
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
     repo: WorkspaceRepository = Depends(_repository),
     db: Session = Depends(get_db),
 ):
-    _ensure_same_workspace(workspace_id, authed.id)
+    tenant_id = _workspace_id(principal)
+    _ensure_same_workspace(workspace_id, tenant_id)
 
     try:
         tenant = repo.find_by_id(workspace_id)
@@ -409,7 +413,8 @@ def soft_delete_workspace(
     log_audit_event(
         db,
         request=request,
-        tenant_id=authed.id,
+        tenant_id=tenant_id,
+        actor_user_id=principal.id if isinstance(principal, User) else None,
         action="workspace.deleted",
         resource_type="workspace",
         resource_id=workspace_id,
