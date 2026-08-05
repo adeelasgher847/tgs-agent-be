@@ -858,6 +858,7 @@ paths:
       - Workspace
       summary: Soft delete a workspace
       operationId: soft_delete_workspace_api_v1_workspace__workspace_id__delete
+      security: *id001
       parameters:
       - name: workspace_id
         in: path
@@ -887,7 +888,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-      security: *id001
   /api/v1/workspace/name:
     put:
       tags:
