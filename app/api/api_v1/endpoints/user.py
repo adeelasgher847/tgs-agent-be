@@ -630,9 +630,10 @@ def get_user_tenants(
     Get all tenants associated with the current user for dropdown selection.
     Returns list of tenants with id and name, plus current tenant id.
     """
-    # Get all tenants for the user
-    user_tenants = user.tenants
-    
+    # Get all tenants for the user, excluding soft-deleted workspaces
+    # (user.tenants is a raw relationship with no deleted_at filter).
+    user_tenants = [tenant for tenant in user.tenants if tenant.deleted_at is None]
+
     # Convert to simple format for dropdown
     tenant_list = [
         {
@@ -818,9 +819,11 @@ def get_user_profile(
         created_at=user.created_at,
         role=role_info,
         current_tenant=user.current_tenant,
-        tenants=user.tenants
+        # Exclude soft-deleted workspaces — user.tenants is a raw
+        # relationship with no deleted_at filter.
+        tenants=[t for t in user.tenants if t.deleted_at is None]
     )
-    
+
     return create_success_response(
         user_profile,
         "User profile retrieved successfully"
@@ -894,9 +897,11 @@ def update_user_profile(
         created_at=current_user.created_at,
         role=role_info,
         current_tenant=current_user.current_tenant,
-        tenants=current_user.tenants
+        # Exclude soft-deleted workspaces — current_user.tenants is a raw
+        # relationship with no deleted_at filter.
+        tenants=[t for t in current_user.tenants if t.deleted_at is None]
     )
-    
+
     return create_success_response(
         user_profile,
         "User profile updated successfully"
