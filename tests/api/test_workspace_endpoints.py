@@ -345,6 +345,56 @@ class TestDeleteWorkspace:
             )
             assert follow_up.status_code == 404
 
+    def test_jwt_admin_can_delete(self, client, db):
+        t = Tenant(
+            name=f"DelMeJwt-{uuid.uuid4().hex[:8]}",
+            schema_name=f"del_me_jwt_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(t)
+        db.commit()
+        db.refresh(t)
+
+        user = _make_jwt_user(db, t.id, "admin")
+        workspace = Workspace.from_tenant(t)
+
+        with _jwt_auth_ctx(workspace, user.id):
+            resp = client.delete(
+                f"/api/v1/workspace/{t.id}",
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 204, resp.text
+
+        db.refresh(t)
+        assert t.deleted_at is not None
+
+        audit_row = (
+            db.query(AuditLog)
+            .filter(
+                AuditLog.tenant_id == t.id,
+                AuditLog.action == "workspace.deleted",
+            )
+            .order_by(AuditLog.timestamp.desc())
+            .first()
+        )
+        assert audit_row is not None
+        assert audit_row.user_id == user.id
+
+    @pytest.mark.parametrize("role_name", ["manager", "config_only", "read_only"])
+    def test_jwt_below_admin_forbidden_to_delete(self, client, db, auth_tenant, role_name):
+        user = _make_jwt_user(db, auth_tenant.id, role_name)
+        workspace = Workspace.from_tenant(auth_tenant)
+
+        with _jwt_auth_ctx(workspace, user.id):
+            resp = client.delete(
+                f"/api/v1/workspace/{auth_tenant.id}",
+                headers={"Authorization": "Bearer test-token"},
+            )
+        assert resp.status_code == 403, resp.text
+
+        db.refresh(auth_tenant)
+        assert auth_tenant.deleted_at is None
+
 
 @pytest.mark.usefixtures("db")
 class TestWorkspaceAuth:
