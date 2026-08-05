@@ -222,6 +222,18 @@ class LiveKitAudioProcessor:
             str(self._output_channels),
             "-f",
             _FFMPEG_OUTPUT_FORMAT,
+            # Force ffmpeg to flush its output AVIOContext after every write
+            # instead of buffering up to its default ~32KB before releasing
+            # anything to the pipe. Without this, real-time PCM fed in small
+            # (~10-20ms) chunks gets released downstream in large multi-second
+            # -delayed bursts instead of a steady near-real-time stream —
+            # this starves STT endpointing (e.g. Deepgram) of the cadence it
+            # needs to ever finalize a transcript. `-fflags nobuffer` /
+            # `-flags low_delay` were evaluated and found to be no-ops here:
+            # they govern demuxer/decoder latency, not applicable to this
+            # raw s16le pipe-to-pipe (no container, no decoding) resample.
+            "-flush_packets",
+            "1",
             "pipe:1",
         ]
         self._ffmpeg_process = await asyncio.create_subprocess_exec(
