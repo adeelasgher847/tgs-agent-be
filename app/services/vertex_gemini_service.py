@@ -195,7 +195,7 @@ class VertexGeminiService:
         # entire HTTP round-trip inside asyncio.to_thread and only returns after
         # ALL tokens are buffered — effectively disabling streaming.
         try:
-            response_stream = model.generate_content_async(
+            response_stream = await model.generate_content_async(
                 contents,
                 generation_config=generation_config,
                 stream=True,

@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -203,7 +203,7 @@ def test_vertex_stream_text_yields_chunks():
     import sys
 
     mock_model = MagicMock()
-    mock_model.generate_content_async = MagicMock(
+    mock_model.generate_content_async = AsyncMock(
         return_value=_async_fake_response_iter(chunks)
     )
 
@@ -241,7 +241,7 @@ def test_vertex_generative_model_uses_short_model_name():
     import sys
 
     mock_model = MagicMock()
-    mock_model.generate_content_async = MagicMock(
+    mock_model.generate_content_async = AsyncMock(
         return_value=_async_fake_response_iter(["ok"])
     )
     mock_generative_model = MagicMock(return_value=mock_model)
@@ -269,14 +269,22 @@ def test_vertex_generative_model_uses_short_model_name():
     assert "publishers/" not in mock_generative_model.call_args.kwargs["model_name"]
 
 
-def test_vertex_stream_text_async_generator_not_awaited():
-    """Regression: stream=True returns an async generator synchronously, not a coroutine."""
+def test_vertex_stream_text_awaits_coroutine_from_generate_content_async():
+    """Regression: GenerativeModel.generate_content_async is itself `async def` —
+    even with stream=True it returns a coroutine that must be awaited to get the
+    actual AsyncIterable[GenerationResponse] (verified against the installed
+    google-cloud-aiplatform SDK: `generate_content_async` returns
+    `await self._generate_content_streaming_async(...)`). A prior version of this
+    code (and this test) assumed the opposite — that the SDK call synchronously
+    returned an async generator — which raised
+    `TypeError: 'async for' requires an object with __aiter__ method, got coroutine`
+    against the real SDK. This test builds an actual coroutine (not a MagicMock)
+    to make sure `stream_text` really does `await` the call rather than iterating
+    its return value directly."""
     chunks = ["ok"]
 
-    def generate_content_async(*_args, **_kwargs):
-        gen = _async_fake_response_iter(chunks)
-        assert not asyncio.iscoroutine(gen), "SDK must return async generator, not coroutine"
-        return gen
+    async def generate_content_async(*_args, **_kwargs):
+        return _async_fake_response_iter(chunks)
 
     import sys
 
@@ -302,8 +310,6 @@ def test_vertex_stream_text_async_generator_not_awaited():
                 result.append(chunk)
         return result
 
-    # Old `await model.generate_content_async(...)` would raise:
-    # TypeError: object async_generator can't be used in 'await' expression
     result = asyncio.run(_run())
     assert result == chunks
 
@@ -331,7 +337,7 @@ def test_vertex_stream_cancelled_by_event():
     sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
 
     mock_model = MagicMock()
-    mock_model.generate_content_async = MagicMock(return_value=_cancelling_iter())
+    mock_model.generate_content_async = AsyncMock(return_value=_cancelling_iter())
 
     sys.modules["vertexai.generative_models"] = SimpleNamespace(
         GenerativeModel=MagicMock(return_value=mock_model),
@@ -410,7 +416,7 @@ def test_vertex_stream_quota_error_raises_vertex_llm_error():
         sys.modules.setdefault("vertexai", SimpleNamespace(init=lambda **k: None))
 
         mock_model = MagicMock()
-        mock_model.generate_content_async = MagicMock(
+        mock_model.generate_content_async = AsyncMock(
             side_effect=RuntimeError("quota exceeded in stream")
         )
 
