@@ -24,7 +24,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir --prefix=/install -r requirements.txt
+# Install into an isolated venv rather than `pip install --prefix=/install`.
+# `--prefix` does NOT guarantee every resolved package ends up under that
+# prefix: pip's own bootstrap/build-tool packages (observed: `packaging`,
+# `wheel`) can land in the builder image's *global* site-packages instead
+# (verified via a --no-cache build + `find /install -iname '*packaging*'`
+# turning up nothing while it was present under
+# /usr/local/lib/python3.11/site-packages). Since the runtime stage only
+# copies `/install`, those packages were silently dropped, breaking any
+# import chain that needs them (e.g. `vertexai` -> ... -> `packaging`) even
+# though `google-cloud-aiplatform` declares `packaging` as a dependency and
+# pip reports success. A venv is pip's own install target for that
+# invocation, so nothing it installs — direct or transitive — can land
+# anywhere else.
+RUN python -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir -r requirements.txt
 
 # ---------------------------------------------------------------------------
 # Stage 2: ffmpeg — used by LiveKitAudioProcessor to resample non-16kHz PCM
@@ -61,11 +75,11 @@ FROM gcr.io/distroless/python3-debian12:nonroot AS runtime
 
 WORKDIR /app
 
-ENV PYTHONPATH=/usr/local/lib/python3.11/site-packages \
-    PATH=/usr/local/bin:/usr/bin:/bin \
+ENV PYTHONPATH=/opt/venv/lib/python3.11/site-packages \
+    PATH=/opt/venv/bin:/usr/bin:/bin \
     PYTHONUNBUFFERED=1
 
-COPY --from=builder /install /usr/local
+COPY --from=builder /opt/venv /opt/venv
 COPY --from=ffmpeg-builder /dist-root/ /
 COPY --chown=nonroot:nonroot . /app
 
