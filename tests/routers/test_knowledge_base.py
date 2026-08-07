@@ -14,6 +14,7 @@ Covers:
   - POST /{kb_id}/file       → 422 when file exceeds 50 MB
   - POST /{kb_id}/text       → 201, chunks inserted synchronously
   - GET /{kb_id}/files/{file_id}/status → returns status/chunk_count
+  - GET /files/{file_id}?action=view|download → 200 presigned URL response
   - Unit tests for tiktoken chunker
 """
 from __future__ import annotations
@@ -741,3 +742,314 @@ def test_search_returns_results_sorted_by_score(client, db, workspace_id):
 
     db.delete(kb_s)
     db.commit()
+
+
+# ── GET /files/{file_id}?action=view|download ────────────────────────────────
+
+def _make_ready_file(db, kb_id, *, filename="doc.pdf", file_type="pdf", s3_path="kb/some/key.pdf"):
+    file_id = uuid.uuid4()
+    kb_file = KbFile(
+        id=file_id,
+        kb_id=kb_id,
+        original_filename=filename,
+        size_bytes=1024,
+        file_type=file_type,
+        s3_path=s3_path,
+        status="ready",
+    )
+    db.add(kb_file)
+    db.commit()
+    db.refresh(kb_file)
+    return kb_file
+
+
+def test_get_kb_file_access_no_tenant_selected_returns_403(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id)
+
+    with _auth_ctx(workspace_id):
+        from app.api.deps import require_readonly_or_api_key
+
+        no_tenant_user = _mock_admin(None)
+        app.dependency_overrides[require_readonly_or_api_key] = lambda: no_tenant_user
+        try:
+            resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+        finally:
+            app.dependency_overrides.pop(require_readonly_or_api_key, None)
+
+    assert resp.status_code == 403, resp.text
+
+
+def test_get_kb_file_access_not_found_when_file_missing(client, db, workspace_id):
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/files/{uuid.uuid4()}", params={"action": "view"})
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    msg = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "File not found" in msg
+
+
+def test_get_kb_file_access_isolated_across_tenants(client, db, kb, workspace_id):
+    """A file that belongs to a KB in another workspace must 404, not leak."""
+    from app.models.tenant import Tenant
+
+    other_tenant = Tenant(name="Other Tenant", schema_name="other_tenant_schema")
+    db.add(other_tenant)
+    db.commit()
+    db.refresh(other_tenant)
+
+    other_kb = KnowledgeBase(id=uuid.uuid4(), workspace_id=other_tenant.id, name="Other KB")
+    db.add(other_kb)
+    db.commit()
+
+    other_file = _make_ready_file(db, other_kb.id, filename="secret.pdf")
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/files/{other_file.id}", params={"action": "view"})
+
+    assert resp.status_code == 404, resp.text
+
+    db.delete(other_kb)
+    db.delete(other_tenant)
+    db.commit()
+
+
+@pytest.mark.parametrize("status_value", ["processing", "error"])
+def test_get_kb_file_access_not_available_when_not_ready(client, db, kb, workspace_id, status_value):
+    file_id = uuid.uuid4()
+    kb_file = KbFile(
+        id=file_id,
+        kb_id=kb.id,
+        original_filename="not_ready.pdf",
+        file_type="pdf",
+        s3_path="kb/not/ready.pdf",
+        status=status_value,
+    )
+    db.add(kb_file)
+    db.commit()
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/files/{file_id}", params={"action": "view"})
+
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    msg = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "File not available" in msg
+
+
+def test_get_kb_file_access_not_available_when_s3_path_missing(client, db, kb, workspace_id):
+    file_id = uuid.uuid4()
+    kb_file = KbFile(
+        id=file_id,
+        kb_id=kb.id,
+        original_filename="no_path.pdf",
+        file_type="pdf",
+        s3_path=None,
+        status="ready",
+    )
+    db.add(kb_file)
+    db.commit()
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/files/{file_id}", params={"action": "view"})
+
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    msg = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "File not available" in msg
+
+
+def test_get_kb_file_access_invalid_action_returns_400(client, db, kb, workspace_id):
+    """FastAPI would natively 422 an invalid Literal, but this app's global
+    RequestValidationError handler (app/core/exception_handlers.py) rewrites
+    all query/body validation failures to 400 with code=validation_error —
+    confirmed by tests/core/test_error_envelope.py::test_validation_error_envelope.
+    """
+    kb_file = _make_ready_file(db, kb.id)
+
+    with _auth_ctx(workspace_id):
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "print"})
+
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "validation_error"
+
+
+def test_get_kb_file_access_bucket_not_configured_returns_500(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id)
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+    ):
+        mock_settings.S3_KB_BUCKET = ""
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+
+    # Server errors (5xx) are always masked to a generic message by
+    # app.core.pii_redactor.safe_error_message — never the raw HTTPException
+    # detail — per tests/core/test_error_envelope.py::test_unhandled_exception_envelope.
+    # We can only assert the envelope shape/code here, not the original detail text.
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "internal_error"
+
+
+def test_get_kb_file_access_presigned_url_failure_returns_500(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id)
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.side_effect = Exception("boom")
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+
+    assert resp.status_code == 500, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "internal_error"
+
+
+def test_get_kb_file_access_view_pdf(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id, filename="report.pdf", file_type="pdf")
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://s3.example.com/signed-url-pdf"
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["preview_supported"] is True
+    assert data["url"] == "https://s3.example.com/signed-url-pdf"
+    assert data["expires_in"] == 300
+    assert data["file_id"] == str(kb_file.id)
+    assert data["action"] == "view"
+
+    call_kwargs = mock_client.generate_presigned_url.call_args.kwargs
+    params = call_kwargs["Params"]
+    assert params["ResponseContentDisposition"] == "inline"
+    assert params["ResponseContentType"] == "application/pdf"
+    assert call_kwargs["ExpiresIn"] == 300
+
+    # The raw S3 object key must never leak into the response body.
+    assert kb_file.s3_path not in resp.text
+
+
+def test_get_kb_file_access_view_txt(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id, filename="notes.txt", file_type="txt")
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://s3.example.com/signed-url-txt"
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["preview_supported"] is True
+
+    call_kwargs = mock_client.generate_presigned_url.call_args.kwargs
+    params = call_kwargs["Params"]
+    assert params["ResponseContentDisposition"] == "inline"
+    assert params["ResponseContentType"] == "text/plain"
+
+    assert kb_file.s3_path not in resp.text
+
+
+def test_get_kb_file_access_view_docx_forces_attachment(client, db, kb, workspace_id):
+    kb_file = _make_ready_file(db, kb.id, filename="contract.docx", file_type="docx")
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://s3.example.com/signed-url-docx"
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "view"})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["preview_supported"] is False
+
+    call_kwargs = mock_client.generate_presigned_url.call_args.kwargs
+    params = call_kwargs["Params"]
+    # DOCX is never inline-viewable: even with action=view it must still
+    # be forced to an attachment disposition per the endpoint's spec.
+    assert params["ResponseContentDisposition"] == 'attachment; filename="contract.docx"'
+    assert "ResponseContentType" not in params
+
+    assert kb_file.s3_path not in resp.text
+
+
+@pytest.mark.parametrize(
+    "file_type,filename",
+    [("pdf", "report.pdf"), ("txt", "notes.txt"), ("docx", "contract.docx")],
+)
+def test_get_kb_file_access_download_forces_attachment_for_all_types(
+    client, db, kb, workspace_id, file_type, filename
+):
+    kb_file = _make_ready_file(db, kb.id, filename=filename, file_type=file_type)
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://s3.example.com/signed-url-download"
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "download"})
+
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["action"] == "download"
+
+    call_kwargs = mock_client.generate_presigned_url.call_args.kwargs
+    params = call_kwargs["Params"]
+    assert params["ResponseContentDisposition"].startswith('attachment; filename="')
+    assert filename in params["ResponseContentDisposition"]
+
+    assert kb_file.s3_path not in resp.text
+
+
+def test_get_kb_file_access_sanitizes_filename_in_content_disposition(client, db, kb, workspace_id):
+    """A `"` (or CR/LF) in a client-supplied upload filename must not be able
+    to break out of the quoted Content-Disposition value and inject extra
+    header parameters into the presigned URL."""
+    malicious_filename = 'evil".pdf'
+    kb_file = _make_ready_file(db, kb.id, filename=malicious_filename, file_type="pdf")
+
+    mock_client = MagicMock()
+    mock_client.generate_presigned_url.return_value = "https://s3.example.com/signed-url"
+
+    with (
+        _auth_ctx(workspace_id),
+        patch("app.routers.knowledge_base.settings") as mock_settings,
+        patch("app.routers.knowledge_base.get_s3_client", return_value=mock_client),
+    ):
+        mock_settings.S3_KB_BUCKET = "test-bucket"
+        resp = client.get(f"/api/v1/kb/files/{kb_file.id}", params={"action": "download"})
+
+    assert resp.status_code == 200, resp.text
+
+    call_kwargs = mock_client.generate_presigned_url.call_args.kwargs
+    disposition = call_kwargs["Params"]["ResponseContentDisposition"]
+    assert disposition == 'attachment; filename="evil.pdf"'
