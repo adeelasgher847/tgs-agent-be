@@ -192,20 +192,22 @@ class CallFlowService:
         )
         return out.model_dump(by_alias=True, mode="json")
 
-    def flow_to_list_item(
+    def flow_to_list_item_model(
         self, flow: CallFlow, folder_ids: list[uuid.UUID] | None = None
-    ) -> dict:
-        """Serialize a CallFlow to the slim list-item shape.
+    ) -> CallFlowListItem:
+        """Build the slim list-item model for a CallFlow.
 
-        Public (no leading underscore) so other services — e.g. FolderService,
-        when listing the flows attached to a folder — can reuse it instead of
-        duplicating the serialization logic.
+        Public (no leading underscore) so other services can reuse the actual
+        typed model — e.g. DashboardService, which nests this inside another
+        Pydantic model rather than emitting raw JSON, so it needs the
+        CallFlowListItem instance itself, not the aliased dict flow_to_list_item
+        returns.
         """
         agent_ref: AgentRef | None = None
         if flow.agent:
             agent_ref = AgentRef.model_validate(flow.agent)
 
-        item = CallFlowListItem(
+        return CallFlowListItem(
             id=flow.id,
             name=flow.name,
             direction=flow.direction,
@@ -223,6 +225,17 @@ class CallFlowService:
             created_at=flow.created_at,
             updated_at=flow.updated_at,
         )
+
+    def flow_to_list_item(
+        self, flow: CallFlow, folder_ids: list[uuid.UUID] | None = None
+    ) -> dict:
+        """Serialize a CallFlow to the slim list-item shape (aliased dict).
+
+        Public (no leading underscore) so other services — e.g. FolderService,
+        when listing the flows attached to a folder — can reuse it instead of
+        duplicating the serialization logic.
+        """
+        item = self.flow_to_list_item_model(flow, folder_ids)
         return item.model_dump(by_alias=True, mode="json")
 
     def _sync_agent_system_prompt(self, db: Session, flow: CallFlow) -> None:

@@ -96,31 +96,6 @@ class FolderService:
 
         return {"folderId": str(folder_id), "flowId": str(flow_id)}
 
-    def remove_flow_from_folder(
-        self,
-        db: Session,
-        folder_id: uuid.UUID,
-        tenant_id: uuid.UUID,
-        flow_id: uuid.UUID,
-    ) -> None:
-        """Unlink a flow from a folder without touching the call flow itself.
-
-        Once a flow has no remaining folder links, it naturally reappears
-        under "All Files" — that view is just "flows with no FolderFlow row".
-        """
-        self._get_folder_or_404(db, folder_id, tenant_id)
-
-        repo = FolderRepository(db)
-        link = repo.find_folder_flow(folder_id, flow_id)
-        if link is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Call flow {flow_id} is not in folder {folder_id}",
-            )
-
-        repo.remove_flow(link)
-        db.commit()
-
     def move_flow_to_folder(
         self,
         db: Session,

@@ -405,9 +405,18 @@ class TestPhoneNumberConfiguration:
 
 
 class TestCallRecordingUploadService:
-    def test_upload_failure_sets_recording_error(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
+    """
+    Exercises call_recording_upload_service via the real outbound +
+    recording-enabled-via-phone-config path (rec_phone_with_recording_enabled),
+    distinct from the mocked-in-isolation coverage in
+    tests/services/test_call_recording_upload_service.py for the ARQ
+    retry-with-backoff chain itself.
+    """
+
+    @pytest.mark.asyncio
+    async def test_upload_failure_sets_recording_error(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
         """When LiveKit egress fails, recording_error must be set to True."""
-        from app.services.call_recording_upload_service import _check_and_finalize
+        from app.services.call_recording_upload_service import _finalize_call_recording_arq_task
 
         session = CallSession(
             user_id=uuid.uuid4(),
@@ -419,6 +428,12 @@ class TestCallRecordingUploadService:
             assistant_phone_number=rec_phone_with_recording_enabled.phone_number,
             recording_s3_path=None,
             recording_error=False,
+            call_metadata={
+                "recording": {
+                    "egress_id": "egress-id-123",
+                    "gcs_path": "recordings/ws/call/20260609.opus",
+                }
+            },
         )
         db.add(session)
         db.commit()
@@ -429,11 +444,23 @@ class TestCallRecordingUploadService:
         mock_egress_info = MagicMock()
         mock_egress_info.status = 4  # EGRESS_FAILED
 
-        with patch(
-            "app.services.call_recording_upload_service._fetch_egress_info_async",
-            return_value=mock_egress_info,
+        with (
+            patch(
+                "app.services.livekit_recording_service.livekit_recording_service.stop_room_recording",
+                new_callable=AsyncMock,
+            ),
+            patch(
+                "app.services.livekit_recording_service.livekit_recording_service.get_egress_info",
+                new_callable=AsyncMock,
+                return_value=mock_egress_info,
+            ),
+            patch(
+                "app.db.session.SessionLocal",
+                return_value=db,
+            ),
+            patch.object(db, "close"),
         ):
-            _check_and_finalize(db, session, "egress-id-123", "recordings/ws/call/20260609.opus")
+            await _finalize_call_recording_arq_task({"redis": None}, str(session.id), 1)
 
         db.refresh(session)
         assert session.recording_error is True
@@ -442,9 +469,12 @@ class TestCallRecordingUploadService:
         db.delete(session)
         db.commit()
 
-    def test_upload_success_sets_s3_path(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
+    @pytest.mark.asyncio
+    async def test_upload_success_sets_s3_path(self, db, rec_tenant, rec_agent, rec_phone_with_recording_enabled):
         """When LiveKit egress completes, recording_s3_path must be set."""
-        from app.services.call_recording_upload_service import _check_and_finalize
+        from app.services.call_recording_upload_service import _finalize_call_recording_arq_task
+
+        gcs_path = None  # set below once session.id is known
 
         session = CallSession(
             user_id=uuid.uuid4(),
@@ -461,25 +491,35 @@ class TestCallRecordingUploadService:
         db.commit()
         db.refresh(session)
 
+        gcs_path = f"recordings/{rec_tenant.id}/{session.id}/20260609.opus"
+        session.call_metadata = {
+            "recording": {"egress_id": "egress-id-456", "gcs_path": gcs_path}
+        }
+        db.commit()
+        db.refresh(session)
+
         # EGRESS_COMPLETE = 3
         mock_egress_info = MagicMock()
         mock_egress_info.status = 3  # EGRESS_COMPLETE
 
-        gcs_path = f"recordings/{rec_tenant.id}/{session.id}/20260609.opus"
-
         with (
             patch(
-                "app.services.call_recording_upload_service._stop_egress_async",
+                "app.services.livekit_recording_service.livekit_recording_service.stop_room_recording",
                 new_callable=AsyncMock,
             ),
             patch(
-                "app.services.call_recording_upload_service._fetch_egress_info_async",
+                "app.services.livekit_recording_service.livekit_recording_service.get_egress_info",
+                new_callable=AsyncMock,
                 return_value=mock_egress_info,
             ),
-            patch("app.services.call_recording_upload_service.asyncio.sleep", new_callable=AsyncMock),
+            patch(
+                "app.db.session.SessionLocal",
+                return_value=db,
+            ),
+            patch.object(db, "close"),
             patch("app.services.s3_recording_service.update_object_metadata"),
         ):
-            _check_and_finalize(db, session, "egress-id-456", gcs_path)
+            await _finalize_call_recording_arq_task({"redis": None}, str(session.id), 1)
 
         db.refresh(session)
         assert session.recording_s3_path == gcs_path

@@ -59,9 +59,26 @@ async def analyze_call_transcript_internal(
     Returns analysis dict or None if analysis fails.
     """
     try:
+        # 🚀 CACHING: Return the already-generated analysis if present, instead
+        # of re-running (paid) LLM calls. This block is populated by
+        # VoiceAnalysisService.analyze_call_transcript — either from the
+        # automatic post-call summary job or a prior manual/dashboard call.
+        if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+            cached_block = call_session.call_metadata["llm_call_analysis"]
+            transcript_messages = transcript_service.get_messages_by_session(db, call_session.id)
+            logger.info(
+                "📦 Batch analysis fetched from cached DB analysis for session %s",
+                call_session.id,
+            )
+            return {
+                "analysis": cached_block.get("analysis"),
+                "model_used": cached_block.get("model_used"),
+                "transcript_message_count": len(transcript_messages),
+            }
+
         # Get transcript messages
         transcript_messages = transcript_service.get_messages_by_session(db, call_session.id)
-        
+
         if not transcript_messages:
             return None
         

@@ -1,7 +1,11 @@
+import asyncio
 import re
+import struct
+import uuid
 from datetime import datetime, timezone
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Tuple
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -9,6 +13,7 @@ from fastapi import HTTPException
 
 from app.core.logger import logger
 from app.core.pii_redactor import redact_pii
+from app.db.session import SessionLocal
 from app.models.call_flow import CallFlow
 from app.models.call_log import CallLog
 from app.models.call_session import CallSession
@@ -16,6 +21,7 @@ from app.services.agent_service import agent_service
 from app.services.dlp_service import redact_phi_if_hipaa
 from app.services.model_service import ModelService
 from app.services.transcript_service import transcript_service
+from app.utils.arq_pool import get_arq_pool
 
 
 class VoiceAnalysisService:
@@ -497,4 +503,154 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
 
 
 voice_analysis_service = VoiceAnalysisService()
+
+
+def _pg_advisory_key_pair(key_uuid: uuid.UUID) -> Tuple[int, int]:
+    """Two int32 keys derived from a UUID (stable per call session) for pg_advisory_lock.
+
+    Uses the same derivation as inbound_call_crm_sync_service.py's call_log_id-keyed
+    lock, but call_session_id and call_log_id are a different UUID column family, so
+    a cross-collision is negligible at any realistic call volume. `pg_try_advisory_lock`
+    is non-blocking, so a collision would never deadlock the two lock users against each
+    other — worst case, one side sees "lock unavailable" and skips its one-shot work for
+    that call (e.g. the summary job silently not firing) rather than racing.
+    """
+    return struct.unpack(">ii", key_uuid.bytes[:8])
+
+
+def _try_acquire_call_summary_lock(db: Session, call_session_id: uuid.UUID) -> bool:
+    """
+    Serialize automatic call-summary generation for one call_session across workers
+    (AI-side call-ending logic and Twilio's StatusCallback webhook can both schedule it).
+    Returns False if lock unavailable (another worker is generating); caller should exit quietly.
+    """
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return True
+        k1, k2 = _pg_advisory_key_pair(call_session_id)
+        row = db.execute(
+            text("SELECT pg_try_advisory_lock(:k1, :k2) AS ok"),
+            {"k1": k1, "k2": k2},
+        ).mappings().first()
+        return bool(row and row.get("ok"))
+    except Exception:
+        logger.warning("Call summary: advisory lock check failed (continuing without lock)", exc_info=True)
+        return True
+
+
+def _release_call_summary_lock(db: Session, call_session_id: uuid.UUID) -> None:
+    try:
+        if db.get_bind().dialect.name != "postgresql":
+            return
+        k1, k2 = _pg_advisory_key_pair(call_session_id)
+        db.execute(text("SELECT pg_advisory_unlock(:k1, :k2)"), {"k1": k1, "k2": k2})
+        db.commit()
+    except Exception:
+        logger.warning("Call summary: pg_advisory_unlock failed (non-critical)", exc_info=True)
+    finally:
+        try:
+            db.rollback()
+        except Exception:  # noqa: S110 - already logged the advisory-unlock failure above
+            pass
+
+
+async def _generate_call_summary_arq_task(ctx: dict, call_session_id: str) -> None:
+    """
+    ARQ job entrypoint — registered as ``generate_call_summary`` in
+    app/workers/batch_call_worker.py::WorkerSettings.functions.
+
+    Runs the same LLM analysis as the dashboard's manual "analyze transcript"
+    action, automatically once a call completes. `analyze_call_transcript`
+    already no-ops cheaply if `call_metadata["llm_call_analysis"]` is cached,
+    but two ARQ workers can race to pass that check before either commits —
+    a pg advisory lock keyed on call_session_id ensures only one worker
+    actually runs the (paid) LLM analysis.
+    """
+    db: Session = SessionLocal()
+    try:
+        session_uuid = uuid.UUID(call_session_id)
+        call_session = (
+            db.query(CallSession).filter(CallSession.id == session_uuid).first()
+        )
+        if not call_session:
+            logger.warning(
+                "Call summary generation skipped — session not found: %s",
+                call_session_id,
+            )
+            return
+
+        if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+            logger.debug(
+                "Call summary generation skipped — already cached for session %s",
+                call_session_id,
+            )
+            return
+
+        if not _try_acquire_call_summary_lock(db, session_uuid):
+            logger.debug(
+                "Call summary generation: another worker is already generating the summary "
+                "for this call, skipping session=%s",
+                call_session_id,
+            )
+            return
+
+        try:
+            # Double-checked lock: force a fresh read past this worker's identity-map
+            # cache, in case a concurrent winner committed while we waited for the
+            # lock. Ordering invariant — call_session must not be locally mutated
+            # between the query above and this refresh, or that mutation is lost.
+            db.refresh(call_session)
+            if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+                logger.debug(
+                    "Call summary generation skipped — cached by another worker while "
+                    "waiting for lock, session %s",
+                    call_session_id,
+                )
+                return
+
+            voice_analysis_service.analyze_call_transcript(
+                db,
+                call_session,
+                user_id=call_session.user_id,
+                raise_on_no_transcript=False,
+            )
+        finally:
+            _release_call_summary_lock(db, session_uuid)
+    except Exception:
+        logger.warning(
+            "Automatic call summary generation failed (non-critical) session=%s",
+            call_session_id,
+            exc_info=True,
+        )
+    finally:
+        db.close()
+
+
+def schedule_call_summary_generation(call_session_id: uuid.UUID) -> None:
+    """
+    Enqueue automatic call summary/sentiment/recommendations generation as an
+    ARQ background job. Fire-and-forget — never blocks the caller. Fails open
+    if the ARQ pool isn't ready: summary generation is best-effort and must
+    never affect call completion.
+    """
+    pool = get_arq_pool()
+    if pool is None:
+        logger.warning(
+            "ARQ pool not ready; call summary generation skipped for session=%s",
+            call_session_id,
+        )
+        return
+
+    async def _enqueue() -> None:
+        try:
+            await pool.enqueue_job("generate_call_summary", str(call_session_id))
+        except Exception as exc:
+            logger.warning("Failed to enqueue call summary generation job: %s", exc)
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(_enqueue())
+        return
+    asyncio.create_task(_enqueue())
 

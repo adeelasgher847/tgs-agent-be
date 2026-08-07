@@ -75,6 +75,7 @@ def _metrics_row(
     avg_duration_seconds=45.5,
     total_duration_seconds=455,
     success_rate_percent=70.0,
+    total_cost=12.5,
 ):
     return SimpleNamespace(
         total_calls=total_calls,
@@ -84,6 +85,7 @@ def _metrics_row(
         avg_duration_seconds=avg_duration_seconds,
         total_duration_seconds=total_duration_seconds,
         success_rate_percent=success_rate_percent,
+        total_cost=total_cost,
     )
 
 
@@ -132,6 +134,7 @@ def test_metrics_correct_totals():
     assert result.avg_duration_seconds == 45.5
     assert result.total_duration_seconds == 455
     assert result.success_rate_percent == 70.0
+    assert result.total_cost == 12.5
 
 
 # ── 2. get_metrics date_from filter forwarded ─────────────────────────────────
