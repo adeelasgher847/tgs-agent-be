@@ -5,6 +5,7 @@ import time
 import uuid
 
 import json as _json
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import String, cast, func, text as sa_text
@@ -26,6 +27,7 @@ from app.schemas.base import SuccessResponse
 from app.schemas.knowledge_base import (
     KbCreate,
     KbDetail,
+    KbFileAccessResponse,
     KbFileOut,
     KbFileStatusOut,
     KbFileUploadResponse,
@@ -52,12 +54,19 @@ from app.services.kb_ingestion_service import (
     upload_kb_file_to_s3,
 )
 from app.services.rag_service import rag_service
+from app.services.s3_service import get_s3_client
 from app.utils.response import create_success_response
 from app.utils.arq_pool import get_arq_pool
 from app.utils.redis_client import get_redis
 
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50 MB
 ALLOWED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+KB_FILE_SIGNED_URL_EXPIRY_SECONDS = 300  # 5 minutes
+
+_CONTENT_TYPE_BY_FILE_TYPE = {
+    "pdf": "application/pdf",
+    "txt": "text/plain",
+}
 
 # In-process TTL cache used when Redis is unavailable.
 # Structure: key -> (value: int, expires_at: float)
@@ -80,6 +89,33 @@ def _get_kb_or_404(db: Session, kb_id: uuid.UUID, workspace_id: uuid.UUID) -> Kn
     if not kb:
         raise HTTPException(status_code=404, detail="Knowledge base not found")
     return kb
+
+
+def _content_disposition(disposition: str, filename: str) -> str:
+    """Build a Content-Disposition header value, stripping characters that
+    could break out of the quoted filename (e.g. a `"` in a user-supplied
+    upload filename injecting extra header parameters)."""
+    safe_filename = filename.replace('"', "").replace("\r", "").replace("\n", "")
+    return f'{disposition}; filename="{safe_filename}"'
+
+
+def _get_kb_file_by_id_or_404(
+    db: Session, file_id: uuid.UUID, workspace_id: uuid.UUID
+) -> KbFile:
+    """Tenant-scoped KbFile lookup that isn't nested under a known kb_id.
+
+    KbFile has no workspace_id column of its own, so tenant scoping is done
+    by joining through KnowledgeBase.workspace_id — never trust file_id alone.
+    """
+    kb_file = (
+        db.query(KbFile)
+        .join(KnowledgeBase, KnowledgeBase.id == KbFile.kb_id)
+        .filter(KbFile.id == file_id, KnowledgeBase.workspace_id == workspace_id)
+        .first()
+    )
+    if not kb_file:
+        raise HTTPException(status_code=404, detail="File not found")
+    return kb_file
 
 
 def _file_count(db: Session, kb_id: uuid.UUID) -> int:
@@ -407,6 +443,97 @@ def delete_knowledge_base(
     db.delete(kb)
     db.commit()
     return create_success_response({"kb_id": str(kb_id)}, "Knowledge base deleted")
+
+
+# ── File access (view/download) ─────────────────────────────────────────────────
+
+@router.get("/files/{file_id}", response_model=SuccessResponse[KbFileAccessResponse])
+def get_kb_file_access(
+    file_id: uuid.UUID,
+    action: Literal["view", "download"] = Query(
+        ..., description="Whether to return a URL for inline viewing or forced download."
+    ),
+    user=Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+):
+    """
+    Return a short-lived presigned S3 URL to view or download a KB file.
+
+    Note: unlike other file endpoints on this router, this is not nested
+    under `/{kb_id}/` — tenant scoping is enforced by joining KbFile to its
+    parent KnowledgeBase's workspace_id.
+    """
+    workspace_id = user.current_tenant_id
+    if workspace_id is None:
+        raise HTTPException(status_code=403, detail="No tenant selected")
+
+    kb_file = _get_kb_file_by_id_or_404(db, file_id, workspace_id)
+
+    if kb_file.status != "ready" or not kb_file.s3_path:
+        raise HTTPException(status_code=404, detail="File not available")
+
+    if not settings.S3_KB_BUCKET:
+        logger.error(
+            "S3_KB_BUCKET is not configured; cannot generate signed URL for file_id=%s",
+            file_id,
+        )
+        raise HTTPException(status_code=500, detail="File storage is not configured")
+
+    file_type = (kb_file.file_type or "").lower()
+    preview_supported = file_type in ("pdf", "txt")
+
+    params = {
+        "Bucket": settings.S3_KB_BUCKET,
+        "Key": kb_file.s3_path,
+    }
+
+    if action == "download":
+        params["ResponseContentDisposition"] = _content_disposition(
+            "attachment", kb_file.original_filename
+        )
+    else:
+        # action == "view"
+        if preview_supported:
+            params["ResponseContentDisposition"] = "inline"
+            content_type = _CONTENT_TYPE_BY_FILE_TYPE.get(file_type)
+            if content_type:
+                params["ResponseContentType"] = content_type
+        else:
+            # DOCX (or any other non-previewable type): still return a
+            # presigned URL for a uniform response shape, but force download
+            # since inline viewing isn't meaningful in a browser.
+            params["ResponseContentDisposition"] = _content_disposition(
+                "attachment", kb_file.original_filename
+            )
+
+    try:
+        client = get_s3_client()
+        signed_url = client.generate_presigned_url(
+            "get_object",
+            Params=params,
+            ExpiresIn=KB_FILE_SIGNED_URL_EXPIRY_SECONDS,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to generate signed URL for kb file_id=%s: %s",
+            file_id,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Could not generate file URL")
+
+    return create_success_response(
+        KbFileAccessResponse(
+            file_id=kb_file.id,
+            filename=kb_file.original_filename,
+            file_type=kb_file.file_type,
+            action=action,
+            url=signed_url,
+            preview_supported=preview_supported,
+            expires_in=KB_FILE_SIGNED_URL_EXPIRY_SECONDS,
+        ),
+        "File access URL generated",
+    )
 
 
 # ── File management ───────────────────────────────────────────────────────────

@@ -171,6 +171,18 @@ class KnowledgeBaseRetrievePreviewResponse(BaseModel):
     retrieved_chunks: List[KnowledgeBaseRetrievedChunkOut]
 
 
+# ── File access (view/download) ────────────────────────────────────────────────
+
+class KbFileAccessResponse(BaseModel):
+    file_id: uuid.UUID
+    filename: str
+    file_type: str
+    action: str
+    url: str
+    preview_supported: bool
+    expires_in: int
+
+
 # ── Search ────────────────────────────────────────────────────────────────────
 
 class KbSearchResultItem(BaseModel):

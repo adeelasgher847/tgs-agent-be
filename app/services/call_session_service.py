@@ -356,15 +356,42 @@ class CallSessionService:
                             session_id, demo_exc,
                         )
 
-                if (
+                is_inbound_crm_sync_call = (
                     (call_session.call_type or "").lower() == "inbound"
                     and status in ("completed", "failed", "busy")
                     and tenant_has_active_inbound_crm(db, call_session.tenant_id)
-                ):
+                )
+                if is_inbound_crm_sync_call:
                     try:
                         schedule_inbound_crm_sync(call_session.id)
                     except Exception as sync_exc:  # pragma: no cover
                         logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
+
+                # Automatic call summary generation: run the LLM
+                # summary/sentiment/recommendations analysis once, right when
+                # the call completes, instead of relying on repeated
+                # client-triggered API calls. Enqueued as an ARQ background
+                # job (fail open) — see
+                # app/services/voice_analysis_service.py::schedule_call_summary_generation.
+                # Unlike the CRM write-back hooks below, this must fire for
+                # web/demo-link calls too — a demo call still has a real
+                # transcript worth summarizing, even without a CRM contact.
+                # Skipped when inbound CRM sync (above) is already going to run
+                # the exact same analysis for this call — enqueueing both
+                # would race two ARQ jobs into duplicate (paid) LLM calls
+                # instead of a single cached analysis.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        from app.services.voice_analysis_service import (
+                            schedule_call_summary_generation,
+                        )
+
+                        schedule_call_summary_generation(call_session.id)
+                    except Exception as summary_exc:  # pragma: no cover
+                        logger.warning(
+                            "Call summary generation schedule failed (non-critical): %s",
+                            summary_exc,
+                        )
 
                 # HubSpot post-call write-back: create a Call engagement with the
                 # transcript summary once the call has actually completed. Fire-and-forget

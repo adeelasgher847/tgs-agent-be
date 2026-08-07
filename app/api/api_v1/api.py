@@ -57,6 +57,7 @@ from app.routers.call_history import router as call_history_router
 from app.routers.call_history import batch_router as batch_call_metrics_router
 from app.routers.payments import router as payments_router
 from app.routers.amd_webhook import router as amd_webhook_router
+from app.routers.dashboard import router as dashboard_router
 
 api_router = APIRouter()
 api_router.include_router(health.router, tags=["Health"])
@@ -99,6 +100,7 @@ api_router.include_router(general_websocket_router, prefix="/general", tags=["Ge
 api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
+api_router.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
 api_router.include_router(provider.router, prefix="/providers", tags=["providers"], include_in_schema=True)
 api_router.include_router(model.router, prefix="/models", tags=["models"])
 api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"], include_in_schema=False)

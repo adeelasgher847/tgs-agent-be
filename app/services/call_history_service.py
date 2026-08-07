@@ -82,6 +82,7 @@ class CallHistoryService:
             func.count(no_answer_expr).label("no_answer"),
             func.avg(CallSession.duration).label("avg_duration_seconds"),
             func.sum(CallSession.duration).label("total_duration_seconds"),
+            func.sum(CallSession.cost).label("total_cost"),
             # success_rate computed entirely in Postgres
             func.round(
                 100.0
@@ -124,6 +125,7 @@ class CallHistoryService:
                 if row.success_rate_percent is not None
                 else None
             ),
+            total_cost=float(row.total_cost or 0),
         )
 
     # ── time-series ───────────────────────────────────────────────────────────

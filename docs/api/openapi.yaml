@@ -1939,38 +1939,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/folders/{folder_id}/flows/{flow_id}:
-    delete:
-      tags:
-      - Folders
-      summary: Remove Flow From Folder
-      operationId: remove_flow_from_folder_api_v1_folders__folder_id__flows__flow_id__delete
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: folder_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Folder Id
-      - name: flow_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Flow Id
-      responses:
-        '204':
-          description: Successful Response
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/folders/{folder_id}/flows/{flow_id}/move:
     put:
       tags:
@@ -3609,6 +3577,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/dashboard:
+    get:
+      tags:
+      - Dashboard
+      summary: Get Dashboard Summary
+      description: All data for the dashboard home view in a single response.
+      operationId: get_dashboard_summary_api_v1_dashboard_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_DashboardSummary_'
+      security:
+      - HTTPBearer: []
   /api/v1/providers/:
     post:
       tags:
@@ -5255,6 +5239,55 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_dict_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/kb/files/{file_id}:
+    get:
+      tags:
+      - Knowledge Base
+      summary: Get Kb File Access
+      description: 'Return a short-lived presigned S3 URL to view or download a KB
+        file.
+
+
+        Note: unlike other file endpoints on this router, this is not nested
+
+        under `/{kb_id}/` — tenant scoping is enforced by joining KbFile to its
+
+        parent KnowledgeBase''s workspace_id.'
+      operationId: get_kb_file_access_api_v1_kb_files__file_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: file_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: File Id
+      - name: action
+        in: query
+        required: true
+        schema:
+          enum:
+          - view
+          - download
+          type: string
+          description: Whether to return a URL for inline viewing or forced download.
+          title: Action
+        description: Whether to return a URL for inline viewing or forced download.
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_KbFileAccessResponse_'
         '422':
           description: Validation Error
           content:
@@ -10250,6 +10283,21 @@ components:
       title: AgentOut
       description: API agent projection — ticket fields only; never exposes BYO key
         or catalog UUIDs.
+    AgentRef:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: AgentRef
+      description: Embedded agent snapshot in flow responses.
     AgentStatusEnum:
       type: string
       enum:
@@ -11958,6 +12006,81 @@ components:
       type: object
       title: CallFlowDemoLinkUpdate
       description: Request body for ``PATCH /api/v1/call-flows/demo-links/{link_id}``.
+    CallFlowListItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        direction:
+          type: string
+          title: Direction
+        agentId:
+          type: string
+          format: uuid
+          title: Agentid
+        agent:
+          allOf:
+          - $ref: '#/components/schemas/AgentRef'
+          nullable: true
+        welcomeMessageType:
+          type: string
+          nullable: true
+        customWelcomeMessage:
+          type: string
+          nullable: true
+        currentPromptId:
+          type: string
+          format: uuid
+          nullable: true
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        settings:
+          additionalProperties: true
+          type: object
+          nullable: true
+        knowledgeBaseIds:
+          items:
+            type: string
+          type: array
+          title: Knowledgebaseids
+        folderIds:
+          items:
+            type: string
+            format: uuid
+          type: array
+          title: Folderids
+        publicAccess:
+          type: boolean
+          title: Publicaccess
+          default: false
+        status:
+          type: string
+          title: Status
+          default: active
+        createdAt:
+          type: string
+          format: date-time
+          title: Createdat
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - id
+      - name
+      - direction
+      - agentId
+      - createdAt
+      title: CallFlowListItem
+      description: Slim flow item used in the paginated list — no prompt_versions
+        payload.
     CallFlowSettingsUpdate:
       properties:
         public_access:
@@ -12121,6 +12244,9 @@ components:
           type: integer
           nullable: true
         success_rate_percent:
+          type: number
+          nullable: true
+        total_cost:
           type: number
           nullable: true
       type: object
@@ -13000,6 +13126,110 @@ components:
       - created_at
       - message
       title: CreatePhoneNumberResponse
+    DashboardKbItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        file_count:
+          type: integer
+          title: File Count
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - name
+      - description
+      - file_count
+      - created_at
+      title: DashboardKbItem
+      description: Minimal knowledge-base summary card for the dashboard.
+    DashboardRecentCallItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        status:
+          type: string
+          title: Status
+        summary:
+          type: string
+          nullable: true
+        call_type:
+          type: string
+          nullable: true
+        duration:
+          type: integer
+          nullable: true
+        cost:
+          type: number
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - status
+      - summary
+      - call_type
+      - duration
+      - cost
+      - created_at
+      title: DashboardRecentCallItem
+      description: Minimal call summary card for the dashboard.
+    DashboardSummary:
+      properties:
+        monthly_spent:
+          type: number
+          title: Monthly Spent
+        monthly_calls:
+          type: integer
+          title: Monthly Calls
+        success_rate_percent:
+          type: number
+          nullable: true
+        credits:
+          type: number
+          title: Credits
+        recent_call_flows:
+          items:
+            $ref: '#/components/schemas/CallFlowListItem'
+          type: array
+          title: Recent Call Flows
+        recent_knowledge_bases:
+          items:
+            $ref: '#/components/schemas/DashboardKbItem'
+          type: array
+          title: Recent Knowledge Bases
+        recent_calls:
+          items:
+            $ref: '#/components/schemas/DashboardRecentCallItem'
+          type: array
+          title: Recent Calls
+      type: object
+      required:
+      - monthly_spent
+      - monthly_calls
+      - success_rate_percent
+      - credits
+      - recent_call_flows
+      - recent_knowledge_bases
+      - recent_calls
+      title: DashboardSummary
+      description: All data needed to render the dashboard home view in a single response.
     DataExportStatusOut:
       properties:
         status:
@@ -14095,6 +14325,40 @@ components:
       - created_at
       - files
       title: KbDetail
+    KbFileAccessResponse:
+      properties:
+        file_id:
+          type: string
+          format: uuid
+          title: File Id
+        filename:
+          type: string
+          title: Filename
+        file_type:
+          type: string
+          title: File Type
+        action:
+          type: string
+          title: Action
+        url:
+          type: string
+          title: Url
+        preview_supported:
+          type: boolean
+          title: Preview Supported
+        expires_in:
+          type: integer
+          title: Expires In
+      type: object
+      required:
+      - file_id
+      - filename
+      - file_type
+      - action
+      - url
+      - preview_supported
+      - expires_in
+      title: KbFileAccessResponse
     KbFileOut:
       properties:
         id:
@@ -17397,6 +17661,22 @@ components:
       required:
       - data
       title: SuccessResponse[CreatePhoneNumberResponse]
+    SuccessResponse_DashboardSummary_:
+      properties:
+        data:
+          $ref: '#/components/schemas/DashboardSummary'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[DashboardSummary]
     SuccessResponse_DeleteBoardItemsResponse_:
       properties:
         data:
@@ -17685,6 +17965,22 @@ components:
       required:
       - data
       title: SuccessResponse[KbDetail]
+    SuccessResponse_KbFileAccessResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/KbFileAccessResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[KbFileAccessResponse]
     SuccessResponse_KbFileStatusOut_:
       properties:
         data:

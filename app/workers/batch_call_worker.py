@@ -309,6 +309,34 @@ async def ghl_post_call_writeback(ctx: dict, call_session_id: str) -> None:
     await _post_call_writeback_arq_task(ctx, call_session_id)
 
 
+# ── Automatic call summary generation ─────────────────────────────────────────
+
+
+async def generate_call_summary(ctx: dict, call_session_id: str) -> None:
+    """
+    ARQ job: generate the call summary/sentiment/recommendations analysis for
+    a completed call. Enqueued by
+    app.services.voice_analysis_service.schedule_call_summary_generation on
+    call completion.
+    """
+    from app.services.voice_analysis_service import _generate_call_summary_arq_task
+
+    await _generate_call_summary_arq_task(ctx, call_session_id)
+
+
+async def finalize_call_recording(ctx: dict, call_session_id: str, attempt: int = 1) -> None:
+    """
+    ARQ job: poll LiveKit egress status and finalize a call recording, retrying
+    with backoff while the egress is still ENDING. Enqueued by
+    app.services.call_recording_upload_service.schedule_recording_upload, and
+    re-enqueues itself (via ctx["redis"]) on each non-terminal status until
+    COMPLETE, a genuine failure, or attempts are exhausted.
+    """
+    from app.services.call_recording_upload_service import _finalize_call_recording_arq_task
+
+    await _finalize_call_recording_arq_task(ctx, call_session_id, attempt)
+
+
 # ── Smart Callback tasks (ARQ-based replacement for APScheduler polling) ─────
 
 
@@ -607,6 +635,8 @@ class WorkerSettings:
         kb_ingestion_task,
         execute_callback,
         ghl_post_call_writeback,
+        generate_call_summary,
+        finalize_call_recording,
         purge_old_audit_logs,
         run_data_export_job,
         # poll_pending_callbacks kept for manual/admin invocation; not in cron_jobs
