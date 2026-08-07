@@ -15,6 +15,7 @@ class CallHistoryMetrics(BaseModel):
     avg_duration_seconds: float | None
     total_duration_seconds: int | None
     success_rate_percent: float | None
+    total_cost: float | None = None
 
 
 class CallHistoryTimeSeriesPoint(BaseModel):
