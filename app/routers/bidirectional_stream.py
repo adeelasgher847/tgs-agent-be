@@ -123,8 +123,8 @@ from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
 )
-from app.voice.tone_adapter import tone_adapter
 from app.voice.turn_signals import TurnContext, build_turn_context, build_user_signals_block
+from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
 from app.core.config import settings
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
 from app.voice.stt_pipeline import SttPipeline
@@ -1405,6 +1405,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             from datetime import datetime, timezone
             import json
 
+            # Ambient per-turn context for TtsPipeline's humanization decision
+            # (app.voice.humanization_engine) — read via getattr, never required,
+            # so any change here can't break TTS. Confidence is threaded through
+            # too so the engine's mood detection matches this turn's own
+            # build_turn_context() call below (confidence-gated mood buckets).
+            self._current_turn_user_text = user_text
+            self._current_turn_stt_confidence = confidence
+
             # Refresh call session from database to capture any dynamic metadata updates (e.g. payment_url injection)
             if self.call_session and self.db:
                 try:
@@ -2034,62 +2042,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
 
                 def _find_flush_index(buf: str):
-                    """
-                    Return an index (end-exclusive) where we can safely flush.
-                    Prefer sentence boundaries. Fallback to comma/semicolon if buffer is getting long.
-                    """
-                    if not buf:
-                        return None
-
-                    nl = buf.find("\n")
-                    if nl != -1:
-                        prefix = buf[:nl].strip()
-                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
-                            return nl
-
-                    # Prefer sentence boundaries: ., !, ? followed by whitespace/newline/end
-                    last_boundary = None
-                    for m in re.finditer(r"([.!?])(\s+|$)", buf):
-                        last_boundary = m.end(1)
-
-                    if last_boundary is not None:
-                        prefix = buf[:last_boundary].strip()
-                        if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
-                            return last_boundary
-
-                    # If the buffer is getting long, allow a softer boundary split
-                    words = buf.split()
-                    if len(words) >= self.TTS_FLUSH_MAX_WORDS:
-                        last_soft = None
-                        for m in re.finditer(r"([,;:])(\s+|$)", buf):
-                            last_soft = m.end(1)
-                        if last_soft is not None:
-                            prefix = buf[:last_soft].strip()
-                            if len(prefix.split()) >= self.TTS_FLUSH_MIN_WORDS:
-                                return last_soft
-
-                    return None
+                    return find_sentence_flush_index(
+                        buf, self.TTS_FLUSH_MIN_WORDS, self.TTS_FLUSH_MAX_WORDS
+                    )
 
                 def _find_time_flush_index(buf: str):
-                    """
-                    Time-based flush (Vapi-style): if punctuation is delayed, flush on a safe word boundary
-                    so we can start speaking fast. Returns an index (end-exclusive) or None.
-                    """
-                    if not buf:
-                        return None
-                    words = buf.split()
-                    # Lower floor to 2 words (was hardcoded 5): allows the 150ms time
+                    # Floor lowered to 2 words (was hardcoded 5): allows the time
                     # gate to flush short confident fragments like "Sure," or "Got it."
                     # without waiting for a full sentence to accumulate first.
-                    if len(words) < max(self.TTS_FLUSH_MIN_WORDS, 2):
-                        return None
-
-                    # Flush around ~4-6 words to start speaking quickly.
-                    target_words = min(_time_flush_target_words, len(words))
-                    m = re.match(rf"^(?:\\S+\\s+){{{target_words - 1}}}\\S+", buf)
-                    if not m:
-                        return None
-                    return m.end()
+                    return find_time_flush_index(
+                        buf,
+                        max(self.TTS_FLUSH_MIN_WORDS, 2),
+                        _time_flush_target_words,
+                    )
 
                 _first_token_marked = False
                 _first_token_recorded = False
@@ -2177,7 +2142,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             else:
                                 enhanced_text = quick_clean(flush_text)
 
-                            enhanced_text = tone_adapter(enhanced_text, turn_context, self._use_ssml)
+                            # Tone adaptation now happens once, centrally, inside
+                            # TtsPipeline._process_chunk (app.voice.humanization_engine)
+                            # — not here, to avoid applying it twice.
 
                             chunk_counter += 1
                             if self._tts_pipeline:
@@ -2231,7 +2198,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     else:
                         enhanced_text = quick_clean(tts_buffer)
 
-                    enhanced_text = tone_adapter(enhanced_text, turn_context, self._use_ssml)
+                    # Tone adaptation now happens once, centrally, inside
+                    # TtsPipeline._process_chunk (app.voice.humanization_engine)
+                    # — not here, to avoid applying it twice.
 
                     chunk_counter += 1
                     if self._tts_pipeline:
@@ -2357,7 +2326,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
                             if final_text and not self._tts_cancel.is_set():
                                 safe_tts_text = self._prepare_tts_text(final_text)
-                                out_text = tone_adapter(safe_tts_text.strip(), turn_context, self._use_ssml)
+                                # Tone adaptation now happens once, centrally, inside
+                                # TtsPipeline._process_chunk — not here.
+                                out_text = safe_tts_text.strip()
                                 if not out_text:
                                     out_text = "One moment please."
                                 chunk_counter += 1
@@ -2373,7 +2344,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         except Exception as e:
                             logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
                             final_text = _fallback_msg
-                            utt = tone_adapter(final_text, turn_context, self._use_ssml)
+                            # Tone adaptation now happens once, centrally, inside
+                            # TtsPipeline._process_chunk — not here.
+                            utt = final_text
                             chunk_counter += 1
                             if self._tts_pipeline:
                                 await self._tts_pipeline.queue_tts({

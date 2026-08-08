@@ -15,6 +15,7 @@ from app.utils.eleven_tts_text import (
     strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
+from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,13 @@ class ConversationOrchestrator:
         """
 
         try:
+            # Ambient per-turn context for TtsPipeline's humanization decision
+            # (app.voice.humanization_engine) — read via getattr, never required,
+            # so any change here can't break TTS. Set on the shared call handler
+            # (self._h), the same object TtsPipeline._handler references.
+            self._h._current_turn_user_text = user_text
+            self._h._current_turn_stt_confidence = confidence
+
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
                 # Get greeting from agent or use default. Prefer greeting_message
@@ -731,47 +739,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     return out
 
                 def _find_flush_index(buf: str):
-                    if not buf:
-                        return None
-
-                    nl = buf.find("\n")
-                    if nl != -1:
-                        prefix = buf[:nl].strip()
-                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                            return nl
-
-                    last_boundary = None
-                    for m in re.finditer(r"([.!?])(\s+|$)", buf):
-                        last_boundary = m.end(1)
-
-                    if last_boundary is not None:
-                        prefix = buf[:last_boundary].strip()
-                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                            return last_boundary
-
-                    words = buf.split()
-                    if len(words) >= self._h.TTS_FLUSH_MAX_WORDS:
-                        last_soft = None
-                        for m in re.finditer(r"([,;:])(\s+|$)", buf):
-                            last_soft = m.end(1)
-                        if last_soft is not None:
-                            prefix = buf[:last_soft].strip()
-                            if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                                return last_soft
-                    return None
+                    return find_sentence_flush_index(
+                        buf, self._h.TTS_FLUSH_MIN_WORDS, self._h.TTS_FLUSH_MAX_WORDS
+                    )
 
                 def _find_time_flush_index(buf: str):
-                    if not buf:
-                        return None
-                    words = buf.split()
-                    if len(words) < max(self._h.TTS_FLUSH_MIN_WORDS, 5):
-                        return None
-
-                    target_words = min(8, len(words))
-                    m = re.match(rf"^(?:\S+\s+){{{target_words - 1}}}\S+", buf)
-                    if not m:
-                        return None
-                    return m.end()
+                    return find_time_flush_index(
+                        buf, max(self._h.TTS_FLUSH_MIN_WORDS, 5), 8
+                    )
 
                 async for chunk in service.stream_text(
                     prompt=user_text,

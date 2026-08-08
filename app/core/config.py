@@ -566,6 +566,16 @@ class Settings(BaseSettings):
     VOICE_TTS_STREAM_MIN_WORDS: int = 2
     # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.
     VOICE_TTS_PRIME_FRAMES: int = 1
+    # Phase 4C-2/4C-3: extra 0xFF silence frames (20ms each) appended after a
+    # non-final TTS chunk that ends at a real sentence boundary, so
+    # multi-sentence responses get a small human-like breath between
+    # sentences. Shared by both transports (app.voice.tts_stream_mixin,
+    # app.voice.livekit_browser_call_handler) — see HumanizationDecision.pacing.
+    # Set to 0 to fully disable (identical to pre-4C-2 behavior).
+    # Phase 4C-3: enabled at 3 frames (60ms) — code-level correctness only;
+    # this value has NOT been validated against real call audio (no live-call
+    # testing available in this environment). Revisit after real listening.
+    VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES: int = 3
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
     # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback
@@ -576,6 +586,11 @@ class Settings(BaseSettings):
     # skip heavy RAG/KB context for obvious non-booking smalltalk.
     VOICE_ENABLE_LATENCY_FASTPATH: bool = True
     VOICE_FASTPATH_MAX_WORDS: int = 7
+    # Centralized, provider-agnostic humanization decision layer
+    # (app.voice.humanization_engine). Phase 3A: decision-only, not yet wired
+    # into any call flow. When False, analyze_response() always returns a
+    # neutral "no humanization" decision.
+    VOICE_ENABLE_HUMANIZATION_ENGINE: bool = True
 
     # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
     # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span

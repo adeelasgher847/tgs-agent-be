@@ -40,6 +40,7 @@ import time
 from typing import Any, Dict
 
 from app.core.logger import logger
+from app.voice.humanization_engine import analyze_response
 
 # ── Tuning constants ──────────────────────────────────────────────────────────
 
@@ -429,6 +430,41 @@ class TtsPipeline:
             use_ssml = task.get("use_ssml", False)
             is_final = task.get("is_final", False)
 
+            # ── Humanization decision (shared point for both call transports) ──
+            # Cheap, synchronous, in-memory only (see app.voice.humanization_engine
+            # docstring) — never blocks or adds latency to synthesis below. The
+            # decision is attached to `task` so handler._prefetch_tts_audio can
+            # fold provider-safe hints (e.g. ElevenLabs stability) into the
+            # settings it already builds, without TtsPipeline knowing about any
+            # provider itself. `decision.text` (tone_adapter output) becomes the
+            # single final text used for both synthesis and streaming below —
+            # this is the ONE place tone adaptation runs for both transports, so
+            # callers (bidirectional_stream.py, conversation_orchestrator.py)
+            # must not also call tone_adapter() themselves. Failure here must
+            # never prevent TTS — on any error the decision is absent and the
+            # original `text` is used exactly as before this integration.
+            decision = None
+            try:
+                _user_text = getattr(self._handler, "_current_turn_user_text", "") or ""
+                _stt_confidence = getattr(self._handler, "_current_turn_stt_confidence", 0.0) or 0.0
+                decision = analyze_response(
+                    text,
+                    user_text=_user_text,
+                    stt_confidence=_stt_confidence,
+                    use_ssml=bool(use_ssml),
+                    is_final=bool(is_final),
+                )
+                task["_humanization_decision"] = decision
+                if decision and decision.text:
+                    text = decision.text
+                    task["text"] = text
+            except Exception as exc:
+                logger.debug(
+                    "[TTS] humanization decision skipped for chunk %d: %s", chunk_id, exc
+                )
+                task["_humanization_decision"] = None
+                decision = None
+
             # ── Phase 1: Synthesis ─────────────────────────────────────────────
             # Runs in parallel with previous chunks' Twilio frame streaming.
             t0 = time.perf_counter()
@@ -514,11 +550,18 @@ class TtsPipeline:
             # ── Phase 3: Stream frames to Twilio ─────────────────────────────
             # handler._stream_tts_chunk checks cancel_event per 20ms frame so
             # barge-in takes effect within one frame period even mid-chunk.
+            # `pacing` (Phase 4C-2) is the SAME PacingHint already computed
+            # above by analyze_response() — never recomputed here — passed
+            # through so the handler can optionally append a small trailing
+            # silence after eligible sentence-boundary chunks. `decision` may
+            # be None if humanization failed/disabled above; that's a valid,
+            # safe input (see humanization_engine.pause_frames_for_chunk).
             await self._handler._stream_tts_chunk(  # type: ignore[attr-defined]
                 text,
                 use_ssml=use_ssml,
                 is_final=is_final,
                 prefetched_bytes=audio_bytes,
+                pacing=decision.pacing if decision is not None else None,
             )
 
         except asyncio.CancelledError:

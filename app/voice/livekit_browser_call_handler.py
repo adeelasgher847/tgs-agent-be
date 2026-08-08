@@ -47,7 +47,7 @@ import dataclasses
 import struct
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -56,6 +56,10 @@ from app.services.transcript_service import transcript_service
 from app.utils.audio_utils import MULAW_FRAME_BYTES, ulaw_to_linear_sample
 from app.utils.ssml_utils import strip_ssml_tags
 from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_TUNABLES
+from app.voice.humanization_engine import pause_frames_for_chunk
+
+if TYPE_CHECKING:
+    from app.voice.humanization_engine import PacingHint
 
 # ── Design decision: agent TTS-out audio format ─────────────────────────────
 # We publish mu-law 8kHz audio converted to LINEAR16 PCM, not native
@@ -538,6 +542,7 @@ class LiveKitBrowserCallHandler:
             from app.services.google_tts_service import google_tts_service
             from app.utils.eleven_tts_text import prepare_tts_text_for_provider
             from app.utils.tts_adapter import get_tts_adapter
+            from app.voice.tts_provider_capabilities import build_voice_settings_overlay
 
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
@@ -576,6 +581,21 @@ class LiveKitBrowserCallHandler:
                     pass
                 else:
                     provider_settings.setdefault("output_format", "ulaw_8000")
+
+                # Fold in any humanization overlay (e.g. ElevenLabs stability hint)
+                # computed by TtsPipeline._process_chunk. Capability-gated and a
+                # no-op for providers/decisions with nothing safe to apply — see
+                # app.voice.tts_provider_capabilities.build_voice_settings_overlay.
+                # Isolated try/except: a humanization failure must never prevent
+                # this chunk's TTS request from going out with normal settings.
+                try:
+                    provider_settings.update(
+                        build_voice_settings_overlay(
+                            tts_provider_slug, task.get("_humanization_decision")
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug("[TTS] humanization overlay skipped: %s", exc)
 
                 # Prefer true async streaming for providers that support it (Rime, ElevenLabs).
                 if hasattr(adapter, "async_stream_synthesize"):
@@ -715,8 +735,19 @@ class LiveKitBrowserCallHandler:
         use_ssml: bool = False,
         is_final: bool = False,
         prefetched_bytes: Any = None,
+        pacing: "PacingHint | None" = None,
     ) -> None:
-        """Publish one TTS chunk's audio into the LiveKit room (TtsPipeline's audio sink)."""
+        """
+        Publish one TTS chunk's audio into the LiveKit room (TtsPipeline's audio sink).
+
+        `pacing` (Phase 4C-2, optional): the HumanizationDecision.pacing hint
+        already computed once by TtsPipeline._process_chunk — never
+        recomputed here. When eligible, a small trailing silence is appended
+        after this chunk's real audio (see
+        app.voice.humanization_engine.pause_frames_for_chunk). Defaults to
+        None and is fully inert when omitted or when
+        VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES is 0.
+        """
         if not text or not text.strip() or self._tts_cancel.is_set():
             return
 
@@ -767,6 +798,30 @@ class LiveKitBrowserCallHandler:
                         "(call_session_id=%s)", len(source), self.call_session_id,
                     )
                     await publisher.publish_mulaw(source, cancel=self._tts_cancel)
+
+                # Phase 4C-2: optional small trailing silence after a non-final
+                # chunk ending at a real sentence boundary — same eligibility
+                # rule as Twilio (pause_frames_for_chunk), executed via the
+                # same publisher.publish_mulaw() used for all other frames so
+                # cancellation is checked identically. Deliberately placed
+                # INSIDE this try block, before `finally` resets
+                # _is_tts_playing — LiveKit's barge-in gate reads
+                # _is_tts_playing per chunk (see _maybe_process_interim), so
+                # this keeps barge-in active through the pause instead of
+                # silently going inactive between chunks.
+                if not self._tts_cancel.is_set():
+                    try:
+                        for _ in range(pause_frames_for_chunk(pacing, is_final)):
+                            if self._tts_cancel.is_set():
+                                break
+                            await publisher.publish_mulaw(
+                                bytes([0xFF]) * MULAW_FRAME_BYTES, cancel=self._tts_cancel
+                            )
+                    except Exception as pause_err:
+                        logger.debug(
+                            "[LiveKitBrowserCall] inter-sentence pause failed (non-fatal): %s",
+                            pause_err,
+                        )
             finally:
                 self.is_speaking = False
                 self._is_tts_playing = False
