@@ -296,7 +296,6 @@ class LiveKitBrowserCallHandler:
         # No Twilio jitter buffer exists on this path — treat as always
         # primed so TtsPipeline/ConversationOrchestrator never wait on it.
         self._twilio_buffer_primed = True
-        self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True
 
         self._llm_response_task: asyncio.Task | None = None
@@ -572,7 +571,13 @@ class LiveKitBrowserCallHandler:
                 provider_settings = dict(tts_runtime.settings_json)
                 if tts_provider_slug == "elevenlabs":
                     provider_settings.setdefault("output_format", "ulaw_8000")
-                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                    # Phase 4D-2: read the previously QUEUED chunk's text — captured
+                    # synchronously by TtsPipeline.queue_tts() at enqueue time — not
+                    # a shared instance attribute mutated after some other chunk's
+                    # playback completes (that was the source of the stale
+                    # `previous_text` race: chunk N+1's prefetch commonly runs
+                    # concurrently with chunk N still playing).
+                    previous_text = (task.get("_previous_text") or "").strip()
                     if previous_text:
                         provider_settings["previous_text"] = previous_text[-500:]
                 elif tts_provider_slug == "rime":
@@ -736,6 +741,7 @@ class LiveKitBrowserCallHandler:
         is_final: bool = False,
         prefetched_bytes: Any = None,
         pacing: "PacingHint | None" = None,
+        previous_text: str | None = None,
     ) -> None:
         """
         Publish one TTS chunk's audio into the LiveKit room (TtsPipeline's audio sink).
@@ -747,6 +753,13 @@ class LiveKitBrowserCallHandler:
         app.voice.humanization_engine.pause_frames_for_chunk). Defaults to
         None and is fully inert when omitted or when
         VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES is 0.
+
+        `previous_text` (Phase 4D-2, optional): the previously QUEUED chunk's
+        text, captured synchronously by TtsPipeline.queue_tts() — threaded
+        through only for the rare fallback re-prefetch below (when
+        `prefetched_bytes` wasn't already supplied); the common path never
+        reaches this since `_prefetch_tts_audio` reads the same value
+        directly off the task dict TtsPipeline built.
         """
         if not text or not text.strip() or self._tts_cancel.is_set():
             return
@@ -763,7 +776,9 @@ class LiveKitBrowserCallHandler:
             try:
                 source = prefetched_bytes
                 if source is None:
-                    source = await self._prefetch_tts_audio({"text": text, "use_ssml": use_ssml})
+                    source = await self._prefetch_tts_audio(
+                        {"text": text, "use_ssml": use_ssml, "_previous_text": previous_text}
+                    )
                 if source is None or self._tts_cancel.is_set():
                     return
 
@@ -775,20 +790,14 @@ class LiveKitBrowserCallHandler:
                         "incrementally (call_session_id=%s)", self.call_session_id,
                     )
                     await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
-
-                    # Mirrors TtsStreamMixin._stream_tts_chunk: record the text
-                    # just streamed as ElevenLabs "previous_text" context for the
-                    # next chunk's prosody continuity, once streaming completes
-                    # (not at prefetch time — that runs concurrently with the
-                    # prior chunk still playing and would race the ordering).
-                    if not self._tts_cancel.is_set():
-                        try:
-                            from app.core.agent_runtime import resolve_tts_runtime
-
-                            if resolve_tts_runtime(self.agent, db=self.db).adapter_slug == "elevenlabs":
-                                self._elevenlabs_prev_tts_text = text.strip()[-500:]
-                        except Exception:  # noqa: S110 - best-effort continuity hint only
-                            pass
+                    # NOTE (Phase 4D-2): previously wrote `text` into
+                    # self._elevenlabs_prev_tts_text here, post-playback, as the
+                    # "previous_text" source for the NEXT chunk. That write raced
+                    # the next chunk's prefetch (which typically starts while THIS
+                    # chunk is still playing) and is no longer read by anything —
+                    # TtsPipeline.queue_tts() now captures the next chunk's
+                    # previous_text synchronously at queue time instead. See
+                    # app.voice.tts_pipeline.TtsPipeline._last_queued_text.
                 elif isinstance(source, (bytes, bytearray)) and source:
                     # Defensive fallback: _prefetch_tts_audio always returns an
                     # async iterator or None above, but keep this path so a

@@ -233,7 +233,14 @@ class ConversationOrchestrator:
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
-            self._h._elevenlabs_prev_tts_text = ""  # Reset provider continuity state per response turn
+            # Reset ElevenLabs `previous_text` continuity tracking (Phase 4D-2).
+            # Unconditional, every turn — NOT just on barge-in — because
+            # cancel_current_and_clear_queue()'s reset only fires on an actual
+            # barge-in path (e.g. LiveKitBrowserCallHandler._process_transcript()
+            # skips it entirely on a normal, non-barge-in turn). Shared by both
+            # transports since this orchestrator is transport-agnostic.
+            if self._h._tts_pipeline:
+                self._h._tts_pipeline.reset_previous_text_continuity()
             self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             # Send quick acknowledgement for longer queries (instant from cache!)

@@ -478,10 +478,14 @@ async def test_livekit_short_acknowledgement_publishes_no_extra_frames(monkeypat
 async def test_livekit_pacing_introduces_no_extra_resolve_tts_runtime_calls(monkeypatch):
     """
     Phase 4C-3 requirement: pacing must not add provider/runtime-resolution
-    calls. _stream_tts_chunk already calls resolve_tts_runtime once (for the
-    existing ElevenLabs previous_text continuity check) independent of
-    pacing — verify an eligible (paused) chunk makes exactly the same number
-    of calls as an ineligible (unpaused) one, i.e. pacing adds zero.
+    calls. As of Phase 4D-2, _stream_tts_chunk's streaming-publish branch no
+    longer calls resolve_tts_runtime itself for the (now-removed) post-
+    playback ElevenLabs previous_text write — that continuity value is
+    captured synchronously by TtsPipeline.queue_tts() instead (see
+    app.voice.tts_pipeline.TtsPipeline._last_queued_text) and no longer
+    requires a runtime lookup here. Verify an eligible (paused) chunk still
+    makes exactly the same number of calls as an ineligible (unpaused) one,
+    i.e. pacing adds zero either way.
     """
     monkeypatch.setattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 3)
 
@@ -498,7 +502,7 @@ async def test_livekit_pacing_introduces_no_extra_resolve_tts_runtime_calls(monk
             )
             call_counts[label] = mock_resolve.call_count
 
-    assert call_counts["eligible"] == call_counts["ineligible"] == 1
+    assert call_counts["eligible"] == call_counts["ineligible"] == 0
 
 
 @pytest.mark.asyncio

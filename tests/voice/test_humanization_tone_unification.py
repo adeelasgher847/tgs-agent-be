@@ -131,7 +131,13 @@ class _FakeHandler:
         return b"\xff" * 160
 
     async def _stream_tts_chunk(
-        self, text, use_ssml=False, is_final=False, prefetched_bytes=None, pacing=None
+        self,
+        text,
+        use_ssml=False,
+        is_final=False,
+        prefetched_bytes=None,
+        pacing=None,
+        previous_text=None,
     ):
         pass
 

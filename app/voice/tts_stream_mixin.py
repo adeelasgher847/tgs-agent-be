@@ -141,6 +141,7 @@ class TtsStreamMixin:
         is_final: bool = False,
         prefetched_bytes: Any = None,
         pacing: "PacingHint | None" = None,
+        previous_text: str | None = None,
     ):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -154,7 +155,15 @@ class TtsStreamMixin:
         app.voice.humanization_engine.pause_frames_for_chunk). Defaults to
         None and is fully inert when omitted or when the config is 0.
         Note: Does NOT clear cancel flag - respects barge-in for entire queue.
-        
+
+        `previous_text` (Phase 4D-2, optional): the previously QUEUED chunk's
+        text, captured synchronously by TtsPipeline.queue_tts() — used to set
+        ElevenLabs' `previous_text` continuity field ONLY in the rare
+        fallback path below where `_prefetch_tts_audio` did not already
+        return an async iterator (e.g. it errored/returned None). The common
+        path never reaches this: `_prefetch_tts_audio` reads the same value
+        directly from the task dict.
+
         Args:
             text: Text or SSML to convert to speech
             use_ssml: Whether text contains SSML markup
@@ -447,9 +456,9 @@ class TtsStreamMixin:
                                 provider_settings = dict(tts_runtime.settings_json)
                                 if tts_provider_slug == "elevenlabs":
                                     provider_settings.setdefault("output_format", "ulaw_8000")
-                                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
-                                    if previous_text:
-                                        provider_settings["previous_text"] = previous_text[-500:]
+                                    _prev_text = (previous_text or "").strip()
+                                    if _prev_text:
+                                        provider_settings["previous_text"] = _prev_text[-500:]
                                 elif tts_provider_slug == "rime":
                                     # Rime uses async_stream_synthesize — no output_format key needed
                                     # (mulaw 8 kHz is the default in RimeTTSAdapter).
@@ -524,8 +533,14 @@ class TtsStreamMixin:
                                 )
 
                             await stream_mulaw_from_audio_iter(audio_iter)
-                            if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():
-                                self._elevenlabs_prev_tts_text = streaming_text[-500:]
+                            # NOTE (Phase 4D-2): previously wrote streaming_text into
+                            # self._elevenlabs_prev_tts_text here, post-playback, as the
+                            # "previous_text" source for the NEXT chunk. That write raced
+                            # the next chunk's prefetch (which typically starts while THIS
+                            # chunk is still playing) and is no longer read by anything —
+                            # TtsPipeline.queue_tts() now captures the next chunk's
+                            # previous_text synchronously at queue time instead. See
+                            # app.voice.tts_pipeline.TtsPipeline._last_queued_text.
                             return  # streaming path complete
                         except Exception as e:
                             logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
@@ -718,7 +733,13 @@ class TtsStreamMixin:
                 provider_settings = dict(tts_runtime.settings_json)
                 if tts_provider_slug == "elevenlabs":
                     provider_settings.setdefault("output_format", "ulaw_8000")
-                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                    # Phase 4D-2: read the previously QUEUED chunk's text — captured
+                    # synchronously by TtsPipeline.queue_tts() at enqueue time — not
+                    # a shared instance attribute mutated after some other chunk's
+                    # playback completes (that was the source of the stale
+                    # `previous_text` race: chunk N+1's prefetch commonly runs
+                    # concurrently with chunk N still playing).
+                    previous_text = (task.get("_previous_text") or "").strip()
                     if previous_text:
                         provider_settings["previous_text"] = previous_text[-500:]
                 elif tts_provider_slug == "rime":

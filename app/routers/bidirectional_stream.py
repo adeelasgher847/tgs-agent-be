@@ -285,7 +285,6 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: TtsPipeline | None = None
-        self._elevenlabs_prev_tts_text = ""
         self._use_ssml = True                # Enable SSML by default
         # Quick-ack dedup guard: prevent repeated acknowledgements for the same
         # user turn when interim/final regeneration paths overlap.

@@ -107,6 +107,15 @@ class TtsPipeline:
         # LRU audio cache: normalised text → raw μ-law bytes
         self._audio_cache: Dict[str, bytes] = {}
 
+        # ── ElevenLabs `previous_text` continuity (Phase 4D-2 fix) ─────────
+        # Tracks the text of the LAST chunk QUEUED (not the last chunk that
+        # finished PLAYING). Captured synchronously inside queue_tts() before
+        # the next chunk's task is spawned, so it can never race with
+        # playback completion the way a post-playback-mutated attribute can.
+        # This is now the single authoritative source for a queued chunk's
+        # ElevenLabs `previous_text` — see queue_tts() and _reset_turn_state().
+        self._last_queued_text: str | None = None
+
         # Backpressure: limits simultaneous TTS API calls.
         # Acquired inside _process_chunk before synthesis; released after.
         # queue_tts() always returns instantly — tasks queue up inside themselves.
@@ -170,6 +179,18 @@ class TtsPipeline:
             self._turn_cache_hits = 0
 
         self._turn_chunk_count += 1
+
+        # ── Capture ElevenLabs `previous_text` continuity synchronously ────
+        # Must happen HERE — before this chunk's task is spawned — not via a
+        # value mutated after some OTHER chunk finishes playing. This is what
+        # prevents chunk N+1's prefetch (which can run concurrently with
+        # chunk N still playing) from ever racing chunk N's post-playback
+        # state update: there is no post-playback writer to race anymore.
+        # `text` here is the raw, pre-humanization chunk text (humanization
+        # mutates task["text"] later, inside the spawned task) — acceptable
+        # since only minor wording changes are possible there.
+        task["_previous_text"] = self._last_queued_text
+        self._last_queued_text = text
 
         # Gate for this chunk must exist before the task starts.
         # For chunk 0 after _reset_turn_state it was pre-created (unset).
@@ -264,6 +285,32 @@ class TtsPipeline:
         if hasattr(self._handler, "_prev_tts_tail"):
             self._handler._prev_tts_tail = b""
 
+    def reset_previous_text_continuity(self) -> None:
+        """
+        Reset ElevenLabs `previous_text` continuity tracking for a fresh turn,
+        WITHOUT touching gate-chain / _turn_id / is_speaking state.
+
+        Callers must invoke this unconditionally at the start of EVERY new
+        agent turn — not just on barge-in — mirroring the old (pre-Phase
+        4D-2) unconditional `self._h._elevenlabs_prev_tts_text = ""` reset
+        that used to run at the top of
+        ConversationOrchestrator.generate_and_stream_response() for both
+        transports.
+
+        cancel_current_and_clear_queue() (-> _reset_turn_state()) already
+        resets _last_queued_text too, but it ONLY runs on an actual
+        barge-in/cancel path. On a normal (non-barge-in) turn — e.g. the
+        common LiveKitBrowserCallHandler._process_transcript() path when the
+        agent already finished speaking — nothing else clears
+        _last_queued_text between turns, so without this dedicated reset the
+        first chunk of a brand-new turn would incorrectly inherit the
+        previous turn's last chunk as its `previous_text`. This method is
+        the surgical fix: it clears only the one field relevant here,
+        leaving gate/turn-id/is_speaking state (which must NOT be disturbed
+        outside of an actual cancel) untouched.
+        """
+        self._last_queued_text = None
+
     def clear_audio_cache(self) -> None:
         """Discard all cached audio bytes (e.g., after voice/provider change)."""
         self._audio_cache.clear()
@@ -311,6 +358,9 @@ class TtsPipeline:
         self._turn_chunk_count = 0
         self._turn_cache_hits = 0
         self._turn_start_ts = 0.0
+        # New turn (or barge-in) must not inherit the previous turn's last
+        # chunk text as `previous_text` for its first chunk.
+        self._last_queued_text = None
         # Increment BEFORE replacing the gate dict so any zombie task that
         # woke up between the clear() above and the assignment below still
         # sees the old turn_id and bails out.
@@ -562,6 +612,7 @@ class TtsPipeline:
                 is_final=is_final,
                 prefetched_bytes=audio_bytes,
                 pacing=decision.pacing if decision is not None else None,
+                previous_text=task.get("_previous_text"),
             )
 
         except asyncio.CancelledError:
