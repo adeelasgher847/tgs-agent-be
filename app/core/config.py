@@ -691,12 +691,14 @@ class Settings(BaseSettings):
 
     # Phase 6-3: route ElevenLabs TTS chunks for a turn through a persistent
     # WebSocket `stream-input` session (app.services.elevenlabs_ws_session)
-    # instead of one independent HTTP request per flushed chunk. Gated
-    # behind this flag (default OFF) + the elevenlabs-only
-    # supports_streaming_session capability (app.voice.tts_provider_
-    # capabilities) so Google/Rime and the existing ElevenLabs HTTP path are
-    # completely unaffected regardless of this setting. See
-    # app.voice.tts_pipeline.TtsPipeline._try_elevenlabs_ws_route.
+    # instead of one independent HTTP request per flushed chunk. Enabled by
+    # default (True) for continuous, turn-level ElevenLabs synthesis —
+    # improves cross-sentence prosody/voice continuity over the old
+    # one-HTTP-request-per-chunk path. Gated behind this flag + the
+    # elevenlabs-only supports_streaming_session capability
+    # (app.voice.tts_provider_capabilities) so Google/Rime and the existing
+    # ElevenLabs HTTP path are completely unaffected regardless of this
+    # setting. See app.voice.tts_pipeline.TtsPipeline._try_elevenlabs_ws_route.
     VOICE_TTS_ELEVENLABS_STREAMING_SESSION_ENABLED: bool = True
 
     # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
