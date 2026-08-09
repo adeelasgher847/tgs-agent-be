@@ -534,9 +534,9 @@ class Settings(BaseSettings):
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
-    VOICE_TTS_FLUSH_MAX_WORDS: int = 6
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 8
     # If no sentence boundary yet, flush after this many seconds (once min words met).
-    VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.25
     # Browser "Share Demo Link" calls (app.voice.livekit_browser_call_handler) have no
     # Twilio phone number, so recording_config_service.get_recording_enabled_for_call's
     # NumberConfiguration lookup can never resolve for them (assistant_phone_number is
