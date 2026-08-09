@@ -40,10 +40,21 @@ def _make_db(session):
     return db
 
 
-def _egress_info(status: int):
+def _egress_info(status: int, file_results=None):
     info = MagicMock()
     info.status = status
+    # Default to no file_results so existing tests (which don't care about the
+    # LiveKit-confirmed-path fix) exercise the pre-computed gcs_path fallback,
+    # matching their pre-existing assertions.
+    info.file_results = file_results if file_results is not None else []
     return info
+
+
+def _file_info(filename=None, location=None):
+    fi = MagicMock()
+    fi.filename = filename
+    fi.location = location
+    return fi
 
 
 # ── schedule_recording_upload ───────────────────────────────────────────────
@@ -561,3 +572,163 @@ class TestFinalizeArqTaskEnqueueRaisesDuringRetry:
         assert session.recording_error is True
         db.commit.assert_called_once()
         db.close.assert_called_once()
+
+
+# ── LiveKit-confirmed S3 path resolution (EGRESS_COMPLETE) ─────────────────
+#
+# LiveKit's egress service appends its own container extension server-side
+# when the requested filepath doesn't already end with one it recognizes, so
+# the object actually written to S3 can differ from our pre-computed
+# gcs_path (e.g. our ".opus" request lands as ".opus.ogg" in S3). These tests
+# cover _resolve_final_recording_path()'s use of EgressInfo.file_results.
+
+
+class TestFinalizeArqTaskResolvesLiveKitConfirmedPath:
+    async def test_file_results_present_prefers_livekit_reported_path_over_precomputed(
+        self,
+    ):
+        """file_results[0].filename differs from the pre-computed gcs_path —
+        the LiveKit-reported value must win."""
+        from app.services import call_recording_upload_service as cru_module
+
+        session = _make_call_session(gcs_path="recordings/t/c/20260809.opus")
+        db = _make_db(session)
+
+        livekit_reported_path = "recordings/t/c/20260809.opus.ogg"
+
+        mock_lk = MagicMock()
+        mock_lk.stop_room_recording = AsyncMock(return_value=True)
+        mock_lk.get_egress_info = AsyncMock(
+            return_value=_egress_info(
+                3, file_results=[_file_info(filename=livekit_reported_path, location="https://bucket.s3.amazonaws.com/" + livekit_reported_path)]
+            )
+        )
+
+        mock_redis = MagicMock()
+        mock_redis.enqueue_job = AsyncMock()
+        ctx = {"redis": mock_redis}
+
+        with (
+            patch("app.db.session.SessionLocal", return_value=db),
+            patch(
+                "app.services.recording_config_service.get_recording_enabled_for_call",
+                return_value=True,
+            ),
+            patch(
+                "app.services.livekit_recording_service.livekit_recording_service",
+                mock_lk,
+            ),
+            patch(
+                "app.services.s3_recording_service.update_object_metadata"
+            ) as mock_update_meta,
+        ):
+            await cru_module._finalize_call_recording_arq_task(ctx, str(_SESSION_ID), 1)
+
+        assert session.recording_s3_path == livekit_reported_path
+        assert session.recording_s3_path != "recordings/t/c/20260809.opus"
+        assert session.recording_error is False
+        mock_update_meta.assert_called_once_with(livekit_reported_path, mock_update_meta.call_args[0][1])
+
+    async def test_empty_file_results_falls_back_to_precomputed_path(self):
+        """file_results is empty (e.g. [] as returned by LiveKit or unset) —
+        must fall back to the pre-computed gcs_path exactly as before this fix."""
+        from app.services import call_recording_upload_service as cru_module
+
+        session = _make_call_session(gcs_path="recordings/t/c/20260809.opus")
+        db = _make_db(session)
+
+        mock_lk = MagicMock()
+        mock_lk.stop_room_recording = AsyncMock(return_value=True)
+        mock_lk.get_egress_info = AsyncMock(return_value=_egress_info(3, file_results=[]))
+
+        mock_redis = MagicMock()
+        mock_redis.enqueue_job = AsyncMock()
+        ctx = {"redis": mock_redis}
+
+        with (
+            patch("app.db.session.SessionLocal", return_value=db),
+            patch(
+                "app.services.recording_config_service.get_recording_enabled_for_call",
+                return_value=True,
+            ),
+            patch(
+                "app.services.livekit_recording_service.livekit_recording_service",
+                mock_lk,
+            ),
+            patch("app.services.s3_recording_service.update_object_metadata"),
+        ):
+            await cru_module._finalize_call_recording_arq_task(ctx, str(_SESSION_ID), 1)
+
+        assert session.recording_s3_path == "recordings/t/c/20260809.opus"
+        assert session.recording_error is False
+
+    async def test_malformed_file_result_falls_back_and_logs(self, caplog):
+        """file_results[0].filename is an empty string (unusable) — must fall
+        back to gcs_path and log a distinguishable warning line."""
+        import logging
+
+        from app.services import call_recording_upload_service as cru_module
+
+        session = _make_call_session(gcs_path="recordings/t/c/20260809.opus")
+        db = _make_db(session)
+
+        mock_lk = MagicMock()
+        mock_lk.stop_room_recording = AsyncMock(return_value=True)
+        mock_lk.get_egress_info = AsyncMock(
+            return_value=_egress_info(3, file_results=[_file_info(filename="", location="")])
+        )
+
+        mock_redis = MagicMock()
+        mock_redis.enqueue_job = AsyncMock()
+        ctx = {"redis": mock_redis}
+
+        with (
+            patch("app.db.session.SessionLocal", return_value=db),
+            patch(
+                "app.services.recording_config_service.get_recording_enabled_for_call",
+                return_value=True,
+            ),
+            patch(
+                "app.services.livekit_recording_service.livekit_recording_service",
+                mock_lk,
+            ),
+            patch("app.services.s3_recording_service.update_object_metadata"),
+            caplog.at_level(logging.WARNING),
+        ):
+            await cru_module._finalize_call_recording_arq_task(ctx, str(_SESSION_ID), 1)
+
+        assert session.recording_s3_path == "recordings/t/c/20260809.opus"
+        assert session.recording_error is False
+        assert any(
+            "falling back to pre-computed path" in record.message
+            for record in caplog.records
+        )
+
+    async def test_livekit_confirmed_path_is_usable_by_generate_signed_url_and_get_object_size(
+        self,
+    ):
+        """Prove the persisted path from the LiveKit-confirmed-path case works
+        unchanged with generate_signed_url()/get_object_size() — mock only the
+        boto3 S3 client boundary, not the path-handling logic."""
+        from app.services import s3_recording_service
+
+        livekit_reported_path = "recordings/t/c/20260809.opus.ogg"
+
+        mock_client = MagicMock()
+        mock_client.generate_presigned_url.return_value = (
+            "https://signed.example.com/" + livekit_reported_path
+        )
+        mock_client.head_object.return_value = {"ContentLength": 852069}
+
+        with patch(
+            "app.services.s3_recording_service.get_s3_client", return_value=mock_client
+        ):
+            url = s3_recording_service.generate_signed_url(livekit_reported_path)
+            size = s3_recording_service.get_object_size(livekit_reported_path)
+
+        mock_client.generate_presigned_url.assert_called_once()
+        assert mock_client.generate_presigned_url.call_args.kwargs["Params"]["Key"] == livekit_reported_path
+        mock_client.head_object.assert_called_once()
+        assert mock_client.head_object.call_args.kwargs["Key"] == livekit_reported_path
+        assert url == "https://signed.example.com/" + livekit_reported_path
+        assert size == 852069
