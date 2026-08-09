@@ -50,6 +50,16 @@ class TTSProviderCapabilities:
     supports_stability_control: bool
     supports_native_expressive_tags: bool
     supports_pause_control: bool
+    # Phase 6-3: whether a persistent, incremental WebSocket `stream-input`
+    # synthesis session (app.services.elevenlabs_ws_session) is available for
+    # this provider, as an alternative to the default one-HTTP-request-per-
+    # chunk path. Only genuinely true for ElevenLabs today — Google/Rime have
+    # no equivalent persistent-session streaming-input protocol implemented.
+    # Consulted by app.voice.tts_pipeline.TtsPipeline._try_elevenlabs_ws_route
+    # as the actual capability gate (alongside the
+    # VOICE_TTS_ELEVENLABS_STREAMING_SESSION_ENABLED flag) — never a
+    # provider-name string check duplicated at the call site.
+    supports_streaming_session: bool = False
 
 
 _UNKNOWN_PROVIDER_CAPABILITIES = TTSProviderCapabilities(
@@ -61,6 +71,7 @@ _UNKNOWN_PROVIDER_CAPABILITIES = TTSProviderCapabilities(
     supports_stability_control=False,
     supports_native_expressive_tags=False,
     supports_pause_control=False,
+    supports_streaming_session=False,
 )
 
 _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
@@ -74,6 +85,10 @@ _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
         supports_stability_control=True,  # voice_settings["stability"]/"similarity_boost"/"style"
         supports_native_expressive_tags=True,  # bracket tags, app/utils/eleven_tts_text.py
         supports_pause_control=False,  # no native break/pause param used; SSML <break> stripped
+        # Phase 6-2 spike (scripts/spikes/elevenlabs_websocket_spike.py) empirically
+        # validated the `stream-input` WebSocket protocol (persistent session,
+        # incremental SendText, auto_mode, flush-at-turn-end, clean cancellation).
+        supports_streaming_session=True,
     ),
     # google_tts_service.stream_text_to_speech (app/services/google_tts_service.py:330)
     "google": TTSProviderCapabilities(
@@ -85,6 +100,7 @@ _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
         supports_stability_control=False,  # no stability concept for Google
         supports_native_expressive_tags=False,  # bracket tags are stripped for non-ElevenLabs providers
         supports_pause_control=False,  # SSML <break> stripped on the streaming path
+        supports_streaming_session=False,  # no persistent streaming-input protocol for Google here
     ),
     # RimeTTSAdapter.async_stream_synthesize (app/utils/tts_adapter.py:434)
     "rime": TTSProviderCapabilities(
@@ -96,6 +112,7 @@ _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
         supports_stability_control=False,
         supports_native_expressive_tags=False,
         supports_pause_control=False,  # reduceLatency=True actively trims inter-sentence silence
+        supports_streaming_session=False,  # no persistent streaming-input protocol for Rime here
     ),
 }
 
