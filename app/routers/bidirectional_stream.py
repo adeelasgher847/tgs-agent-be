@@ -1758,6 +1758,18 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+            # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
+            # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
+            # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+            no_bracket_tags_line = (
+                ""
+                if elevenlabs_audio_tags_enabled
+                else (
+                    "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+                    "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+                    "will be read aloud literally."
+                )
+            )
 
             # Inbound: opening may play once via TTS at pickup — do not instruct LLM to repeat verbatim on every "hi".
             _inbound_call = (
@@ -1822,7 +1834,7 @@ You are {agent_name}, having a real-time phone call with a human.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [1], [2], or similar annotations.
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1889,7 +1901,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
@@ -1941,7 +1953,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.{greeting_instruction_block}
+{no_bracket_tags_line}{greeting_instruction_block}
 # CONVERSATION STATE
 Previous conversation:
 {history_text}

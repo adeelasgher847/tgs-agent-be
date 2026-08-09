@@ -95,3 +95,48 @@ def test_breathing_fallback_skips_short_or_control_token_text():
     assert apply_elevenlabs_breathing_fallback("Thanks") == "Thanks"
     token_text = "Sure [CHECK_SLOTS:date=2026-05-01]"
     assert apply_elevenlabs_breathing_fallback(token_text) == token_text
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# Phase 5-4: build_elevenlabs_audio_tag_prompt_block() is the ONE
+# authoritative bracket-tag rule source. These assert the specific new
+# rules text is present, so a future edit can't silently drop one.
+# ─────────────────────────────────────────────────────────────────────────
+
+def test_prompt_block_states_max_one_tag_per_response():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    assert "ONE tag per response" in block or "one optional bracketed audio tag" in block.lower()
+
+
+def test_prompt_block_states_leading_placement_only():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    assert "first thing in the response" in block.lower() or "start of the spoken line" in block.lower()
+
+
+def test_prompt_block_prohibits_mid_sentence_and_word_emphasis_placement():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    assert "middle" in block.lower()
+    assert "emphasize" in block.lower()
+
+
+def test_prompt_block_prohibits_inventing_new_tags():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    assert "no others" in block.lower() or "never invent" in block.lower()
+
+
+def test_prompt_block_default_is_no_tag_and_not_forced():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    assert "default is **no** tag" in block.lower() or "default is no tag" in block.lower()
+    assert "do not add a tag to every message" in block.lower() or "do not add tags in every message" in block.lower() or "never force" in block.lower()
+
+
+def test_prompt_block_preserves_control_token_carve_out():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    for token in ("[CHECK_SLOTS:", "[BOOK_APPOINTMENT:", "[END_CALL]", "[SCREENING_QUALIFIED]", "[OUTCOME:"):
+        assert token in block
+
+
+def test_prompt_block_whitelist_unchanged():
+    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
+    for tag in ("[breathes]", "[breathe]", "[excited]", "[sad]", "[sorrowful]"):
+        assert tag in block

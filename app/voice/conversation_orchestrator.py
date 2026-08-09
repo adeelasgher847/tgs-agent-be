@@ -351,6 +351,18 @@ class ConversationOrchestrator:
                 )
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+            # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
+            # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
+            # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+            no_bracket_tags_line = (
+                ""
+                if elevenlabs_audio_tags_enabled
+                else (
+                    "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+                    "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+                    "will be read aloud literally."
+                )
+            )
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
@@ -443,7 +455,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -484,7 +496,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
+{no_bracket_tags_line}
 
 # CONVERSATION STATE
 Previous conversation:
