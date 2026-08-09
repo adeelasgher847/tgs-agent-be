@@ -184,6 +184,98 @@ class TestTurnHandling:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Barge-in: LiveKit native AudioSource queue clearing
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCancelInflightClearsLiveKitAudioQueue:
+    """
+    Regression coverage for the LiveKit-transport equivalent of Twilio's
+    `{"event": "clear"}` message: cancelling an in-flight LLM/TTS turn must
+    also flush frames already pushed into rtc.AudioSource's own internal
+    playout queue (up to 1000ms buffered), unconditionally — not only when
+    publish_mulaw()'s own per-call loop happens to observe cancel.is_set().
+    """
+
+    @pytest.mark.asyncio
+    async def test_clears_audio_source_queue_when_publisher_has_buffered_audio(self):
+        h = _base_handler()
+        h._tts_pipeline = AsyncMock()
+
+        publisher = MagicMock()
+        publisher._source = MagicMock()
+        h._agent_publisher = publisher
+
+        await h._cancel_inflight_llm_response()
+
+        publisher._source.clear_queue.assert_called_once()
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_noop_and_does_not_raise_when_publisher_missing(self):
+        h = _base_handler()
+        h._tts_pipeline = AsyncMock()
+        h._agent_publisher = None  # never constructed / cancellation before any audio
+
+        await h._cancel_inflight_llm_response()  # must not raise
+
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_noop_and_does_not_raise_when_publisher_source_not_yet_created(self):
+        h = _base_handler()
+        h._tts_pipeline = AsyncMock()
+
+        publisher = MagicMock()
+        publisher._source = None  # connect() never ran / disconnect() already cleared it
+        h._agent_publisher = publisher
+
+        await h._cancel_inflight_llm_response()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_clear_queue_exception_is_swallowed(self):
+        h = _base_handler()
+        h._tts_pipeline = AsyncMock()
+
+        publisher = MagicMock()
+        publisher._source = MagicMock()
+        publisher._source.clear_queue.side_effect = RuntimeError("ffi handle disposed")
+        h._agent_publisher = publisher
+
+        await h._cancel_inflight_llm_response()  # must not raise
+
+    @pytest.mark.asyncio
+    async def test_repeated_barge_ins_are_idempotent_and_error_free(self):
+        h = _base_handler()
+        h._tts_pipeline = AsyncMock()
+
+        publisher = MagicMock()
+        publisher._source = MagicMock()
+        h._agent_publisher = publisher
+
+        await h._cancel_inflight_llm_response()
+        await h._cancel_inflight_llm_response()
+        await h._cancel_inflight_llm_response()
+
+        assert publisher._source.clear_queue.call_count == 3
+
+    @pytest.mark.asyncio
+    async def test_default_handler_has_no_publisher_and_cancel_still_completes(self):
+        """
+        Real pre-existing construction path (LiveKitBrowserCallHandler.__init__
+        sets self._agent_publisher = None until run_livekit_browser_call() wires
+        it up) — exercises the guard via the handler's own default state rather
+        than a synthetic None assignment.
+        """
+        h = _base_handler()
+        assert h._agent_publisher is None
+        h._tts_pipeline = AsyncMock()
+
+        await h._cancel_inflight_llm_response()  # must not raise
+
+        h._tts_pipeline.cancel_current_and_clear_queue.assert_awaited_once()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # TTS synthesis + playback
 # ─────────────────────────────────────────────────────────────────────────────
 

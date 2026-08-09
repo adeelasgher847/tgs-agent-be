@@ -454,6 +454,21 @@ class LiveKitBrowserCallHandler:
                 logger.debug("[LiveKitBrowserCall] cancelled turn raised: %s", exc)
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
+        # LiveKit protocol: cancelling our TTS task locally only stops *us*
+        # from pushing more frames — it does not stop frames already pushed
+        # into rtc.AudioSource's own internal playout queue (up to 1000ms of
+        # buffered audio) from continuing to play out to the browser. Mirrors
+        # TtsStreamMixin._send_twilio_clear_event's role on the Twilio path.
+        # Unconditional (not gated on the streaming loop's own cancel check —
+        # that check lives inside publish_mulaw()'s per-call loop and is not
+        # reliably reached on the primary single-frame streaming path).
+        publisher = getattr(self, "_agent_publisher", None)
+        source = getattr(publisher, "_source", None) if publisher else None
+        if source is not None:
+            try:
+                source.clear_queue()
+            except Exception:  # noqa: S110 - best-effort barge-in abort
+                pass
 
     async def _process_transcript(self, transcript: str, confidence: float) -> None:
         """STT final callback (wired via VoiceOrchestrator._on_final)."""
