@@ -21,7 +21,6 @@ from __future__ import annotations
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-
 # ---------------------------------------------------------------------------
 # Domain sub-models
 # Each field carries a validation_alias matching the canonical env-var name so
@@ -30,6 +29,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # construction by the Python field name as well (used in the Settings validator
 # below and in tests).
 # ---------------------------------------------------------------------------
+
 
 class DbSettings(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
@@ -41,7 +41,9 @@ class DbSettings(BaseModel):
     pool_size: int = Field(default=10, validation_alias="DATABASE_POOL_SIZE")
     max_overflow: int = Field(default=20, validation_alias="DATABASE_MAX_OVERFLOW")
     pool_timeout: int = Field(default=30, validation_alias="DATABASE_POOL_TIMEOUT")
-    statement_timeout: int = Field(default=30000, validation_alias="DATABASE_STATEMENT_TIMEOUT")
+    statement_timeout: int = Field(
+        default=30000, validation_alias="DATABASE_STATEMENT_TIMEOUT"
+    )
 
 
 class AuthSettings(BaseModel):
@@ -49,8 +51,12 @@ class AuthSettings(BaseModel):
 
     secret_key: str = Field(default="", validation_alias="SECRET_KEY")
     algorithm: str = Field(default="", validation_alias="ALGORITHM")
-    access_token_expire_minutes: int = Field(default=15, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES")
-    refresh_token_expire_days: int = Field(default=7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS")
+    access_token_expire_minutes: int = Field(
+        default=15, validation_alias="ACCESS_TOKEN_EXPIRE_MINUTES"
+    )
+    refresh_token_expire_days: int = Field(
+        default=7, validation_alias="REFRESH_TOKEN_EXPIRE_DAYS"
+    )
     password_reset_token_expire_minutes: int = Field(
         default=30, validation_alias="PASSWORD_RESET_TOKEN_EXPIRE_MINUTES"
     )
@@ -59,7 +65,9 @@ class AuthSettings(BaseModel):
     )
     sso_encryption_key: str = Field(default="", validation_alias="SSO_ENCRYPTION_KEY")
     google_client_id: str = Field(default="", validation_alias="GOOGLE_CLIENT_ID")
-    google_client_secret: str = Field(default="", validation_alias="GOOGLE_CLIENT_SECRET")
+    google_client_secret: str = Field(
+        default="", validation_alias="GOOGLE_CLIENT_SECRET"
+    )
 
 
 class TwilioSettings(BaseModel):
@@ -71,7 +79,9 @@ class TwilioSettings(BaseModel):
     allow_unauthenticated_webhooks: bool = Field(
         default=False, validation_alias="ALLOW_UNAUTHENTICATED_WEBHOOKS"
     )
-    test_account_sid: str = Field(default="", validation_alias="TWILIO_TEST_ACCOUNT_SID")
+    test_account_sid: str = Field(
+        default="", validation_alias="TWILIO_TEST_ACCOUNT_SID"
+    )
     test_auth_token: str = Field(default="", validation_alias="TWILIO_TEST_AUTH_TOKEN")
     edge: str | None = Field(default="umatilla", validation_alias="TWILIO_EDGE")
 
@@ -88,23 +98,39 @@ class LlmSettings(BaseModel):
     google_application_credentials: str = Field(
         default="", validation_alias="GOOGLE_APPLICATION_CREDENTIALS"
     )
-    google_cloud_project_id: str = Field(default="", validation_alias="GOOGLE_CLOUD_PROJECT_ID")
-    vertex_ai_location: str = Field(default="us-central1", validation_alias="VERTEX_AI_LOCATION")
+    google_cloud_project_id: str = Field(
+        default="", validation_alias="GOOGLE_CLOUD_PROJECT_ID"
+    )
+    vertex_ai_location: str = Field(
+        default="us-central1", validation_alias="VERTEX_AI_LOCATION"
+    )
     # Provider selection
     provider: str = Field(default="google", validation_alias="LLM_PROVIDER")
-    default_model: str = Field(default="gemini-1.5-flash", validation_alias="DEFAULT_LLM_MODEL")
-    default_provider: str = Field(default="gemini", validation_alias="DEFAULT_LLM_PROVIDER")
+    default_model: str = Field(
+        default="gemini-1.5-flash", validation_alias="DEFAULT_LLM_MODEL"
+    )
+    default_provider: str = Field(
+        default="gemini", validation_alias="DEFAULT_LLM_PROVIDER"
+    )
     # Voice LLM tuning
-    history_max_turns: int = Field(default=20, validation_alias="VOICE_LLM_HISTORY_MAX_TURNS")
-    default_temperature: float = Field(default=0.3, validation_alias="VOICE_LLM_DEFAULT_TEMPERATURE")
+    history_max_turns: int = Field(
+        default=20, validation_alias="VOICE_LLM_HISTORY_MAX_TURNS"
+    )
+    default_temperature: float = Field(
+        default=0.3, validation_alias="VOICE_LLM_DEFAULT_TEMPERATURE"
+    )
     fallback_message: str = Field(
         default="I am sorry, I did not catch that",
         validation_alias="VOICE_LLM_FALLBACK_MESSAGE",
     )
     # Deepgram STT
     deepgram_api_key: str = Field(default="", validation_alias="DEEPGRAM_API_KEY")
-    deepgram_stt_model: str = Field(default="nova-3", validation_alias="DEEPGRAM_STT_MODEL")
-    deepgram_stt_language: str = Field(default="en", validation_alias="DEEPGRAM_STT_LANGUAGE")
+    deepgram_stt_model: str = Field(
+        default="nova-3", validation_alias="DEEPGRAM_STT_MODEL"
+    )
+    deepgram_stt_language: str = Field(
+        default="en", validation_alias="DEEPGRAM_STT_LANGUAGE"
+    )
     deepgram_stt_endpointing_ms: int = Field(
         default=350, validation_alias="DEEPGRAM_STT_ENDPOINTING_MS"
     )
@@ -118,8 +144,12 @@ class LlmSettings(BaseModel):
     google_stt_language_code: str = Field(
         default="en-US", validation_alias="GOOGLE_STT_LANGUAGE_CODE"
     )
-    google_stt_sample_rate: int = Field(default=8000, validation_alias="GOOGLE_STT_SAMPLE_RATE")
-    google_stt_encoding: str = Field(default="MULAW", validation_alias="GOOGLE_STT_ENCODING")
+    google_stt_sample_rate: int = Field(
+        default=8000, validation_alias="GOOGLE_STT_SAMPLE_RATE"
+    )
+    google_stt_encoding: str = Field(
+        default="MULAW", validation_alias="GOOGLE_STT_ENCODING"
+    )
 
 
 class TtsSettings(BaseModel):
@@ -148,15 +178,25 @@ class CrmSettings(BaseModel):
 
     # HubSpot
     hubspot_client_id: str = Field(default="", validation_alias="HUBSPOT_CLIENT_ID")
-    hubspot_client_secret: str = Field(default="", validation_alias="HUBSPOT_CLIENT_SECRET")
-    hubspot_redirect_uri: str = Field(default="", validation_alias="HUBSPOT_REDIRECT_URI")
+    hubspot_client_secret: str = Field(
+        default="", validation_alias="HUBSPOT_CLIENT_SECRET"
+    )
+    hubspot_redirect_uri: str = Field(
+        default="", validation_alias="HUBSPOT_REDIRECT_URI"
+    )
     hubspot_token_encryption_key: str = Field(
         default="", validation_alias="HUBSPOT_TOKEN_ENCRYPTION_KEY"
     )
     # Salesforce
-    salesforce_client_id: str = Field(default="", validation_alias="SALESFORCE_CLIENT_ID")
-    salesforce_client_secret: str = Field(default="", validation_alias="SALESFORCE_CLIENT_SECRET")
-    salesforce_redirect_uri: str = Field(default="", validation_alias="SALESFORCE_REDIRECT_URI")
+    salesforce_client_id: str = Field(
+        default="", validation_alias="SALESFORCE_CLIENT_ID"
+    )
+    salesforce_client_secret: str = Field(
+        default="", validation_alias="SALESFORCE_CLIENT_SECRET"
+    )
+    salesforce_redirect_uri: str = Field(
+        default="", validation_alias="SALESFORCE_REDIRECT_URI"
+    )
     salesforce_token_encryption_key: str = Field(
         default="", validation_alias="SALESFORCE_TOKEN_ENCRYPTION_KEY"
     )
@@ -169,8 +209,12 @@ class CrmSettings(BaseModel):
     )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
-    calendly_client_secret: str = Field(default="", validation_alias="CALENDLY_CLIENT_SECRET")
-    calendly_redirect_uri: str = Field(default="", validation_alias="CALENDLY_REDIRECT_URI")
+    calendly_client_secret: str = Field(
+        default="", validation_alias="CALENDLY_CLIENT_SECRET"
+    )
+    calendly_redirect_uri: str = Field(
+        default="", validation_alias="CALENDLY_REDIRECT_URI"
+    )
     calendly_token_encryption_key: str = Field(
         default="", validation_alias="CALENDLY_TOKEN_ENCRYPTION_KEY"
     )
@@ -182,26 +226,44 @@ class CrmSettings(BaseModel):
     )
     # Trello
     trello_api_key: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_KEY")
-    trello_api_token: str = Field(default="", validation_alias="TRELLO_PLATFORM_API_TOKEN")
+    trello_api_token: str = Field(
+        default="", validation_alias="TRELLO_PLATFORM_API_TOKEN"
+    )
     # AWS SES
-    aws_ses_sender_email: str = Field(default="", validation_alias="AWS_SES_SENDER_EMAIL")
+    aws_ses_sender_email: str = Field(
+        default="", validation_alias="AWS_SES_SENDER_EMAIL"
+    )
     # Stripe
-    stripe_publishable_key: str = Field(default="", validation_alias="STRIPE_PUBLISHABLE_KEY")
+    stripe_publishable_key: str = Field(
+        default="", validation_alias="STRIPE_PUBLISHABLE_KEY"
+    )
     stripe_secret_key: str = Field(default="", validation_alias="STRIPE_SECRET_KEY")
-    stripe_webhook_secret: str = Field(default="", validation_alias="STRIPE_WEBHOOK_SECRET")
+    stripe_webhook_secret: str = Field(
+        default="", validation_alias="STRIPE_WEBHOOK_SECRET"
+    )
     stripe_incall_webhook_secret: str = Field(
         default="", validation_alias="STRIPE_INCALL_WEBHOOK_SECRET"
     )
-    stripe_price_id_free: str = Field(default="", validation_alias="STRIPE_PRICE_ID_FREE")
+    stripe_price_id_free: str = Field(
+        default="", validation_alias="STRIPE_PRICE_ID_FREE"
+    )
     stripe_price_id_pro: str = Field(default="", validation_alias="STRIPE_PRICE_ID_PRO")
     payment_page_base_url: str = Field(
         default="https://pay.yourdomain.com", validation_alias="PAYMENT_PAGE_BASE_URL"
     )
     # Billing plan limits
-    free_plan_agent_limit: int = Field(default=2, validation_alias="FREE_PLAN_AGENT_LIMIT")
-    free_plan_monthly_calls: int = Field(default=100, validation_alias="FREE_PLAN_MONTHLY_CALLS")
-    pro_plan_agent_limit: int = Field(default=50, validation_alias="PRO_PLAN_AGENT_LIMIT")
-    pro_plan_monthly_calls: int = Field(default=10000, validation_alias="PRO_PLAN_MONTHLY_CALLS")
+    free_plan_agent_limit: int = Field(
+        default=2, validation_alias="FREE_PLAN_AGENT_LIMIT"
+    )
+    free_plan_monthly_calls: int = Field(
+        default=100, validation_alias="FREE_PLAN_MONTHLY_CALLS"
+    )
+    pro_plan_agent_limit: int = Field(
+        default=50, validation_alias="PRO_PLAN_AGENT_LIMIT"
+    )
+    pro_plan_monthly_calls: int = Field(
+        default=10000, validation_alias="PRO_PLAN_MONTHLY_CALLS"
+    )
 
 
 class ServerSettings(BaseModel):
@@ -227,7 +289,9 @@ class ServerSettings(BaseModel):
     )
     n8n_webhook_url: str = Field(default="", validation_alias="N8N_WEBHOOK_URL")
     n8n_webhook_secret: str = Field(default="", validation_alias="N8N_WEBHOOK_SECRET")
-    frontend_url: str = Field(default="http://localhost:3000", validation_alias="FRONTEND_URL")
+    frontend_url: str = Field(
+        default="http://localhost:3000", validation_alias="FRONTEND_URL"
+    )
     # GCP infra
     gcp_project_id: str = Field(default="", validation_alias="GCP_PROJECT_ID")
     server_region: str = Field(default="us-west-2", validation_alias="SERVER_REGION")
@@ -244,7 +308,9 @@ class ServerSettings(BaseModel):
     )
     livekit_enabled: bool = Field(default=True, validation_alias="LIVEKIT_ENABLED")
     # GCS recordings
-    gcs_recordings_bucket: str = Field(default="", validation_alias="GCS_RECORDINGS_BUCKET")
+    gcs_recordings_bucket: str = Field(
+        default="", validation_alias="GCS_RECORDINGS_BUCKET"
+    )
     gcs_recordings_signed_url_expiry_seconds: int = Field(
         default=3600, validation_alias="GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS"
     )
@@ -256,22 +322,32 @@ class ServerSettings(BaseModel):
     gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
     # AWS S3 storage
     aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: str = Field(default="", validation_alias="AWS_SECRET_ACCESS_KEY")
-    aws_region_name: str = Field(default="us-east-1", validation_alias="AWS_REGION_NAME")
-    s3_recordings_bucket: str = Field(default="", validation_alias="S3_RECORDINGS_BUCKET")
+    aws_secret_access_key: str = Field(
+        default="", validation_alias="AWS_SECRET_ACCESS_KEY"
+    )
+    aws_region_name: str = Field(
+        default="us-east-1", validation_alias="AWS_REGION_NAME"
+    )
+    s3_recordings_bucket: str = Field(
+        default="", validation_alias="S3_RECORDINGS_BUCKET"
+    )
     s3_kb_bucket: str = Field(default="", validation_alias="S3_KB_BUCKET")
     # Concurrency
     outbound_max_concurrent_per_workspace: int = Field(
         default=10, validation_alias="OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE"
     )
-    max_batch_concurrency: int = Field(default=5, validation_alias="MAX_BATCH_CONCURRENCY")
+    max_batch_concurrency: int = Field(
+        default=5, validation_alias="MAX_BATCH_CONCURRENCY"
+    )
 
 
 class RedisSettings(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     url: str = Field(default="redis://localhost:6379", validation_alias="REDIS_URL")
-    rate_limit_enabled: bool = Field(default=True, validation_alias="RATE_LIMIT_ENABLED")
+    rate_limit_enabled: bool = Field(
+        default=True, validation_alias="RATE_LIMIT_ENABLED"
+    )
     login_rate_limit: int = Field(default=10, validation_alias="LOGIN_RATE_LIMIT")
     login_rate_window: int = Field(default=60, validation_alias="LOGIN_RATE_WINDOW")
     webhook_rate_limit: int = Field(default=100, validation_alias="WEBHOOK_RATE_LIMIT")
@@ -294,6 +370,7 @@ class RedisSettings(BaseModel):
 # all flat fields have been read from the environment.
 # ---------------------------------------------------------------------------
 
+
 class Settings(BaseSettings):
 
     ADMIN_ROLE: str = "admin"
@@ -303,8 +380,10 @@ class Settings(BaseSettings):
     # Connection pool tuning
     DATABASE_POOL_SIZE: int = 10
     DATABASE_MAX_OVERFLOW: int = 20
-    DATABASE_POOL_TIMEOUT: int = 30       # seconds to wait for a connection from the pool
-    DATABASE_STATEMENT_TIMEOUT: int = 30000  # milliseconds; auto-terminates slow queries in PG
+    DATABASE_POOL_TIMEOUT: int = 30  # seconds to wait for a connection from the pool
+    DATABASE_STATEMENT_TIMEOUT: int = (
+        30000  # milliseconds; auto-terminates slow queries in PG
+    )
 
     SECRET_KEY: str = ""
     ALGORITHM: str = ""
@@ -398,7 +477,9 @@ class Settings(BaseSettings):
     # app/core/secret_manager.py::get_hubspot_oauth_credentials).
     HUBSPOT_CLIENT_ID: str = ""
     HUBSPOT_CLIENT_SECRET: str = ""
-    HUBSPOT_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/hubspot/callback
+    HUBSPOT_REDIRECT_URI: str = (
+        ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/hubspot/callback
+    )
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (pgp_sym_encrypt) — same scheme as ELEVENLABS_ENCRYPTION_KEY above.
     HUBSPOT_TOKEN_ENCRYPTION_KEY: str = ""
@@ -409,7 +490,9 @@ class Settings(BaseSettings):
     # app/core/secret_manager.py::get_salesforce_oauth_credentials).
     SALESFORCE_CLIENT_ID: str = ""
     SALESFORCE_CLIENT_SECRET: str = ""
-    SALESFORCE_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/salesforce/callback
+    SALESFORCE_REDIRECT_URI: str = (
+        ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/salesforce/callback
+    )
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
     SALESFORCE_TOKEN_ENCRYPTION_KEY: str = ""
@@ -431,7 +514,9 @@ class Settings(BaseSettings):
     # app/core/secret_manager.py::get_ghl_oauth_credentials).
     GHL_CLIENT_ID: str = ""
     GHL_CLIENT_SECRET: str = ""
-    GHL_REDIRECT_URI: str = ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/leadconnector/callback
+    GHL_REDIRECT_URI: str = (
+        ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/leadconnector/callback
+    )
     # Symmetric encryption key for workspaceintegration.access_token / refresh_token
     # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
     GHL_TOKEN_ENCRYPTION_KEY: str = ""
@@ -441,13 +526,17 @@ class Settings(BaseSettings):
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
     CALENDLY_CLIENT_SECRET: str = ""
-    CALENDLY_REDIRECT_URI: str = ""  # e.g. {WEBHOOK_BASE_URL}/api/v2/integrations/calendly/callback
+    CALENDLY_REDIRECT_URI: str = (
+        ""  # e.g. {WEBHOOK_BASE_URL}/api/v2/integrations/calendly/callback
+    )
     # Symmetric encryption key for calendlyintegration.access_token / refresh_token
     # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
     CALENDLY_TOKEN_ENCRYPTION_KEY: str = ""
 
     # Google Cloud Speech-to-Text Configuration
-    GOOGLE_APPLICATION_CREDENTIALS: str = ""  # Path to service account JSON file for Vertex AI + STT
+    GOOGLE_APPLICATION_CREDENTIALS: str = (
+        ""  # Path to service account JSON file for Vertex AI + STT
+    )
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     # Vertex AI — used by VertexGeminiService for voice LLM calls (ADC, no api_key needed)
     VERTEX_AI_LOCATION: str = "us-central1"
@@ -465,7 +554,9 @@ class Settings(BaseSettings):
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
-    DEEPGRAM_STT_LANGUAGE: str = "en"  # Deepgram listen param; override in .env if needed
+    DEEPGRAM_STT_LANGUAGE: str = (
+        "en"  # Deepgram listen param; override in .env if needed
+    )
     # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
     # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
     DEEPGRAM_STT_ENDPOINTING_MS: int = 350
@@ -487,7 +578,9 @@ class Settings(BaseSettings):
     VOICE_STT_ENDPOINTING_MODE: str = "aggressive"
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
-    STT_SAMPLE_RATE: int = 8000  # provider-neutral STT sample rate (Twilio MULAW default)
+    STT_SAMPLE_RATE: int = (
+        8000  # provider-neutral STT sample rate (Twilio MULAW default)
+    )
     # Multi-provider STT silence threshold: ms of no audio before treating utterance as done.
     # Applies to Google STT path; Deepgram uses its own endpointing above.
     SILENCE_THRESHOLD_MS: int = 1500
@@ -495,11 +588,15 @@ class Settings(BaseSettings):
     # Google Cloud Text-to-Speech (TTS) endpoint/voice overrides
     # Docs: https://cloud.google.com/text-to-speech/docs/endpoints
     CLOUD_TTS_ENDPOINT: str = ""  # e.g. https://us-texttospeech.googleapis.com
-    GOOGLE_TTS_VOICE_NAME: str = ""  # Optional exact voice name override (e.g. en-US-Chirp3-HD-Achernar)
+    GOOGLE_TTS_VOICE_NAME: str = (
+        ""  # Optional exact voice name override (e.g. en-US-Chirp3-HD-Achernar)
+    )
 
     # Voice Conversation Settings - VAPI-STYLE REAL-TIME STREAMING
     USE_GATHER_APPROACH: bool = False  # Using real-time bidirectional streaming
-    USE_BIDIRECTIONAL_STREAMING: bool = True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
+    USE_BIDIRECTIONAL_STREAMING: bool = (
+        True  # ✅ ENABLED - Real-time STT + TTS with Adaptive VAD
+    )
     USE_WEBSOCKET_TTS: bool = True  # ✅ ENABLED - 20ms chunk streaming (MULAW 8kHz)
 
     # Voice streaming tunables (phase 6 centralization)
@@ -534,9 +631,9 @@ class Settings(BaseSettings):
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
-    VOICE_TTS_FLUSH_MAX_WORDS: int = 6
+    VOICE_TTS_FLUSH_MAX_WORDS: int = 8
     # If no sentence boundary yet, flush after this many seconds (once min words met).
-    VOICE_TTS_TIME_FLUSH_SEC: float = 0.10
+    VOICE_TTS_TIME_FLUSH_SEC: float = 0.25
     # Browser "Share Demo Link" calls (app.voice.livekit_browser_call_handler) have no
     # Twilio phone number, so recording_config_service.get_recording_enabled_for_call's
     # NumberConfiguration lookup can never resolve for them (assistant_phone_number is
@@ -566,6 +663,16 @@ class Settings(BaseSettings):
     VOICE_TTS_STREAM_MIN_WORDS: int = 2
     # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.
     VOICE_TTS_PRIME_FRAMES: int = 1
+    # Phase 4C-2/4C-3: extra 0xFF silence frames (20ms each) appended after a
+    # non-final TTS chunk that ends at a real sentence boundary, so
+    # multi-sentence responses get a small human-like breath between
+    # sentences. Shared by both transports (app.voice.tts_stream_mixin,
+    # app.voice.livekit_browser_call_handler) — see HumanizationDecision.pacing.
+    # Set to 0 to fully disable (identical to pre-4C-2 behavior).
+    # Phase 4C-3: enabled at 3 frames (60ms) — code-level correctness only;
+    # this value has NOT been validated against real call audio (no live-call
+    # testing available in this environment). Revisit after real listening.
+    VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES: int = 3
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
     # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback
@@ -576,6 +683,23 @@ class Settings(BaseSettings):
     # skip heavy RAG/KB context for obvious non-booking smalltalk.
     VOICE_ENABLE_LATENCY_FASTPATH: bool = True
     VOICE_FASTPATH_MAX_WORDS: int = 7
+    # Centralized, provider-agnostic humanization decision layer
+    # (app.voice.humanization_engine). Phase 3A: decision-only, not yet wired
+    # into any call flow. When False, analyze_response() always returns a
+    # neutral "no humanization" decision.
+    VOICE_ENABLE_HUMANIZATION_ENGINE: bool = True
+
+    # Phase 6-3: route ElevenLabs TTS chunks for a turn through a persistent
+    # WebSocket `stream-input` session (app.services.elevenlabs_ws_session)
+    # instead of one independent HTTP request per flushed chunk. Enabled by
+    # default (True) for continuous, turn-level ElevenLabs synthesis —
+    # improves cross-sentence prosody/voice continuity over the old
+    # one-HTTP-request-per-chunk path. Gated behind this flag + the
+    # elevenlabs-only supports_streaming_session capability
+    # (app.voice.tts_provider_capabilities) so Google/Rime and the existing
+    # ElevenLabs HTTP path are completely unaffected regardless of this
+    # setting. See app.voice.tts_pipeline.TtsPipeline._try_elevenlabs_ws_route.
+    VOICE_TTS_ELEVENLABS_STREAMING_SESSION_ENABLED: bool = True
 
     # Vapi-style intelligent contact recovery (additive — never downgrades intake confidence).
     # 1) Deterministic email STT-artifact cleanup: strip commas/spaces inside an email span
@@ -598,8 +722,10 @@ class Settings(BaseSettings):
     # Stripe settings
     STRIPE_PUBLISHABLE_KEY: str = ""
     STRIPE_SECRET_KEY: str = ""
-    STRIPE_WEBHOOK_SECRET: str = ""          # Billing/subscription webhook secret
-    STRIPE_INCALL_WEBHOOK_SECRET: str = ""  # In-call payment webhook secret (separate endpoint)
+    STRIPE_WEBHOOK_SECRET: str = ""  # Billing/subscription webhook secret
+    STRIPE_INCALL_WEBHOOK_SECRET: str = (
+        ""  # In-call payment webhook secret (separate endpoint)
+    )
     STRIPE_PRICE_ID_FREE: str = ""
     STRIPE_PRICE_ID_PRO: str = ""
 
@@ -626,7 +752,7 @@ class Settings(BaseSettings):
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
 
     # General API rate limiting — global sliding-window middleware
-    API_RATE_LIMIT: int = 60   # requests per window per identity
+    API_RATE_LIMIT: int = 60  # requests per window per identity
     API_RATE_WINDOW: int = 60  # seconds
 
     # Public Web SDK token endpoint — per-IP, no auth required (BE1 ticket)
@@ -710,15 +836,17 @@ class Settings(BaseSettings):
     # Monday.com Configuration
     MONDAY_API_KEY: str = ""  # Monday.com Personal API Token
     MONDAY_BOARD_ID: str = ""  # Monday.com Board ID for scheduled calls
-    MONDAY_WORKSPACE_ID: str | None = None  # Optional workspace to create tenant boards in
+    MONDAY_WORKSPACE_ID: str | None = (
+        None  # Optional workspace to create tenant boards in
+    )
 
     # LiveKit — self-hosted real-time audio transport (GKE internal, port 7880)
     LIVEKIT_URL: str = ""
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
-    LIVEKIT_TOKEN_TTL: int = 3600           # seconds; 1 hour
-    LIVEKIT_ROOM_EMPTY_TIMEOUT: int = 30    # seconds before auto-close when empty
-    LIVEKIT_MAX_PARTICIPANTS: int = 2       # enforced at SDK CreateRoomRequest level
+    LIVEKIT_TOKEN_TTL: int = 3600  # seconds; 1 hour
+    LIVEKIT_ROOM_EMPTY_TIMEOUT: int = 30  # seconds before auto-close when empty
+    LIVEKIT_MAX_PARTICIPANTS: int = 2  # enforced at SDK CreateRoomRequest level
     LIVEKIT_ENABLED: bool = True
 
     # GCS call recordings — Sprint 4

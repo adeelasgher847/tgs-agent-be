@@ -66,9 +66,7 @@ class LiveKitRecordingService:
 
         try:
             async with api.LiveKitAPI(url=url, api_key=api_key, api_secret=api_secret) as lk:
-                info = await lk.egress.start_room_composite_egress(
-                    api.StartEgressRequest(room_composite=egress_request)
-                )
+                info = await lk.egress.start_room_composite_egress(egress_request)
             egress_id = info.egress_id
             logger.info(
                 "LiveKit recording egress started: egress_id=%s room=%s s3_key=%s",

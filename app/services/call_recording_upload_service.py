@@ -177,6 +177,10 @@ async def _finalize_call_recording_arq_task(
             return
 
         if status == _EGRESS_COMPLETE:
+            final_s3_path = _resolve_final_recording_path(
+                egress_info, gcs_path, egress_id, session.id
+            )
+
             try:
                 metadata = {
                     "callId": str(session.id),
@@ -184,22 +188,22 @@ async def _finalize_call_recording_arq_task(
                     "agentId": str(session.agent_id),
                     "duration": str(session.duration or ""),
                 }
-                s3_recording_service.update_object_metadata(gcs_path, metadata)
+                s3_recording_service.update_object_metadata(final_s3_path, metadata)
             except Exception as exc:
                 logger.warning(
                     "S3 metadata update failed for %s: %s (continuing — path will still be set)",
-                    gcs_path,
+                    final_s3_path,
                     exc,
                 )
 
             try:
-                session.recording_s3_path = gcs_path
+                session.recording_s3_path = final_s3_path
                 session.recording_error = False
                 db.commit()
                 logger.info(
                     "Recording finalized: session=%s s3_path=%s",
                     session.id,
-                    gcs_path,
+                    final_s3_path,
                 )
             except Exception as exc:
                 logger.error(
@@ -273,6 +277,67 @@ async def _finalize_call_recording_arq_task(
         )
     finally:
         db.close()
+
+
+def _resolve_final_recording_path(egress_info, gcs_path: str, egress_id: str, session_id) -> str:
+    """
+    Determine the S3 key to persist as recording_s3_path once egress is COMPLETE.
+
+    Our own code pre-computes ``gcs_path`` (via s3_recording_service.build_s3_key())
+    *before* egress ever runs and sends it as the requested ``filepath`` in the
+    EncodedFileOutput. LiveKit's egress service does not use that filepath
+    verbatim: it appends its own container extension server-side when the
+    requested path doesn't already end with one it recognizes (see
+    livekit/egress's FileConfig.updateFilepath), so the object actually written
+    to S3 can differ from what we requested (e.g. our ".opus" request lands as
+    ".opus.ogg" in S3).
+
+    ``EgressInfo.file_results[0].filename`` is confirmed (via both static
+    protobuf introspection and a live completed egress) to be the *actual*,
+    bucket-relative S3 key LiveKit wrote to — the same format build_s3_key()
+    produces and generate_signed_url()/get_object_size() expect.
+    ``file_results[0].location`` is a full ``https://bucket.s3.../key`` URL,
+    not a bucket-relative key, so it's deliberately not used here.
+
+    The current single-EncodedFileOutput egress request (livekit_recording_service
+    .start_room_recording) structurally produces at most one meaningful
+    file_results entry, but this still defensively checks for an empty/missing
+    list rather than assuming index 0 exists.
+    """
+    file_results = getattr(egress_info, "file_results", None) if egress_info is not None else None
+
+    if not file_results:
+        logger.info(
+            "Recording finalize: egress %s returned no file_results for session %s — "
+            "falling back to pre-computed path %s",
+            egress_id,
+            session_id,
+            gcs_path,
+        )
+        return gcs_path
+
+    filename = getattr(file_results[0], "filename", None)
+    if isinstance(filename, str) and filename.strip():
+        if filename != gcs_path:
+            logger.info(
+                "Recording finalize: using LiveKit-confirmed S3 path for session %s "
+                "(egress=%s): %s (pre-computed path was: %s)",
+                session_id,
+                egress_id,
+                filename,
+                gcs_path,
+            )
+        return filename
+
+    logger.warning(
+        "Recording finalize: egress %s file_results[0].filename unusable (%r) "
+        "for session %s — falling back to pre-computed path %s",
+        egress_id,
+        filename,
+        session_id,
+        gcs_path,
+    )
+    return gcs_path
 
 
 def _get_recording_meta(session) -> dict | None:
