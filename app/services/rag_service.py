@@ -164,7 +164,7 @@ class RagService:
             )
 
         if trace is not None:
-            trace["pinecone_results_count"] = len(results)
+            trace["results_count"] = len(results)
         logger.debug(
             "RAG retrieve (pgvector): workspace=%s results=%d", tenant_id, len(results)
         )

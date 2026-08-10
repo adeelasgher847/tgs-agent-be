@@ -1850,7 +1850,7 @@ Previous conversation:
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
 3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
 4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS below. Never say you don't know if the answer is there. Never invent details that are not written there.
+5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT; both are authoritative sources for this call regardless of where each appears in this prompt. Never say you don't know if the answer is there. Never invent details that are not written in either.
 6. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
 7. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
@@ -1887,7 +1887,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
 These rules override any conflicting custom instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
@@ -1939,7 +1939,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
 These rules override any conflicting model instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using the AUTHORITATIVE BUSINESS FACTS section below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.

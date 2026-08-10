@@ -237,6 +237,76 @@ def test_retrieve_top5_merge_across_kbs():
         assert chunk.content in context_block
 
 
+# ── Relevance threshold filtering ─────────────────────────────────────────────
+
+def test_retrieve_filters_out_chunks_below_score_threshold():
+    """Chunks whose similarity score is below settings.RAG_SCORE_THRESHOLD must
+    never reach the prompt — weak matches degrade answer quality silently."""
+    kb_id = uuid.uuid4()
+
+    async def fake_query(kb_id, vec_str, top_k):
+        return [
+            RetrievedChunk(content="Strong match.", score=0.85, metadata={}),
+            RetrievedChunk(content="Weak match.", score=0.10, metadata={}),
+        ]
+
+    with (
+        patch(
+            "app.services.kb_retrieval_service._get_embedding_cached",
+            new=AsyncMock(return_value=FAKE_EMBEDDING),
+        ),
+        patch(
+            "app.services.kb_retrieval_service._query_single_kb",
+            side_effect=fake_query,
+        ),
+        patch("app.services.kb_retrieval_service.settings") as mock_settings,
+    ):
+        mock_settings.RAG_TOP_K = 5
+        mock_settings.RAG_SCORE_THRESHOLD = 0.4
+        context_block, _ = asyncio.run(
+            retrieve_kb_context_for_turn(
+                transcript="Test",
+                kb_ids=[kb_id],
+                redis_client=None,
+            )
+        )
+
+    assert "Strong match." in context_block
+    assert "Weak match." not in context_block
+
+
+def test_retrieve_returns_empty_when_all_candidates_below_threshold():
+    """If zero chunks survive the threshold, return empty KB context rather
+    than forcing weak matches into the prompt."""
+    kb_id = uuid.uuid4()
+
+    async def fake_query(kb_id, vec_str, top_k):
+        return [RetrievedChunk(content="Barely related.", score=0.05, metadata={})]
+
+    with (
+        patch(
+            "app.services.kb_retrieval_service._get_embedding_cached",
+            new=AsyncMock(return_value=FAKE_EMBEDDING),
+        ),
+        patch(
+            "app.services.kb_retrieval_service._query_single_kb",
+            side_effect=fake_query,
+        ),
+        patch("app.services.kb_retrieval_service.settings") as mock_settings,
+    ):
+        mock_settings.RAG_TOP_K = 5
+        mock_settings.RAG_SCORE_THRESHOLD = 0.4
+        context_block, _ = asyncio.run(
+            retrieve_kb_context_for_turn(
+                transcript="Test",
+                kb_ids=[kb_id],
+                redis_client=None,
+            )
+        )
+
+    assert context_block == ""
+
+
 # ── GET /{kb_id}/search endpoint ─────────────────────────────────────────────
 
 @pytest.fixture()

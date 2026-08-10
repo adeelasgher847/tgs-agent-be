@@ -116,11 +116,18 @@ async def _query_single_kb(
 
 # ── Prompt block formatter ────────────────────────────────────────────────────
 
+_KB_CONTEXT_INSTRUCTION = (
+    "The following information comes from the business's uploaded Knowledge Base. "
+    "Use this information when answering relevant factual questions. Do not ignore it. "
+    "Do not add facts that are not supported by it."
+)
+
+
 def format_kb_context_block(chunks: List[RetrievedChunk]) -> str:
     """Format retrieved chunks into the injection block required by the ticket spec."""
     if not chunks:
         return ""
-    parts = ["--- KNOWLEDGE BASE CONTEXT ---"]
+    parts = ["--- KNOWLEDGE BASE CONTEXT ---", _KB_CONTEXT_INSTRUCTION]
     for chunk in chunks:
         parts.append(chunk.content.strip())
         parts.append("---")
@@ -178,6 +185,7 @@ async def retrieve_kb_context_for_turn(
         except Exception as e:
             logger.debug("Redis result cache read failed: %s", e)
 
+    t_embed_start = time.perf_counter()
     try:
         embedding = await _get_embedding_cached(transcript, redis_client)
     except Exception as e:
@@ -188,15 +196,18 @@ async def retrieve_kb_context_for_turn(
             str(e)[:200],
         )
         return "", latency_ms
+    embedding_latency_ms = (time.perf_counter() - t_embed_start) * 1000
 
     vec_str = "[" + ",".join(str(f) for f in embedding) + "]"
     top_k = settings.RAG_TOP_K
 
     # Query all KBs in parallel; each call opens its own session (thread-safe).
+    t_search_start = time.perf_counter()
     raw_results = await asyncio.gather(
         *[_query_single_kb(kb_id, vec_str, top_k) for kb_id in kb_ids],
         return_exceptions=True,
     )
+    vector_search_latency_ms = (time.perf_counter() - t_search_start) * 1000
 
     all_chunks: List[RetrievedChunk] = []
     for kb_id, result in zip(kb_ids, raw_results):
@@ -209,18 +220,35 @@ async def retrieve_kb_context_for_turn(
             continue
         all_chunks.extend(result)
 
-    # Merge across KBs, sort by cosine score descending, keep global top 5
+    # Merge across KBs, sort by cosine similarity score descending.
     all_chunks.sort(key=lambda c: c.score, reverse=True)
-    top_chunks = all_chunks[:5]
+    candidates_found = len(all_chunks)
+
+    # Relevance floor: `score` is 1 - cosine_distance (i.e. similarity, higher is
+    # better) — same direction as rag_context.py's use of RAG_SCORE_THRESHOLD for
+    # the Twilio path, so we reuse that constant rather than duplicating semantics.
+    # Without this, _query_single_kb's plain `ORDER BY ... LIMIT top_k` always
+    # returns its top-k rows regardless of how weak the match is, forcing
+    # low-relevance chunks into the prompt.
+    threshold = settings.RAG_SCORE_THRESHOLD
+    relevant_chunks = [c for c in all_chunks if c.score >= threshold]
+    top_chunks = relevant_chunks[:5]
 
     context_block = format_kb_context_block(top_chunks)
 
     latency_ms = (time.perf_counter() - t0) * 1000
     logger.info(
-        "kb_retrieval latency_ms=%.1f chunks=%d kb_count=%d cache_hit=false",
+        "kb_retrieval latency_ms=%.1f embedding_latency_ms=%.1f vector_search_latency_ms=%.1f "
+        "chunks=%d kb_count=%d cache_hit=false candidates_found=%d "
+        "candidates_above_threshold=%d threshold=%.2f",
         latency_ms,
+        embedding_latency_ms,
+        vector_search_latency_ms,
         len(top_chunks),
         len(kb_ids),
+        candidates_found,
+        len(relevant_chunks),
+        threshold,
     )
 
     if redis_client and context_block:
