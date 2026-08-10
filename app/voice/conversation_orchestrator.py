@@ -15,6 +15,7 @@ from app.utils.eleven_tts_text import (
     strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
+from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
 
 
 # ---------------------------------------------------------------------------
@@ -190,6 +191,13 @@ class ConversationOrchestrator:
         """
 
         try:
+            # Ambient per-turn context for TtsPipeline's humanization decision
+            # (app.voice.humanization_engine) — read via getattr, never required,
+            # so any change here can't break TTS. Set on the shared call handler
+            # (self._h), the same object TtsPipeline._handler references.
+            self._h._current_turn_user_text = user_text
+            self._h._current_turn_stt_confidence = confidence
+
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
                 # Get greeting from agent or use default. Prefer greeting_message
@@ -225,7 +233,14 @@ class ConversationOrchestrator:
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
-            self._h._elevenlabs_prev_tts_text = ""  # Reset provider continuity state per response turn
+            # Reset ElevenLabs `previous_text` continuity tracking (Phase 4D-2).
+            # Unconditional, every turn — NOT just on barge-in — because
+            # cancel_current_and_clear_queue()'s reset only fires on an actual
+            # barge-in path (e.g. LiveKitBrowserCallHandler._process_transcript()
+            # skips it entirely on a normal, non-barge-in turn). Shared by both
+            # transports since this orchestrator is transport-agnostic.
+            if self._h._tts_pipeline:
+                self._h._tts_pipeline.reset_previous_text_continuity()
             self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
             # Send quick acknowledgement for longer queries (instant from cache!)
@@ -336,6 +351,18 @@ class ConversationOrchestrator:
                 )
                 no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
             elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+            # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
+            # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
+            # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+            no_bracket_tags_line = (
+                ""
+                if elevenlabs_audio_tags_enabled
+                else (
+                    "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+                    "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+                    "will be read aloud literally."
+                )
+            )
 
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
@@ -428,7 +455,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -469,7 +496,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
-- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], [excited], [1], [2], or any similar annotation. These will not be rendered — they will be read aloud literally.
+{no_bracket_tags_line}
 
 # CONVERSATION STATE
 Previous conversation:
@@ -731,47 +758,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     return out
 
                 def _find_flush_index(buf: str):
-                    if not buf:
-                        return None
-
-                    nl = buf.find("\n")
-                    if nl != -1:
-                        prefix = buf[:nl].strip()
-                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                            return nl
-
-                    last_boundary = None
-                    for m in re.finditer(r"([.!?])(\s+|$)", buf):
-                        last_boundary = m.end(1)
-
-                    if last_boundary is not None:
-                        prefix = buf[:last_boundary].strip()
-                        if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                            return last_boundary
-
-                    words = buf.split()
-                    if len(words) >= self._h.TTS_FLUSH_MAX_WORDS:
-                        last_soft = None
-                        for m in re.finditer(r"([,;:])(\s+|$)", buf):
-                            last_soft = m.end(1)
-                        if last_soft is not None:
-                            prefix = buf[:last_soft].strip()
-                            if len(prefix.split()) >= self._h.TTS_FLUSH_MIN_WORDS:
-                                return last_soft
-                    return None
+                    return find_sentence_flush_index(
+                        buf, self._h.TTS_FLUSH_MIN_WORDS, self._h.TTS_FLUSH_MAX_WORDS
+                    )
 
                 def _find_time_flush_index(buf: str):
-                    if not buf:
-                        return None
-                    words = buf.split()
-                    if len(words) < max(self._h.TTS_FLUSH_MIN_WORDS, 5):
-                        return None
-
-                    target_words = min(8, len(words))
-                    m = re.match(rf"^(?:\S+\s+){{{target_words - 1}}}\S+", buf)
-                    if not m:
-                        return None
-                    return m.end()
+                    return find_time_flush_index(
+                        buf, max(self._h.TTS_FLUSH_MIN_WORDS, 5), 8
+                    )
 
                 async for chunk in service.stream_text(
                     prompt=user_text,

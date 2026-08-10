@@ -15,6 +15,7 @@ from app.services.bidirectional_stream_service import generate_mulaw_tts
 from app.services.credit_service import credit_service
 from app.services.google_tts_service import google_tts_service
 from app.utils.audio_utils import (
+    MULAW_FRAME_BYTES,
     apply_volume_fade,
     crossfade_mulaw_segments,
     stream_mulaw_bytes_over_twilio,
@@ -23,10 +24,12 @@ from app.utils.tts_adapter import get_tts_adapter
 from app.utils.tts_preprocessing import detect_emotion
 from app.utils.ssml_utils import strip_ssml_tags, smart_chunk_text
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+from app.voice.humanization_engine import pause_frames_for_chunk
+from app.voice.tts_provider_capabilities import build_voice_settings_overlay
 from app.routers.general_websocket import broadcast_call_status_update
 
 if TYPE_CHECKING:
-    pass
+    from app.voice.humanization_engine import PacingHint
 
 
 class TtsStreamMixin:
@@ -131,12 +134,36 @@ class TtsStreamMixin:
         except Exception:
             return 1.0
 
-    async def _stream_tts_chunk(self, text: str, use_ssml: bool = False, is_final: bool = False, prefetched_bytes: Any = None):
+    async def _stream_tts_chunk(
+        self,
+        text: str,
+        use_ssml: bool = False,
+        is_final: bool = False,
+        prefetched_bytes: Any = None,
+        pacing: "PacingHint | None" = None,
+        previous_text: str | None = None,
+    ):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
         Simplified version without the complex prefix/suffix splitting.
+
+        `pacing` (Phase 4C-2, optional): the HumanizationDecision.pacing hint
+        already computed once by TtsPipeline._process_chunk — never
+        recomputed here. When VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES > 0 and
+        this is an eligible non-final, real-sentence-boundary chunk, a small
+        trailing silence is appended after this chunk's real audio (see
+        app.voice.humanization_engine.pause_frames_for_chunk). Defaults to
+        None and is fully inert when omitted or when the config is 0.
         Note: Does NOT clear cancel flag - respects barge-in for entire queue.
-        
+
+        `previous_text` (Phase 4D-2, optional): the previously QUEUED chunk's
+        text, captured synchronously by TtsPipeline.queue_tts() — used to set
+        ElevenLabs' `previous_text` continuity field ONLY in the rare
+        fallback path below where `_prefetch_tts_audio` did not already
+        return an async iterator (e.g. it errored/returned None). The common
+        path never reaches this: `_prefetch_tts_audio` reads the same value
+        directly from the task dict.
+
         Args:
             text: Text or SSML to convert to speech
             use_ssml: Whether text contains SSML markup
@@ -187,10 +214,17 @@ class TtsStreamMixin:
                         try:
                             import base64
                             import time
+                            # MULAW_FRAME_BYTES is imported at module level (see top of
+                            # file) — deliberately NOT re-imported locally here. A local
+                            # import of a name anywhere in a function makes that name
+                            # local for the function's ENTIRE body (Python scoping), so
+                            # importing it only inside this streaming branch previously
+                            # would have made the batch/fallback path below (which also
+                            # references MULAW_FRAME_BYTES for Phase 4C-2 pacing) raise
+                            # UnboundLocalError whenever this streaming branch never ran.
                             from app.utils.audio_utils import (
                                 apply_micro_fade_in,
                                 apply_micro_fade_out,
-                                MULAW_FRAME_BYTES,
                             )
 
                             async def send_frame(frame: bytes, pace: bool = True, state: dict = None):
@@ -377,6 +411,25 @@ class TtsStreamMixin:
                                         await send_frame(out, pace=True, state=pace_state)
                                     self._prev_tts_tail = b""
 
+                                    # Phase 4C-2: optional small trailing silence after a
+                                    # non-final chunk that ends at a real sentence boundary,
+                                    # so multi-sentence responses get a brief human-like
+                                    # breath. Fully inert unless
+                                    # VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES > 0 and the chunk
+                                    # is eligible (see pause_frames_for_chunk). Reuses the
+                                    # SAME 0xFF silence-frame bytes and paced send_frame()
+                                    # mechanism as jitter-buffer priming/end-of-turn drain
+                                    # above — every frame still goes through send_frame()'s
+                                    # existing _tts_cancel check.
+                                    for _ in range(pause_frames_for_chunk(pacing, is_final)):
+                                        if self._tts_cancel.is_set():
+                                            break
+                                        await send_frame(
+                                            bytes([0xFF]) * MULAW_FRAME_BYTES,
+                                            pace=True,
+                                            state=pace_state,
+                                        )
+
                                 self._twilio_buffer_primed = True
 
                             # Stream text in near real-time from provider.
@@ -403,9 +456,9 @@ class TtsStreamMixin:
                                 provider_settings = dict(tts_runtime.settings_json)
                                 if tts_provider_slug == "elevenlabs":
                                     provider_settings.setdefault("output_format", "ulaw_8000")
-                                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
-                                    if previous_text:
-                                        provider_settings["previous_text"] = previous_text[-500:]
+                                    _prev_text = (previous_text or "").strip()
+                                    if _prev_text:
+                                        provider_settings["previous_text"] = _prev_text[-500:]
                                 elif tts_provider_slug == "rime":
                                     # Rime uses async_stream_synthesize — no output_format key needed
                                     # (mulaw 8 kHz is the default in RimeTTSAdapter).
@@ -480,8 +533,14 @@ class TtsStreamMixin:
                                 )
 
                             await stream_mulaw_from_audio_iter(audio_iter)
-                            if tts_provider_slug == "elevenlabs" and not self._tts_cancel.is_set():
-                                self._elevenlabs_prev_tts_text = streaming_text[-500:]
+                            # NOTE (Phase 4D-2): previously wrote streaming_text into
+                            # self._elevenlabs_prev_tts_text here, post-playback, as the
+                            # "previous_text" source for the NEXT chunk. That write raced
+                            # the next chunk's prefetch (which typically starts while THIS
+                            # chunk is still playing) and is no longer read by anything —
+                            # TtsPipeline.queue_tts() now captures the next chunk's
+                            # previous_text synchronously at queue time instead. See
+                            # app.voice.tts_pipeline.TtsPipeline._last_queued_text.
                             return  # streaming path complete
                         except Exception as e:
                             logger.warning(f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}")
@@ -590,6 +649,30 @@ class TtsStreamMixin:
                                     "Trailing silence drain failed (non-fatal): %s",
                                     drain_err,
                                 )
+                        elif not self._tts_cancel.is_set():
+                            # Phase 4C-2: optional small trailing silence after a
+                            # non-final chunk ending at a real sentence boundary —
+                            # same eligibility rule and 0xFF frame bytes as the
+                            # streaming path above, applied here for this
+                            # (non-streaming / batch-fallback) code path too, so
+                            # eligibility depends only on chunk content, not on
+                            # which internal path happened to handle it.
+                            try:
+                                pause_frames = pause_frames_for_chunk(pacing, is_final)
+                                if pause_frames > 0:
+                                    await stream_mulaw_bytes_over_twilio(
+                                        websocket=self.websocket,
+                                        stream_sid=self.stream_sid,
+                                        audio_bytes=bytes([0xFF]) * MULAW_FRAME_BYTES * pause_frames,
+                                        pace_20ms=True,
+                                        cancel=self._tts_cancel,
+                                        prime_frames=0,
+                                    )
+                            except Exception as pause_err:
+                                logger.debug(
+                                    "Inter-sentence pause failed (non-fatal): %s",
+                                    pause_err,
+                                )
 
                         # Update crossfade tail state
                         if self._tts_cancel.is_set():
@@ -650,7 +733,13 @@ class TtsStreamMixin:
                 provider_settings = dict(tts_runtime.settings_json)
                 if tts_provider_slug == "elevenlabs":
                     provider_settings.setdefault("output_format", "ulaw_8000")
-                    previous_text = (self._elevenlabs_prev_tts_text or "").strip()
+                    # Phase 4D-2: read the previously QUEUED chunk's text — captured
+                    # synchronously by TtsPipeline.queue_tts() at enqueue time — not
+                    # a shared instance attribute mutated after some other chunk's
+                    # playback completes (that was the source of the stale
+                    # `previous_text` race: chunk N+1's prefetch commonly runs
+                    # concurrently with chunk N still playing).
+                    previous_text = (task.get("_previous_text") or "").strip()
                     if previous_text:
                         provider_settings["previous_text"] = previous_text[-500:]
                 elif tts_provider_slug == "rime":
@@ -658,6 +747,21 @@ class TtsStreamMixin:
                     pass
                 else:
                     provider_settings.setdefault("output_format", "ulaw_8000")
+
+                # Fold in any humanization overlay (e.g. ElevenLabs stability hint)
+                # computed by TtsPipeline._process_chunk. Capability-gated and a
+                # no-op for providers/decisions with nothing safe to apply — see
+                # app.voice.tts_provider_capabilities.build_voice_settings_overlay.
+                # Isolated try/except: a humanization failure must never prevent
+                # this chunk's TTS request from going out with normal settings.
+                try:
+                    provider_settings.update(
+                        build_voice_settings_overlay(
+                            tts_provider_slug, task.get("_humanization_decision")
+                        )
+                    )
+                except Exception as exc:
+                    logger.debug("[TTS] humanization overlay skipped: %s", exc)
 
                 # Use true async streaming for providers that support it (Rime, ElevenLabs).
                 if hasattr(adapter, "async_stream_synthesize"):
