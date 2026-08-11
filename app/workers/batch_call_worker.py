@@ -342,6 +342,23 @@ async def send_post_call_email_summary(ctx: dict, call_session_id: str) -> None:
     _send_post_call_email_summary_impl(_uuid.UUID(call_session_id))
 
 
+# ── Post-call analysis (tenant-defined custom variable extraction) ───────────
+
+
+async def run_post_call_analysis(ctx: dict, call_session_id: str) -> None:
+    """
+    ARQ job: extract tenant-defined custom variables for a completed call, per
+    its call flow's post-call-analysis settings. Enqueued by
+    app.services.post_call_analysis_service.schedule_run_post_call_analysis on
+    call completion.
+    """
+    import uuid as _uuid
+
+    from app.services.post_call_analysis_service import _run_post_call_analysis_impl
+
+    _run_post_call_analysis_impl(_uuid.UUID(call_session_id))
+
+
 async def finalize_call_recording(ctx: dict, call_session_id: str, attempt: int = 1) -> None:
     """
     ARQ job: poll LiveKit egress status and finalize a call recording, retrying
@@ -655,6 +672,7 @@ class WorkerSettings:
         ghl_post_call_writeback,
         generate_call_summary,
         send_post_call_email_summary,
+        run_post_call_analysis,
         finalize_call_recording,
         purge_old_audit_logs,
         run_data_export_job,

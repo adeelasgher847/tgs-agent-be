@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.schemas.prompt_version import PromptVersionOut
 
@@ -150,6 +150,70 @@ class PostCallActionsSettingsResponse(BaseModel):
     email_summary_enabled: bool
     email_summary_recipients: List[str]
     summary_to_business_owner_enabled: bool
+
+
+class PostCallAnalysisVariableSpec(BaseModel):
+    """A single tenant-defined variable to extract from a completed call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Identifier used as the extraction result's JSON key, e.g. service_type.",
+    )
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "What the model should extract, e.g. 'Extract whether the caller is seeking "
+            "residential plumbing, commercial plumbing, or industrial supplies.'"
+        ),
+    )
+
+
+class PostCallAnalysisSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/post-call-analysis-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    variables_to_extract: List[PostCallAnalysisVariableSpec] = Field(
+        default_factory=list,
+        max_length=25,
+        description=(
+            "Custom variables to extract from each completed call. Empty disables this "
+            "feature; the automatic call summary keeps running unchanged."
+        ),
+    )
+    analysis_model: str | None = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        description=(
+            "Model name for extraction; must be an active model-catalog entry. Falls back "
+            "to the flow's agent model, then a built-in chain, when unset."
+        ),
+    )
+
+    @field_validator("analysis_model")
+    @classmethod
+    def _strip_analysis_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("analysisModel must not be blank")
+        return cleaned
+
+
+class PostCallAnalysisSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    variables_to_extract: List[PostCallAnalysisVariableSpec]
+    analysis_model: str | None
 
 
 class CallFlowOut(BaseModel):

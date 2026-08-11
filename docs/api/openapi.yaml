@@ -9065,6 +9065,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/post-call-analysis-settings:
+    put:
+      tags:
+      - Post-Call Analysis
+      summary: Configure tenant-defined custom variable extraction on a call flow
+      description: 'Configures the "Post-Call Analysis" section: a list of custom
+        variables (name + description) extracted from each completed call by a dedicated
+        LLM pass, plus the model used for extraction.
+
+
+        There is no explicit enable toggle — an empty `variablesToExtract` list disables
+        this feature entirely and leaves the existing automatic call-summary generation
+        untouched. `analysisModel`, when provided, must be an active model-catalog
+        entry; when omitted the flow falls back to the agent''s preferred model and
+        then a built-in chain at extraction time. Requires admin rank.'
+      operationId: update_post_call_analysis_settings_api_v2_flows__flow_id__post_call_analysis_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCallAnalysisSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCallAnalysisSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/workspace/branding:
     get:
       tags:
@@ -15710,6 +15755,63 @@ components:
       - summary_to_business_owner_enabled
       title: PostCallActionsSettingsUpdate
       description: Request body for ``PUT /api/v2/flows/{flow_id}/post-call-actions-settings``.
+    PostCallAnalysisSettingsResponse:
+      properties:
+        variables_to_extract:
+          items:
+            $ref: '#/components/schemas/PostCallAnalysisVariableSpec'
+          type: array
+          title: Variables To Extract
+        analysis_model:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - variables_to_extract
+      - analysis_model
+      title: PostCallAnalysisSettingsResponse
+    PostCallAnalysisSettingsUpdate:
+      properties:
+        variables_to_extract:
+          items:
+            $ref: '#/components/schemas/PostCallAnalysisVariableSpec'
+          type: array
+          maxItems: 25
+          title: Variables To Extract
+          description: Custom variables to extract from each completed call. Empty
+            disables this feature; the automatic call summary keeps running unchanged.
+        analysis_model:
+          type: string
+          maxLength: 100
+          minLength: 1
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: PostCallAnalysisSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/post-call-analysis-settings``.
+    PostCallAnalysisVariableSpec:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+          title: Name
+          description: Identifier used as the extraction result's JSON key, e.g. service_type.
+        description:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Description
+          description: What the model should extract, e.g. 'Extract whether the caller
+            is seeking residential plumbing, commercial plumbing, or industrial supplies.'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - description
+      title: PostCallAnalysisVariableSpec
+      description: A single tenant-defined variable to extract from a completed call.
     PricingConfigOut:
       properties:
         per_minute_rate:

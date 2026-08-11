@@ -20,7 +20,6 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 WORKSPACE_ID = uuid.uuid4()
 FLOW_ID = uuid.uuid4()
@@ -44,6 +43,7 @@ def _make_call_flow(
     email_summary_enabled=False,
     email_summary_recipients=None,
     summary_to_business_owner_enabled=False,
+    post_call_analysis_variables=None,
 ):
     flow = MagicMock()
     flow.id = FLOW_ID
@@ -51,6 +51,8 @@ def _make_call_flow(
     flow.email_summary_enabled = email_summary_enabled
     flow.email_summary_recipients = email_summary_recipients or []
     flow.summary_to_business_owner_enabled = summary_to_business_owner_enabled
+    flow.post_call_analysis_variables = post_call_analysis_variables or []
+    flow.hipaa_compliance = False
     return flow
 
 
@@ -586,3 +588,215 @@ class TestSendPostCallEmailSummaryImpl:
 
         mock_warning.assert_called()
         db.close.assert_called_once()
+
+
+# ── Post-Call Analysis (custom extracted variables) email integration ───────
+
+
+class TestPostCallAnalysisEmailIntegration:
+    """Covers the email hand-off to post_call_analysis_service: extraction is
+    triggered (best-effort, non-blocking) when the flow has variables
+    configured and results aren't cached yet, and _build_email_content
+    renders an "Extracted Details" section from whatever's cached."""
+
+    def test_extraction_triggered_when_variables_configured_and_not_cached(self):
+        from app.services import post_call_email_service as pces
+
+        call_session = _make_call_session(
+            call_metadata={"llm_call_analysis": {"analysis": {"summary": "cached"}}}
+        )
+        call_flow = _make_call_flow(
+            email_summary_enabled=True,
+            email_summary_recipients=["a@example.com"],
+            post_call_analysis_variables=[
+                {"name": "service_type", "description": "Extract the service type."}
+            ],
+        )
+        db = _make_db(call_session, call_flow)
+
+        with (
+            patch("app.services.post_call_email_service.SessionLocal", return_value=db),
+            patch.object(pces.email_service, "send_generic_email") as mock_send,
+            patch(
+                "app.services.post_call_analysis_service.ensure_post_call_analysis_locked"
+            ) as mock_ensure_analysis,
+        ):
+            pces._send_post_call_email_summary_impl(SESSION_ID)
+
+        mock_ensure_analysis.assert_called_once_with(db, call_session, call_flow)
+        mock_send.assert_called_once()
+
+    def test_extraction_not_triggered_when_no_variables_configured(self):
+        from app.services import post_call_email_service as pces
+
+        call_session = _make_call_session(
+            call_metadata={"llm_call_analysis": {"analysis": {"summary": "cached"}}}
+        )
+        call_flow = _make_call_flow(
+            email_summary_enabled=True,
+            email_summary_recipients=["a@example.com"],
+            post_call_analysis_variables=[],
+        )
+        db = _make_db(call_session, call_flow)
+
+        with (
+            patch("app.services.post_call_email_service.SessionLocal", return_value=db),
+            patch.object(pces.email_service, "send_generic_email") as mock_send,
+            patch(
+                "app.services.post_call_analysis_service.ensure_post_call_analysis_locked"
+            ) as mock_ensure_analysis,
+        ):
+            pces._send_post_call_email_summary_impl(SESSION_ID)
+
+        mock_ensure_analysis.assert_not_called()
+        mock_send.assert_called_once()
+
+    def test_extraction_not_triggered_when_already_cached(self):
+        from app.services import post_call_email_service as pces
+
+        call_session = _make_call_session(
+            call_metadata={
+                "llm_call_analysis": {"analysis": {"summary": "cached"}},
+                "post_call_analysis": {
+                    "variables": {"service_type": "residential plumbing"},
+                    "model_used": "gpt-4o-mini",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                },
+            }
+        )
+        call_flow = _make_call_flow(
+            email_summary_enabled=True,
+            email_summary_recipients=["a@example.com"],
+            post_call_analysis_variables=[
+                {"name": "service_type", "description": "Extract the service type."}
+            ],
+        )
+        db = _make_db(call_session, call_flow)
+
+        with (
+            patch("app.services.post_call_email_service.SessionLocal", return_value=db),
+            patch.object(pces.email_service, "send_generic_email") as mock_send,
+            patch(
+                "app.services.post_call_analysis_service.ensure_post_call_analysis_locked"
+            ) as mock_ensure_analysis,
+        ):
+            pces._send_post_call_email_summary_impl(SESSION_ID)
+
+        mock_ensure_analysis.assert_not_called()
+        mock_send.assert_called_once()
+
+    def test_extraction_failure_is_non_fatal_and_email_still_sends(self):
+        """A slow/failed custom extraction must never block the base email
+        send — it's wrapped in its own try/except."""
+        from app.services import post_call_email_service as pces
+
+        call_session = _make_call_session(
+            call_metadata={"llm_call_analysis": {"analysis": {"summary": "cached"}}}
+        )
+        call_flow = _make_call_flow(
+            email_summary_enabled=True,
+            email_summary_recipients=["a@example.com"],
+            post_call_analysis_variables=[
+                {"name": "service_type", "description": "Extract the service type."}
+            ],
+        )
+        db = _make_db(call_session, call_flow)
+
+        with (
+            patch("app.services.post_call_email_service.SessionLocal", return_value=db),
+            patch.object(pces.email_service, "send_generic_email") as mock_send,
+            patch(
+                "app.services.post_call_analysis_service.ensure_post_call_analysis_locked",
+                side_effect=RuntimeError("LLM outage"),
+            ),
+        ):
+            pces._send_post_call_email_summary_impl(SESSION_ID)
+
+        mock_send.assert_called_once()
+
+    def test_build_email_content_includes_extracted_details_when_present(self):
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={
+                "llm_call_analysis": {"analysis": {"summary": "cached"}},
+                "post_call_analysis": {
+                    "variables": {
+                        "service_type": "residential plumbing",
+                        "urgency": "high",
+                    },
+                    "model_used": "gpt-4o-mini",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                },
+            }
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "Extracted Details" in html_body
+        assert "Service Type" in html_body
+        assert "residential plumbing" in html_body
+        assert "Urgency" in html_body
+        assert "high" in html_body
+
+    def test_build_email_content_omits_extracted_details_when_not_configured(self):
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={"llm_call_analysis": {"analysis": {"summary": "cached"}}}
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "Extracted Details" not in html_body
+
+    def test_build_email_content_escapes_html_in_extracted_variable_values(self):
+        """LLM-extracted variable values are caller-influenced free text and
+        must never be interpolated into the email HTML unescaped — a value
+        containing markup/script-like text must render escaped, not raw."""
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={
+                "llm_call_analysis": {"analysis": {"summary": "cached"}},
+                "post_call_analysis": {
+                    "variables": {
+                        "notes": "<script>alert('xss')</script>",
+                        "quoted_request": "The caller said \"<b>urgent</b>\"",
+                    },
+                    "model_used": "gpt-4o-mini",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                },
+            }
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "<script>alert('xss')</script>" not in html_body
+        assert "&lt;script&gt;alert(&#x27;xss&#x27;)&lt;/script&gt;" in html_body
+        assert "<b>urgent</b>" not in html_body
+        assert "&lt;b&gt;urgent&lt;/b&gt;" in html_body
+
+    def test_build_email_content_escapes_variable_name_defense_in_depth(self):
+        """Humanized variable names are also escaped, defense-in-depth, even
+        though names are already regex-constrained at the schema level."""
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={
+                "llm_call_analysis": {"analysis": {"summary": "cached"}},
+                "post_call_analysis": {
+                    "variables": {"service_type": "plumbing"},
+                    "model_used": "gpt-4o-mini",
+                    "timestamp": "2026-08-01T00:00:00+00:00",
+                },
+            }
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "Service Type" in html_body

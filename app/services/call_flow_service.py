@@ -12,6 +12,7 @@ from app.core.logger import logger
 from app.models.agent import Agent
 from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
+from app.models.model import Model
 from app.models.prompt_version import PromptVersion
 from app.repositories.call_flow_repository import CallFlowRepository
 from app.repositories.prompt_version_repository import PromptVersionRepository
@@ -39,6 +40,8 @@ from app.schemas.call_flow import (
     FlowValidationResponse,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
+    PostCallAnalysisSettingsResponse,
+    PostCallAnalysisSettingsUpdate,
 )
 from app.schemas.prompt_version import PromptVersionOut
 from app.services.flow_graph_service import compile_graph, validate_graph
@@ -87,6 +90,23 @@ class CallFlowService:
                 detail=f"Call flow {flow_id} not found",
             )
         return flow
+
+    def _resolve_analysis_model(self, db: Session, model_name: str) -> Model:
+        """Mirror agent_service._resolve_llm_model exactly, for the post-call
+        analysis "Analysis Model" dropdown — same catalog, same validation.
+        """
+        name = model_name.strip()
+        model = (
+            db.query(Model)
+            .filter(Model.model_name == name, Model.archive == False)  # noqa: E712
+            .first()
+        )
+        if not model:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"'{name}' is not a supported LLM model for post-call analysis.",
+            )
+        return model
 
     def _insert_prompt_version(
         self,
@@ -680,6 +700,37 @@ class CallFlowService:
             email_summary_enabled=flow.email_summary_enabled,
             email_summary_recipients=list(flow.email_summary_recipients or []),
             summary_to_business_owner_enabled=flow.summary_to_business_owner_enabled,
+        )
+
+    def update_post_call_analysis_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: PostCallAnalysisSettingsUpdate,
+    ) -> PostCallAnalysisSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        analysis_model_name: str | None = None
+        if body.analysis_model is not None:
+            model = self._resolve_analysis_model(db, body.analysis_model)
+            analysis_model_name = model.model_name
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "post_call_analysis_variables": [
+                    v.model_dump() for v in body.variables_to_extract
+                ],
+                "post_call_analysis_model": analysis_model_name,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return PostCallAnalysisSettingsResponse(
+            variables_to_extract=list(flow.post_call_analysis_variables or []),
+            analysis_model=flow.post_call_analysis_model,
         )
 
     def promote_ab_winner(

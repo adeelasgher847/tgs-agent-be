@@ -393,6 +393,27 @@ class CallSessionService:
                             summary_exc,
                         )
 
+                # Post-call analysis: tenant-defined custom variable extraction,
+                # configured via the call flow's post-call-analysis-settings.
+                # No-op unless post_call_analysis_variables is non-empty — the
+                # hardcoded call-summary generation above is unaffected either
+                # way. Fire-and-forget (fail open) — see
+                # app/services/post_call_analysis_service.py::schedule_run_post_call_analysis.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and (call_flow.post_call_analysis_variables or []):
+                            from app.services.post_call_analysis_service import (
+                                schedule_run_post_call_analysis,
+                            )
+
+                            schedule_run_post_call_analysis(call_session.id)
+                    except Exception as analysis_exc:  # pragma: no cover
+                        logger.warning(
+                            "Post-call analysis schedule failed (non-critical): %s",
+                            analysis_exc,
+                        )
+
                 # Post-call email summary ("Email Summary" / "Summary to Business
                 # Owner" toggles on the call flow's post-call-actions settings).
                 # Fire-and-forget (fail open) — see

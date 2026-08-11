@@ -24,6 +24,65 @@ from app.services.transcript_service import transcript_service
 from app.utils.arq_pool import get_arq_pool
 
 
+def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
+    """Generate text using the appropriate service based on provider.
+
+    Lifted out of `analyze_call_transcript`'s private closure to module scope
+    so other extraction pipelines (e.g. post_call_analysis_service.py) can
+    reuse the same provider dispatch without duplicating it. Behavior is
+    unchanged — same signature, same branching, same calls.
+    """
+    provider_name = (current_model.provider.name or "").strip().lower()
+
+    if provider_name in (
+        "gemini",
+        "google",
+        "google-ai",
+        "google ai",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+    ):
+        from app.services.gemini_service import GeminiService
+
+        service = GeminiService()
+        return service.generate_text(
+            prompt=prompt,
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
+        from app.services.openai_service import OpenAIService
+
+        service = OpenAIService()
+        return service.generate_text(
+            prompt=prompt,
+            system_prompt="You are an AI assistant that analyzes call transcripts.",
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
+        from app.services.groq_service import GroqService
+
+        service = GroqService()
+        return service.generate_text(
+            prompt=prompt,
+            system_prompt="You are an AI assistant that analyzes call transcripts.",
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported provider for analysis: {provider_name}",
+        )
+
+
 class VoiceAnalysisService:
     """Service responsible for transcript-based call analysis."""
 
@@ -235,59 +294,6 @@ Format your response as:
 
 Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
 """
-
-        # Helper function to call appropriate service based on provider
-        def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
-            """Generate text using the appropriate service based on provider."""
-            provider_name = (current_model.provider.name or "").strip().lower()
-
-            if provider_name in (
-                "gemini",
-                "google",
-                "google-ai",
-                "google ai",
-                "gemini-1.5-flash",
-                "gemini-2.0-flash",
-            ):
-                from app.services.gemini_service import GeminiService
-
-                service = GeminiService()
-                return service.generate_text(
-                    prompt=prompt,
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
-                from app.services.openai_service import OpenAIService
-
-                service = OpenAIService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
-                from app.services.groq_service import GroqService
-
-                service = GroqService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported provider for analysis: {provider_name}",
-                )
 
         # Perform analysis with automatic fallback on quota errors
         summary_result = None

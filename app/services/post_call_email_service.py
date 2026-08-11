@@ -12,6 +12,7 @@ if `schedule_call_summary_generation` already ran for this call.
 from __future__ import annotations
 
 import asyncio
+import html
 import uuid
 
 from sqlalchemy import select
@@ -89,6 +90,23 @@ def _build_email_content(
         items = "".join(f"<li>{r}</li>" for r in recommendations)
         recommendations_html = f"<p><strong>Recommendations:</strong></p><ul>{items}</ul>"
 
+    extracted_variables: dict = {}
+    if call_session.call_metadata and "post_call_analysis" in call_session.call_metadata:
+        extracted_variables = (
+            call_session.call_metadata["post_call_analysis"].get("variables") or {}
+        )
+
+    extracted_details_html = ""
+    if extracted_variables:
+        items = "".join(
+            f"<li><strong>{html.escape(name.replace('_', ' ').title())}:</strong> "
+            f"{html.escape(str(value))}</li>"
+            for name, value in extracted_variables.items()
+        )
+        extracted_details_html = (
+            f"<p><strong>Extracted Details:</strong></p><ul>{items}</ul>"
+        )
+
     html_body = f"""
     <html>
     <body>
@@ -99,6 +117,7 @@ def _build_email_content(
         {f"<p><strong>Sentiment:</strong> {sentiment}</p>" if sentiment else ""}
         {f"<p><strong>Outcome:</strong> {success_evaluation}</p>" if success_evaluation else ""}
         {recommendations_html}
+        {extracted_details_html}
         <p>Best regards,<br>The Voice Agent Team</p>
     </body>
     </html>
@@ -157,6 +176,26 @@ def _send_post_call_email_summary_impl(call_session_id: uuid.UUID) -> None:
                 logger.warning(
                     "Post-call email summary: analysis generation failed (non-critical) "
                     "session=%s: %s",
+                    call_session_id,
+                    analysis_exc,
+                )
+
+        if call_flow.post_call_analysis_variables and not (
+            call_session.call_metadata
+            and "post_call_analysis" in call_session.call_metadata
+        ):
+            try:
+                from app.services.post_call_analysis_service import (
+                    ensure_post_call_analysis_locked,
+                )
+
+                # Best-effort — a slow/failed custom extraction must never
+                # block the base email send.
+                ensure_post_call_analysis_locked(db, call_session, call_flow)
+            except Exception as analysis_exc:
+                logger.warning(
+                    "Post-call email summary: custom variable extraction failed "
+                    "(non-critical) session=%s: %s",
                     call_session_id,
                     analysis_exc,
                 )
