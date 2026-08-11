@@ -879,11 +879,22 @@ async def _start_browser_call_recording(db, call_session) -> str | None:
     same convention as BidirectionalStreamHandler._start_livekit_recording.
     Returns the egress_id on success, None otherwise (including when
     recording is disabled for this call).
+
+    Marks call_session.recording_error=True on a genuine start failure
+    (egress exception, or a falsy egress_id with no exception) so
+    GET /api/v1/recordings/{id} can report a real failure instead of the
+    generic "still processing" 404 — "disabled" is left unmarked since it
+    already gets its own distinct 404 via get_recording_enabled_for_call().
     """
+    from app.services.call_recording_upload_service import mark_recording_error
     from app.services.recording_config_service import get_recording_enabled_for_call
 
     try:
         if not get_recording_enabled_for_call(db, call_session):
+            logger.info(
+                "[LiveKitBrowserCall] recording not enabled for session=%s — skipping",
+                call_session.id,
+            )
             return None
 
         from app.services.livekit_recording_service import livekit_recording_service
@@ -900,6 +911,12 @@ async def _start_browser_call_recording(db, call_session) -> str | None:
             gcs_path=gcs_path,
         )
         if not egress_id:
+            logger.warning(
+                "[LiveKitBrowserCall] egress start returned no egress_id (no exception "
+                "raised) for session=%s — treating as a start failure",
+                call_session.id,
+            )
+            mark_recording_error(db, call_session)
             return None
 
         meta = dict(call_session.call_metadata or {})
@@ -918,8 +935,9 @@ async def _start_browser_call_recording(db, call_session) -> str | None:
     except Exception as exc:
         logger.warning(
             "[LiveKitBrowserCall] could not start recording for session %s: %s",
-            call_session.id, exc,
+            call_session.id, exc, exc_info=True,
         )
+        mark_recording_error(db, call_session)
         return None
 
 

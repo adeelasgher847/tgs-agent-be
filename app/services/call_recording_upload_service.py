@@ -173,7 +173,7 @@ async def _finalize_call_recording_arq_task(
                 status,
                 session.id,
             )
-            _mark_recording_error(db, session)
+            mark_recording_error(db, session)
             return
 
         if status == _EGRESS_COMPLETE:
@@ -247,7 +247,7 @@ async def _finalize_call_recording_arq_task(
                         session.id,
                         exc,
                     )
-                    _mark_recording_error(db, session)
+                    mark_recording_error(db, session)
                     return
             # No way to reschedule — fall through to marking the error.
             logger.warning(
@@ -255,7 +255,7 @@ async def _finalize_call_recording_arq_task(
                 "session %s — marking recording_error",
                 session.id,
             )
-            _mark_recording_error(db, session)
+            mark_recording_error(db, session)
             return
 
         logger.warning(
@@ -266,7 +266,7 @@ async def _finalize_call_recording_arq_task(
             egress_id,
             status,
         )
-        _mark_recording_error(db, session)
+        mark_recording_error(db, session)
 
     except Exception as exc:
         logger.error(
@@ -348,8 +348,12 @@ def _get_recording_meta(session) -> dict | None:
     return meta.get("recording")
 
 
-def _mark_recording_error(db, session) -> None:
-    """Set recording_error=True on the call_session."""
+def mark_recording_error(db, session) -> None:
+    """Best-effort: set recording_error=True on the call_session so
+    GET /api/v1/recordings/{id} can report a genuine failure instead of the
+    generic "still processing" 404. Never raises. Shared by both the
+    Twilio finalize-job path (this module) and the browser-call start path
+    (livekit_browser_call_handler._start_browser_call_recording)."""
     try:
         session.recording_error = True
         db.commit()

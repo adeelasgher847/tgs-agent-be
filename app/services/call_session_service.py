@@ -393,6 +393,49 @@ class CallSessionService:
                             summary_exc,
                         )
 
+                # Post-call analysis: tenant-defined custom variable extraction,
+                # configured via the call flow's post-call-analysis-settings.
+                # No-op unless post_call_analysis_variables is non-empty — the
+                # hardcoded call-summary generation above is unaffected either
+                # way. Fire-and-forget (fail open) — see
+                # app/services/post_call_analysis_service.py::schedule_run_post_call_analysis.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and (call_flow.post_call_analysis_variables or []):
+                            from app.services.post_call_analysis_service import (
+                                schedule_run_post_call_analysis,
+                            )
+
+                            schedule_run_post_call_analysis(call_session.id)
+                    except Exception as analysis_exc:  # pragma: no cover
+                        logger.warning(
+                            "Post-call analysis schedule failed (non-critical): %s",
+                            analysis_exc,
+                        )
+
+                # Post-call email summary ("Email Summary" / "Summary to Business
+                # Owner" toggles on the call flow's post-call-actions settings).
+                # Fire-and-forget (fail open) — see
+                # app/services/post_call_email_service.py::schedule_post_call_email_summary.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and (
+                            call_flow.email_summary_enabled
+                            or call_flow.summary_to_business_owner_enabled
+                        ):
+                            from app.services.post_call_email_service import (
+                                schedule_post_call_email_summary,
+                            )
+
+                            schedule_post_call_email_summary(call_session.id)
+                    except Exception as email_exc:  # pragma: no cover
+                        logger.warning(
+                            "Post-call email summary schedule failed (non-critical): %s",
+                            email_exc,
+                        )
+
                 # HubSpot post-call write-back: create a Call engagement with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.

@@ -847,6 +847,7 @@ class TestBrowserCallRecording:
         call_session.end_time = None
         call_session.call_metadata = {}
         call_session.call_type = "web"
+        call_session.recording_error = False
         return call_session
 
     @pytest.mark.asyncio
@@ -899,7 +900,13 @@ class TestBrowserCallRecording:
     @pytest.mark.asyncio
     async def test_start_recording_is_fail_open_on_egress_error(self):
         """A recording-start failure must never raise — the call must proceed
-        unaffected (fail-open, same convention as Twilio's _start_livekit_recording)."""
+        unaffected (fail-open, same convention as Twilio's _start_livekit_recording).
+
+        It must, however, mark call_session.recording_error=True (root-cause
+        fix): previously a genuine egress-start exception left both
+        recording_s3_path and recording_error unset, making the failure
+        indistinguishable from "still processing" at
+        GET /api/v1/recordings/{id} — a permanent, silent 404."""
         call_session = self._call_session()
         db = MagicMock()
 
@@ -913,6 +920,52 @@ class TestBrowserCallRecording:
             egress_id = await _start_browser_call_recording(db, call_session)
 
         assert egress_id is None
+        assert call_session.recording_error is True
+        db.commit.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_recording_marks_error_when_egress_id_falsy_without_exception(self):
+        """The third, previously-silent failure branch: start_room_recording()
+        returns without raising but with a falsy egress_id. Must be logged
+        and must mark recording_error=True — not just silently return None."""
+        call_session = self._call_session()
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.get_recording_enabled_for_call",
+            return_value=True,
+        ), patch(
+            "app.services.livekit_recording_service.livekit_recording_service"
+        ) as mock_rec_svc, patch(
+            "app.services.s3_recording_service.build_s3_key", return_value="path/to/recording.opus"
+        ), patch(
+            "app.voice.livekit_browser_call_handler.logger"
+        ) as mock_logger:
+            mock_rec_svc.start_room_recording = AsyncMock(return_value="")
+            egress_id = await _start_browser_call_recording(db, call_session)
+
+        assert egress_id is None
+        assert call_session.recording_error is True
+        assert "recording" not in (call_session.call_metadata or {})
+        db.commit.assert_called_once()
+        mock_logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_start_recording_disabled_does_not_mark_recording_error(self):
+        """Recording disabled is an expected, non-error state — must not set
+        recording_error (GET /recordings already reports a distinct 404 for
+        it via get_recording_enabled_for_call at query time)."""
+        call_session = self._call_session()
+        db = MagicMock()
+
+        with patch(
+            "app.services.recording_config_service.get_recording_enabled_for_call",
+            return_value=False,
+        ):
+            egress_id = await _start_browser_call_recording(db, call_session)
+
+        assert egress_id is None
+        assert call_session.recording_error is False
         db.commit.assert_not_called()
 
     @pytest.mark.asyncio
