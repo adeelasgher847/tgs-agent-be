@@ -46,6 +46,20 @@ class CallFlow(Base):
     caller_memory_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
     caller_memory_window = Column(Integer, default=3, nullable=False, server_default="3")
 
+    # Post Call Actions: email a call summary and/or notify the tenant's business
+    # owner (is_creator user) after a call completes
+    email_summary_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    email_summary_recipients = Column(JSONB, nullable=True, default=list)
+    summary_to_business_owner_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+
+    # Post-Call Analysis: tenant-defined variables extracted from each completed
+    # call via a dedicated LLM pass, independent of the fixed
+    # summary/sentiment/recommendations fields computed by
+    # voice_analysis_service.analyze_call_transcript. Empty list = feature off;
+    # the automatic call-summary generation is unaffected either way.
+    post_call_analysis_variables = Column(JSONB, nullable=False, default=list, server_default="'[]'::jsonb")
+    post_call_analysis_model = Column(String(100), nullable=True)
+
     hipaa_compliance = Column(Boolean, default=False, nullable=False, server_default="false")
     public_access = Column(Boolean, default=False, nullable=False, server_default="false")
     # "active" flows can be used to initiate outbound calls; "inactive" ones are rejected

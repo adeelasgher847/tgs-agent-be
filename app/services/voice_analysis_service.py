@@ -24,6 +24,65 @@ from app.services.transcript_service import transcript_service
 from app.utils.arq_pool import get_arq_pool
 
 
+def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
+    """Generate text using the appropriate service based on provider.
+
+    Lifted out of `analyze_call_transcript`'s private closure to module scope
+    so other extraction pipelines (e.g. post_call_analysis_service.py) can
+    reuse the same provider dispatch without duplicating it. Behavior is
+    unchanged — same signature, same branching, same calls.
+    """
+    provider_name = (current_model.provider.name or "").strip().lower()
+
+    if provider_name in (
+        "gemini",
+        "google",
+        "google-ai",
+        "google ai",
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+    ):
+        from app.services.gemini_service import GeminiService
+
+        service = GeminiService()
+        return service.generate_text(
+            prompt=prompt,
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
+        from app.services.openai_service import OpenAIService
+
+        service = OpenAIService()
+        return service.generate_text(
+            prompt=prompt,
+            system_prompt="You are an AI assistant that analyzes call transcripts.",
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
+        from app.services.groq_service import GroqService
+
+        service = GroqService()
+        return service.generate_text(
+            prompt=prompt,
+            system_prompt="You are an AI assistant that analyzes call transcripts.",
+            model_name=current_model.model_name,
+            temperature=0.3,
+            max_tokens=max_tokens,
+            api_key=current_api_key,
+        )
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported provider for analysis: {provider_name}",
+        )
+
+
 class VoiceAnalysisService:
     """Service responsible for transcript-based call analysis."""
 
@@ -235,59 +294,6 @@ Format your response as:
 
 Keep it concise - similar to summary format. Maximum 1 sentence per recommendation.
 """
-
-        # Helper function to call appropriate service based on provider
-        def generate_analysis_text(current_model, current_api_key, prompt: str, max_tokens: int = 200):
-            """Generate text using the appropriate service based on provider."""
-            provider_name = (current_model.provider.name or "").strip().lower()
-
-            if provider_name in (
-                "gemini",
-                "google",
-                "google-ai",
-                "google ai",
-                "gemini-1.5-flash",
-                "gemini-2.0-flash",
-            ):
-                from app.services.gemini_service import GeminiService
-
-                service = GeminiService()
-                return service.generate_text(
-                    prompt=prompt,
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            elif provider_name in ("openai", "gpt", "gpt-4o-mini", "gpt-4o", "gpt-4"):
-                from app.services.openai_service import OpenAIService
-
-                service = OpenAIService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            elif provider_name in ("groq", "llama", "llama-3.3-70b-versatile"):
-                from app.services.groq_service import GroqService
-
-                service = GroqService()
-                return service.generate_text(
-                    prompt=prompt,
-                    system_prompt="You are an AI assistant that analyzes call transcripts.",
-                    model_name=current_model.model_name,
-                    temperature=0.3,
-                    max_tokens=max_tokens,
-                    api_key=current_api_key,
-                )
-            else:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Unsupported provider for analysis: {provider_name}",
-                )
 
         # Perform analysis with automatic fallback on quota errors
         summary_result = None
@@ -554,6 +560,61 @@ def _release_call_summary_lock(db: Session, call_session_id: uuid.UUID) -> None:
             pass
 
 
+def ensure_call_summary_locked(
+    db: Session,
+    call_session: CallSession,
+    *,
+    raise_on_no_transcript: bool = False,
+) -> None:
+    """
+    Shared double-checked-locking helper for lazily computing call-summary
+    analysis. Any caller that may run concurrently with the automatic
+    `generate_call_summary` ARQ job (e.g. the post-call email summary job)
+    should compute analysis through this helper instead of calling
+    `analyze_call_transcript` directly, so both callers serialize on the same
+    pg advisory lock keyed on call_session_id and never issue two paid LLM
+    analysis calls for the same call.
+
+    No-ops quietly if analysis is already cached, or if another worker
+    currently holds the lock for this call_session_id (`pg_try_advisory_lock`
+    is non-blocking).
+    """
+    if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+        return
+
+    session_uuid = call_session.id
+    if not _try_acquire_call_summary_lock(db, session_uuid):
+        logger.debug(
+            "Call summary generation: another worker is already generating the summary "
+            "for this call, skipping session=%s",
+            session_uuid,
+        )
+        return
+
+    try:
+        # Double-checked lock: force a fresh read past this worker's identity-map
+        # cache, in case a concurrent winner committed while we waited for the
+        # lock. Ordering invariant — call_session must not be locally mutated
+        # between the caller's query and this refresh, or that mutation is lost.
+        db.refresh(call_session)
+        if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
+            logger.debug(
+                "Call summary generation skipped — cached by another worker while "
+                "waiting for lock, session %s",
+                session_uuid,
+            )
+            return
+
+        voice_analysis_service.analyze_call_transcript(
+            db,
+            call_session,
+            user_id=call_session.user_id,
+            raise_on_no_transcript=raise_on_no_transcript,
+        )
+    finally:
+        _release_call_summary_lock(db, session_uuid)
+
+
 async def _generate_call_summary_arq_task(ctx: dict, call_session_id: str) -> None:
     """
     ARQ job entrypoint — registered as ``generate_call_summary`` in
@@ -586,36 +647,7 @@ async def _generate_call_summary_arq_task(ctx: dict, call_session_id: str) -> No
             )
             return
 
-        if not _try_acquire_call_summary_lock(db, session_uuid):
-            logger.debug(
-                "Call summary generation: another worker is already generating the summary "
-                "for this call, skipping session=%s",
-                call_session_id,
-            )
-            return
-
-        try:
-            # Double-checked lock: force a fresh read past this worker's identity-map
-            # cache, in case a concurrent winner committed while we waited for the
-            # lock. Ordering invariant — call_session must not be locally mutated
-            # between the query above and this refresh, or that mutation is lost.
-            db.refresh(call_session)
-            if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
-                logger.debug(
-                    "Call summary generation skipped — cached by another worker while "
-                    "waiting for lock, session %s",
-                    call_session_id,
-                )
-                return
-
-            voice_analysis_service.analyze_call_transcript(
-                db,
-                call_session,
-                user_id=call_session.user_id,
-                raise_on_no_transcript=False,
-            )
-        finally:
-            _release_call_summary_lock(db, session_uuid)
+        ensure_call_summary_locked(db, call_session, raise_on_no_transcript=False)
     except Exception:
         logger.warning(
             "Automatic call summary generation failed (non-critical) session=%s",

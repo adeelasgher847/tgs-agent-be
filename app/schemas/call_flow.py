@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
 
 from app.schemas.prompt_version import PromptVersionOut
 
@@ -111,6 +111,109 @@ class CallerMemorySettingsResponse(BaseModel):
 
     caller_memory_enabled: bool
     caller_memory_window: int
+
+
+class PostCallActionsSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/post-call-actions-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email_summary_enabled: bool = Field(
+        ...,
+        description=(
+            "When true, an email with the call summary and extracted variables is sent "
+            "to `email_summary_recipients` after each completed call on this flow."
+        ),
+    )
+    email_summary_recipients: List[EmailStr] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Recipient email addresses for the post-call summary email. Ignored when "
+            "`email_summary_enabled` is false. Max 10 addresses. Each entry must be a "
+            "valid email address; invalid entries are rejected with a 422."
+        ),
+    )
+    summary_to_business_owner_enabled: bool = Field(
+        ...,
+        description=(
+            "When true, the same post-call summary email is also sent to the tenant's "
+            "business owner (the workspace creator's account email) — no separate email "
+            "field is needed for this recipient."
+        ),
+    )
+
+
+class PostCallActionsSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    email_summary_enabled: bool
+    email_summary_recipients: List[str]
+    summary_to_business_owner_enabled: bool
+
+
+class PostCallAnalysisVariableSpec(BaseModel):
+    """A single tenant-defined variable to extract from a completed call."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        ...,
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z_][A-Za-z0-9_]*$",
+        description="Identifier used as the extraction result's JSON key, e.g. service_type.",
+    )
+    description: str = Field(
+        ...,
+        min_length=1,
+        max_length=500,
+        description=(
+            "What the model should extract, e.g. 'Extract whether the caller is seeking "
+            "residential plumbing, commercial plumbing, or industrial supplies.'"
+        ),
+    )
+
+
+class PostCallAnalysisSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/post-call-analysis-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    variables_to_extract: List[PostCallAnalysisVariableSpec] = Field(
+        default_factory=list,
+        max_length=25,
+        description=(
+            "Custom variables to extract from each completed call. Empty disables this "
+            "feature; the automatic call summary keeps running unchanged."
+        ),
+    )
+    analysis_model: str | None = Field(
+        None,
+        min_length=1,
+        max_length=100,
+        description=(
+            "Model name for extraction; must be an active model-catalog entry. Falls back "
+            "to the flow's agent model, then a built-in chain, when unset."
+        ),
+    )
+
+    @field_validator("analysis_model")
+    @classmethod
+    def _strip_analysis_model(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("analysisModel must not be blank")
+        return cleaned
+
+
+class PostCallAnalysisSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    variables_to_extract: List[PostCallAnalysisVariableSpec]
+    analysis_model: str | None
 
 
 class CallFlowOut(BaseModel):

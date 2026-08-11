@@ -8912,6 +8912,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/post-call-actions-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure post-call email summary actions on a call flow
+      description: 'Configures the two "Post Call Actions" toggles for this call flow:
+
+
+        - **Email Summary** (`email_summary_enabled` + `email_summary_recipients`):
+        sends the call summary and extracted variables to an explicit list of recipient
+        emails after each completed call.
+
+        - **Summary to Business Owner** (`summary_to_business_owner_enabled`): sends
+        the same email to the tenant''s business owner (the workspace creator''s account
+        email) — there is no separate address field for this, the recipient is resolved
+        server-side.
+
+
+        Both toggles are independent and may be enabled together; recipients from
+        both sources are deduplicated before sending. The request body always fully
+        replaces all three fields (send the current values for any field you don''t
+        want to change). Sending is fire-and-forget after call completion — this endpoint
+        only updates the stored configuration; it does not send an email itself. Requires
+        admin rank.'
+      operationId: update_post_call_actions_settings_api_v2_flows__flow_id__post_call_actions_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCallActionsSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCallActionsSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/flow-data:
     put:
       tags:
@@ -9005,6 +9059,51 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowValidationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/post-call-analysis-settings:
+    put:
+      tags:
+      - Post-Call Analysis
+      summary: Configure tenant-defined custom variable extraction on a call flow
+      description: 'Configures the "Post-Call Analysis" section: a list of custom
+        variables (name + description) extracted from each completed call by a dedicated
+        LLM pass, plus the model used for extraction.
+
+
+        There is no explicit enable toggle — an empty `variablesToExtract` list disables
+        this feature entirely and leaves the existing automatic call-summary generation
+        untouched. `analysisModel`, when provided, must be an active model-catalog
+        entry; when omitted the flow falls back to the agent''s preferred model and
+        then a built-in chain at extraction time. Requires admin rank.'
+      operationId: update_post_call_analysis_settings_api_v2_flows__flow_id__post_call_analysis_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PostCallAnalysisSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCallAnalysisSettingsResponse'
         '422':
           description: Validation Error
           content:
@@ -15605,6 +15704,114 @@ components:
       - id
       - created_at
       title: PlanOut
+    PostCallActionsSettingsResponse:
+      properties:
+        email_summary_enabled:
+          type: boolean
+          title: Email Summary Enabled
+        email_summary_recipients:
+          items:
+            type: string
+          type: array
+          title: Email Summary Recipients
+        summary_to_business_owner_enabled:
+          type: boolean
+          title: Summary To Business Owner Enabled
+      type: object
+      required:
+      - email_summary_enabled
+      - email_summary_recipients
+      - summary_to_business_owner_enabled
+      title: PostCallActionsSettingsResponse
+    PostCallActionsSettingsUpdate:
+      properties:
+        email_summary_enabled:
+          type: boolean
+          title: Email Summary Enabled
+          description: When true, an email with the call summary and extracted variables
+            is sent to `email_summary_recipients` after each completed call on this
+            flow.
+        email_summary_recipients:
+          items:
+            type: string
+            format: email
+          type: array
+          maxItems: 10
+          title: Email Summary Recipients
+          description: Recipient email addresses for the post-call summary email.
+            Ignored when `email_summary_enabled` is false. Max 10 addresses. Each
+            entry must be a valid email address; invalid entries are rejected with
+            a 422.
+        summary_to_business_owner_enabled:
+          type: boolean
+          title: Summary To Business Owner Enabled
+          description: When true, the same post-call summary email is also sent to
+            the tenant's business owner (the workspace creator's account email) —
+            no separate email field is needed for this recipient.
+      additionalProperties: false
+      type: object
+      required:
+      - email_summary_enabled
+      - summary_to_business_owner_enabled
+      title: PostCallActionsSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/post-call-actions-settings``.
+    PostCallAnalysisSettingsResponse:
+      properties:
+        variables_to_extract:
+          items:
+            $ref: '#/components/schemas/PostCallAnalysisVariableSpec'
+          type: array
+          title: Variables To Extract
+        analysis_model:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - variables_to_extract
+      - analysis_model
+      title: PostCallAnalysisSettingsResponse
+    PostCallAnalysisSettingsUpdate:
+      properties:
+        variables_to_extract:
+          items:
+            $ref: '#/components/schemas/PostCallAnalysisVariableSpec'
+          type: array
+          maxItems: 25
+          title: Variables To Extract
+          description: Custom variables to extract from each completed call. Empty
+            disables this feature; the automatic call summary keeps running unchanged.
+        analysis_model:
+          type: string
+          maxLength: 100
+          minLength: 1
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: PostCallAnalysisSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/post-call-analysis-settings``.
+    PostCallAnalysisVariableSpec:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+          title: Name
+          description: Identifier used as the extraction result's JSON key, e.g. service_type.
+        description:
+          type: string
+          maxLength: 500
+          minLength: 1
+          title: Description
+          description: What the model should extract, e.g. 'Extract whether the caller
+            is seeking residential plumbing, commercial plumbing, or industrial supplies.'
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      - description
+      title: PostCallAnalysisVariableSpec
+      description: A single tenant-defined variable to extract from a completed call.
     PricingConfigOut:
       properties:
         per_minute_rate:
