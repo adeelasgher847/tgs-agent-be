@@ -37,6 +37,8 @@ from app.schemas.call_flow import (
     FlowDataUpdate,
     FlowValidationError,
     FlowValidationResponse,
+    PostCallActionsSettingsResponse,
+    PostCallActionsSettingsUpdate,
 )
 from app.schemas.prompt_version import PromptVersionOut
 from app.services.flow_graph_service import compile_graph, validate_graph
@@ -652,6 +654,32 @@ class CallFlowService:
         return CallerMemorySettingsResponse(
             caller_memory_enabled=flow.caller_memory_enabled,
             caller_memory_window=flow.caller_memory_window,
+        )
+
+    def update_post_call_actions_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: PostCallActionsSettingsUpdate,
+    ) -> PostCallActionsSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "email_summary_enabled": body.email_summary_enabled,
+                "email_summary_recipients": [str(e) for e in body.email_summary_recipients],
+                "summary_to_business_owner_enabled": body.summary_to_business_owner_enabled,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return PostCallActionsSettingsResponse(
+            email_summary_enabled=flow.email_summary_enabled,
+            email_summary_recipients=list(flow.email_summary_recipients or []),
+            summary_to_business_owner_enabled=flow.summary_to_business_owner_enabled,
         )
 
     def promote_ab_winner(

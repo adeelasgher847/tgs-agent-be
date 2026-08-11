@@ -5,7 +5,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, model_validator
 
 from app.schemas.prompt_version import PromptVersionOut
 
@@ -111,6 +111,45 @@ class CallerMemorySettingsResponse(BaseModel):
 
     caller_memory_enabled: bool
     caller_memory_window: int
+
+
+class PostCallActionsSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/post-call-actions-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    email_summary_enabled: bool = Field(
+        ...,
+        description=(
+            "When true, an email with the call summary and extracted variables is sent "
+            "to `email_summary_recipients` after each completed call on this flow."
+        ),
+    )
+    email_summary_recipients: List[EmailStr] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Recipient email addresses for the post-call summary email. Ignored when "
+            "`email_summary_enabled` is false. Max 10 addresses. Each entry must be a "
+            "valid email address; invalid entries are rejected with a 422."
+        ),
+    )
+    summary_to_business_owner_enabled: bool = Field(
+        ...,
+        description=(
+            "When true, the same post-call summary email is also sent to the tenant's "
+            "business owner (the workspace creator's account email) — no separate email "
+            "field is needed for this recipient."
+        ),
+    )
+
+
+class PostCallActionsSettingsResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    email_summary_enabled: bool
+    email_summary_recipients: List[str]
+    summary_to_business_owner_enabled: bool
 
 
 class CallFlowOut(BaseModel):
