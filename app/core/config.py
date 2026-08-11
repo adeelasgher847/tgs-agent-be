@@ -797,6 +797,9 @@ class Settings(BaseSettings):
     RAG_FALLBACK_EMBEDDING_PROVIDER: str = "gemini"
     RAG_FALLBACK_EMBEDDING_MODEL: str = "gemini-embedding-002"
     RAG_TOP_K: int = 5
+    # Similarity floor (0-1, higher = more similar) shared by both the Twilio path
+    # (rag_context.py) and the LiveKit path (kb_retrieval_service._query_single_kb,
+    # which returns 1 - cosine_distance as `score` — same direction/semantics).
     RAG_SCORE_THRESHOLD: float = 0.4
     # Hard cap for the size of the rendered context block injected into prompts.
     # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
@@ -806,6 +809,15 @@ class Settings(BaseSettings):
     # If Pinecone or embedding generation is slow, we must fail fast and
     # return an empty knowledge context to avoid breaking the voice UX.
     RAG_RETRIEVAL_TIMEOUT_SEC: float = 0.45
+    # LiveKit/browser-call path (kb_retrieval_service via ConversationOrchestrator)
+    # budget — distinct from RAG_RETRIEVAL_TIMEOUT_SEC (Twilio's bidirectional_stream
+    # path) so tuning one never silently changes the other's latency contract.
+    # Observed embedding+vector-search samples were 271-450ms; 450ms left ~0ms
+    # margin and caused frequent false-positive timeouts (falling back to "no KB
+    # context" even when a result was about to arrive). 700ms keeps meaningful
+    # headroom over the observed p_max while staying well under ~1s, the point at
+    # which voice-call silence becomes perceptible to callers.
+    RAG_KB_RETRIEVAL_TIMEOUT_SEC: float = 0.7
     # Slow-path budget: cap cumulative waits for RAG/KB on a turn.
     VOICE_SLOWPATH_BUDGET_SEC: float = 0.55
     # How long we wait for an in-flight RAG prefetch before failing open.

@@ -74,6 +74,26 @@ VOICE_TUNABLES = VoiceTunables()
 
 
 # ---------------------------------------------------------------------------
+# Shared grounding-rule text (deduplicated — was three near-identical copies).
+#
+# Names BOTH the AUTHORITATIVE BUSINESS FACTS block (agent_service.
+# build_business_knowledge_context_block) and the KNOWLEDGE BASE CONTEXT block
+# (kb_retrieval_service.retrieve_kb_context_for_turn) as usable/authoritative
+# sources — previously only the former was mentioned, so the model had no
+# instruction telling it the KB block (when present) was safe to use, even
+# though it was already spliced into the prompt.
+# ---------------------------------------------------------------------------
+_BUSINESS_FACTS_GROUNDING_TEXT = (
+    "Answer questions about business name, address, phone, email, website, services, "
+    "or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, "
+    "KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call, regardless "
+    "of where each appears in this prompt. "
+    "Never invent or assume any detail that is not explicitly written in one of those "
+    "two sources. If a fact is absent from both, say it is not available."
+)
+
+
+# ---------------------------------------------------------------------------
 # Small pure helpers (no side effects, easy to reason about)
 # ---------------------------------------------------------------------------
 
@@ -384,7 +404,7 @@ Previous conversation:
 1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. BUSINESS FACTS: For questions about business name, address, phone, email, website, services, or pricing, use AUTHORITATIVE BUSINESS FACTS below. If details are not present there, say they are not available — do NOT invent them.
+4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
 5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
 6. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
@@ -441,7 +461,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
 These rules override any conflicting custom instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using AUTHORITATIVE BUSINESS FACTS below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
@@ -482,7 +502,7 @@ You are {agent_name}, having a real-time phone call. You speak {agent_language} 
 
 # GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
 These rules override any conflicting model instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing ONLY using AUTHORITATIVE BUSINESS FACTS below. Never invent or assume any detail not explicitly written there. If a fact is absent, say it is not available.
+1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
@@ -531,13 +551,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
                     from app.utils.redis_client import get_redis
 
+                    _kb_timeout_sec = float(
+                        getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
+                    )
                     kb_context_block, kb_latency_ms = await asyncio.wait_for(
                         retrieve_kb_context_for_turn(
                             transcript=user_text,
                             kb_ids=flow_kb_ids,
                             redis_client=get_redis(),
                         ),
-                        timeout=0.45,  # stay within 500ms budget; fail open if exceeded
+                        timeout=_kb_timeout_sec,  # fail open if exceeded — see settings.RAG_KB_RETRIEVAL_TIMEOUT_SEC
                     )
                     logger.info(
                         "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
@@ -547,7 +570,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     )
                 except asyncio.TimeoutError:
                     logger.warning(
-                        "kb_retrieval timed out after 450ms; proceeding without KB context"
+                        "kb_retrieval timed out after %.0fms; proceeding without KB context",
+                        _kb_timeout_sec * 1000,
                     )
                 except Exception as exc:
                     logger.error("kb_retrieval failed; proceeding without context: %s", exc)

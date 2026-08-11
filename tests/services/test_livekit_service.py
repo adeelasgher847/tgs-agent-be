@@ -46,6 +46,20 @@ def _make_livekit_mock():
 
 
 _lk_mod, _api_mod, _lk_instance = _make_livekit_mock()
+
+# Snapshot whatever is already in sys.modules for these keys so we can
+# restore it in a teardown fixture below. `setdefault` only mutates
+# sys.modules the first time this file is collected in a given pytest
+# session (e.g. when `livekit.api` hasn't been imported by anything else
+# yet); left unrestored, that mutation leaks for the rest of the process
+# and other test files that rely on the *real* `livekit.api` classes
+# (e.g. tests/voice/test_livekit_recording_service.py, which does
+# `isinstance(x, api.RoomCompositeEgressRequest)`) start seeing MagicMock
+# attributes instead of real types there, breaking isinstance() checks.
+_SENTINEL = object()
+_prev_livekit_mod = sys.modules.get("livekit", _SENTINEL)
+_prev_livekit_api_mod = sys.modules.get("livekit.api", _SENTINEL)
+
 sys.modules.setdefault("livekit", _lk_mod)
 sys.modules.setdefault("livekit.api", _api_mod)
 
@@ -55,6 +69,24 @@ _api_mod.VideoGrants = MagicMock()
 
 # Now safe to import
 from app.services.livekit_service import RoomService  # noqa: E402
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_livekit_sys_modules():
+    """Undo the sys.modules mutation above once this module's tests finish,
+    so the mock doesn't leak into other test files that need the real,
+    installed `livekit`/`livekit.api` packages (livekit-api is a pinned
+    hard dependency — see requirements.txt — this mock is only for local
+    test isolation, not an ImportError guard)."""
+    yield
+    if _prev_livekit_mod is _SENTINEL:
+        sys.modules.pop("livekit", None)
+    else:
+        sys.modules["livekit"] = _prev_livekit_mod
+    if _prev_livekit_api_mod is _SENTINEL:
+        sys.modules.pop("livekit.api", None)
+    else:
+        sys.modules["livekit.api"] = _prev_livekit_api_mod
 
 
 # ---------------------------------------------------------------------------
