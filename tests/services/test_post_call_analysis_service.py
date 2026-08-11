@@ -24,7 +24,6 @@ from __future__ import annotations
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 
 WORKSPACE_ID = uuid.uuid4()
 FLOW_ID = uuid.uuid4()
@@ -711,8 +710,6 @@ class TestRunPostCallAnalysisImpl:
 
     def test_missing_call_flow_is_a_noop(self):
         from app.services import post_call_analysis_service as pcas
-        from app.models.call_flow import CallFlow
-        from app.models.call_session import CallSession
 
         call_session = _make_call_session(call_metadata=None)
         call_session.call_flow_id = None
