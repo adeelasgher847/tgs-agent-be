@@ -8,27 +8,31 @@ logger = logging.getLogger(__name__)
 class EspClientError(Exception):
     pass
 
-class EspClient:
-    def __init__(self):
-        self.base_url = esp_settings.api_base_url.rstrip('/')
-        self.query_id = esp_settings.query_id
-        self.session_cookie = esp_settings.session_cookie
+def _format_param(value: str | None) -> str:
+    if not value or not value.strip():
+        return "''"
+    return value.strip()
 
+class EspClient:
     async def lookup_customer(self, contract_number: str, full_name: str, phone1: str, phone2: str) -> List[dict[str, Any]]:
-        # ESP requires empty search fields to be passed as an empty string.
+        base_url = esp_settings.api_base_url.rstrip('/')
+        query_id = esp_settings.query_id
+        session_cookie = esp_settings.session_cookie
+
+        # ESP requires empty search fields to be passed as literal single quotes ('').
         params = {
-            "queryId": self.query_id,
-            "ContractNumber": contract_number or "",
-            "FullName": full_name or "",
-            "Phone1": phone1 or "",
-            "Phone2": phone2 or ""
+            "queryId": query_id,
+            "ContractNumber": _format_param(contract_number),
+            "FullName": _format_param(full_name),
+            "Phone1": _format_param(phone1),
+            "Phone2": _format_param(phone2)
         }
         
         cookies = {}
-        if self.session_cookie:
-            cookies["ASP.NET_SessionId"] = self.session_cookie
+        if session_cookie:
+            cookies["ASP.NET_SessionId"] = session_cookie
 
-        url = f"{self.base_url}/services/administrationapi/00180000000E5bcNsePronuhZOjquEOdg/GetQueryData"
+        url = f"{base_url}/services/administrationapi/00180000000E5bcNsePronuhZOjquEOdg/GetQueryData"
         
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
@@ -38,10 +42,8 @@ class EspClient:
                 data = response.json()
                 
                 if not isinstance(data, list):
-                    # Sometimes APIs return a single object or null, normalize it to list
                     if data is None:
                         return []
-                    # if it's a dict, we might wrap it in a list
                     if isinstance(data, dict):
                         return [data]
                     logger.error(f"ESP API returned unexpected non-list response: {type(data)}")

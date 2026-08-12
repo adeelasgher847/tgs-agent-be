@@ -41,9 +41,9 @@ async def test_client_lookup_by_contract_number():
         mock_get.assert_called_once()
         _, kwargs = mock_get.call_args
         assert kwargs["params"]["ContractNumber"] == "HDP00695"
-        assert kwargs["params"]["FullName"] == ""
-        assert kwargs["params"]["Phone1"] == ""
-        assert kwargs["params"]["Phone2"] == ""
+        assert kwargs["params"]["FullName"] == "''"
+        assert kwargs["params"]["Phone1"] == "''"
+        assert kwargs["params"]["Phone2"] == "''"
 
 
 @pytest.mark.asyncio
@@ -57,7 +57,10 @@ async def test_client_lookup_by_full_name():
         
         assert len(res) == 1
         _, kwargs = mock_get.call_args
+        assert kwargs["params"]["ContractNumber"] == "''"
         assert kwargs["params"]["FullName"] == "CLIFFORD HARRELL"
+        assert kwargs["params"]["Phone1"] == "''"
+        assert kwargs["params"]["Phone2"] == "''"
 
 
 @pytest.mark.asyncio
@@ -102,6 +105,7 @@ async def test_client_multiple_search_fields():
         assert kwargs["params"]["ContractNumber"] == "HDP00695"
         assert kwargs["params"]["FullName"] == "CLIFFORD HARRELL"
         assert kwargs["params"]["Phone1"] == "(248) 625-0723"
+        assert kwargs["params"]["Phone2"] == "''"
 
 
 @pytest.mark.asyncio
