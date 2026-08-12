@@ -69,18 +69,6 @@ async def test_client_lookup_by_full_name():
 
 
 @pytest.mark.asyncio
-async def test_request_schema_default_contract_number():
-    req1 = EspCustomerLookupRequest()
-    assert req1.contract_number == "HDP00695"
-
-    req2 = EspCustomerLookupRequest(contract_number="")
-    assert req2.contract_number == "HDP00695"
-
-    req3 = EspCustomerLookupRequest(contract_number="ABC12345")
-    assert req3.contract_number == "ABC12345"
-
-
-@pytest.mark.asyncio
 async def test_client_no_customer_found():
     client = EspClient()
     mock_response = httpx.Response(200, json=[], request=REQ_OBJ)
@@ -120,7 +108,7 @@ def test_router_unauthenticated_access_success():
     with patch("app.integrations.esp.service.esp_client.lookup_customer", new_callable=AsyncMock) as mock_lookup:
         mock_lookup.return_value = [RAW_ESP_ITEM]
 
-        response = test_client.post("/api/v1/integrations/esp/customer-lookup", json={})
+        response = test_client.post("/api/v1/integrations/esp/customer-lookup", json={"contract_number": "HDP00695"})
 
         assert response.status_code == 200
         data = response.json()
