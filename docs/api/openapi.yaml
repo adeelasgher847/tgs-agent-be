@@ -8966,6 +8966,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/flow-data:
+    get:
+      tags:
+      - Visual Flow Editor
+      summary: List visual and pre-compiled flow graphs across the workspace
+      operationId: list_flow_data_api_v2_flows_flow_data_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: pageSize
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Pagesize
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFlowDataResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/flow-data:
     put:
       tags:
@@ -13412,6 +13451,34 @@ components:
       - skill
       - confidence
       title: ExtractedSkill
+    FlowDataListItem:
+      properties:
+        flowId:
+          type: string
+          format: uuid
+          title: Flowid
+        name:
+          type: string
+          title: Name
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        flowDataCompiled:
+          additionalProperties: true
+          type: object
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - flowId
+      - name
+      title: FlowDataListItem
+      description: A single flow's visual/pre-compiled graph, used in the paginated
+        list.
     FlowDataResponse:
       properties:
         flowData:
@@ -15260,6 +15327,30 @@ components:
       - page
       - page_size
       title: PaginatedBatchJobs
+    PaginatedFlowDataResponse:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/FlowDataListItem'
+          type: array
+          title: Data
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        pageSize:
+          type: integer
+          title: Pagesize
+      type: object
+      required:
+      - data
+      - total
+      - page
+      - pageSize
+      title: PaginatedFlowDataResponse
+      description: Response body for ``GET /api/v2/flows/flow-data``.
     PaginatedPaymentResponse:
       properties:
         items:
