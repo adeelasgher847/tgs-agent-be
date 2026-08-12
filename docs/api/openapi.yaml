@@ -8040,6 +8040,32 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/esp/customer-lookup:
+    post:
+      tags:
+      - ESP Integration
+      summary: ESP Customer Lookup
+      description: Query Express Service Protection (ESP) for customer records.
+      operationId: esp_customer_lookup_api_v1_integrations_esp_customer_lookup_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EspCustomerLookupRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EspCustomerLookupResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /health:
     get:
       summary: Health Check
@@ -13434,6 +13460,87 @@ components:
       - remote
       - hybrid
       title: EmploymentTypeEnum
+    EspCustomerLookupRequest:
+      properties:
+        contract_number:
+          type: string
+          title: Contract Number
+          description: The contract number, e.g. HDP00695
+          default: ''
+        full_name:
+          type: string
+          title: Full Name
+          description: The customer's full name
+          default: ''
+        phone1:
+          type: string
+          title: Phone1
+          description: The customer's primary phone
+          default: ''
+        phone2:
+          type: string
+          title: Phone2
+          description: The customer's secondary phone
+          default: ''
+      type: object
+      title: EspCustomerLookupRequest
+    EspCustomerLookupResponse:
+      properties:
+        success:
+          type: boolean
+          title: Success
+        customers:
+          items:
+            $ref: '#/components/schemas/EspCustomerRecord'
+          type: array
+          title: Customers
+        error:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - success
+      title: EspCustomerLookupResponse
+    EspCustomerRecord:
+      properties:
+        contract_id:
+          type: integer
+          nullable: true
+        contract_number:
+          type: string
+          nullable: true
+        first_name:
+          type: string
+          nullable: true
+        last_name:
+          type: string
+          nullable: true
+        phone1:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+        coverage_name:
+          type: string
+          nullable: true
+        coverage_type:
+          type: string
+          nullable: true
+        retail_cost:
+          type: number
+          nullable: true
+        sale_date:
+          type: string
+          nullable: true
+        expiration_date:
+          type: string
+          nullable: true
+        claim_note:
+          type: string
+          nullable: true
+      type: object
+      title: EspCustomerRecord
     ExtractedSkill:
       properties:
         skill:

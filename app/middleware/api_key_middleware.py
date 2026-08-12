@@ -50,6 +50,7 @@ _SKIP_EXACT = {
     "/",
     "/api/v1/tenants/create",
     "/api/v1/health",
+    "/api/v1/integrations/esp/customer-lookup",
 }
 
 _SKIP_PREFIXES = (
