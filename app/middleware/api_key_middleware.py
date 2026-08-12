@@ -51,6 +51,8 @@ _SKIP_EXACT = {
     "/api/v1/tenants/create",
     "/api/v1/health",
     "/api/v1/integrations/esp/customer-lookup",
+    "/api/v1/integrations/esp/trillet-webhook",
+    "/api/v1/integrations/esp/happyassist-webhook",
 }
 
 _SKIP_PREFIXES = (

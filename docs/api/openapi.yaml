@@ -8066,6 +8066,22 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/integrations/esp/happyassist-webhook:
+    post:
+      tags:
+      - ESP Integration
+      summary: HappyAssist Webhook Adapter for ESP Customer Lookup
+      description: Receives HappyAssist/Trillet pre-inbound call webhooks. Safely
+        handles connectivity test payloads (isTest=True) and queries ESP using caller
+        phone number to inject context variables into the AI prompt.
+      operationId: happyassist_webhook_api_v1_integrations_esp_happyassist_webhook_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TrilletWebhookResponse'
   /health:
     get:
       summary: Health Check
@@ -13465,8 +13481,8 @@ components:
         contract_number:
           type: string
           title: Contract Number
-          description: The contract number, defaults to HDP00695
-          default: HDP00695
+          description: The contract number, e.g. HDP00695
+          default: ''
         full_name:
           type: string
           title: Full Name
@@ -20032,6 +20048,14 @@ components:
       - cold
       - warm
       title: TransferTypeEnum
+    TrilletWebhookResponse:
+      properties:
+        variables:
+          additionalProperties: true
+          type: object
+          title: Variables
+      type: object
+      title: TrilletWebhookResponse
     TtsModelSchema:
       properties:
         provider:
