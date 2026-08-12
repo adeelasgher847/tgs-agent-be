@@ -13465,8 +13465,8 @@ components:
         contract_number:
           type: string
           title: Contract Number
-          description: The contract number, e.g. HDP00695
-          default: ''
+          description: The contract number, defaults to HDP00695
+          default: HDP00695
         full_name:
           type: string
           title: Full Name

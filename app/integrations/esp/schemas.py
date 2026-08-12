@@ -1,11 +1,18 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
+from typing import Any, Dict, List, Optional
+from pydantic import BaseModel, Field, field_validator
 
 class EspCustomerLookupRequest(BaseModel):
-    contract_number: str = Field(default="", description="The contract number, e.g. HDP00695")
+    contract_number: str = Field(default="HDP00695", description="The contract number, defaults to HDP00695")
     full_name: str = Field(default="", description="The customer's full name")
     phone1: str = Field(default="", description="The customer's primary phone")
     phone2: str = Field(default="", description="The customer's secondary phone")
+
+    @field_validator("contract_number", mode="before")
+    @classmethod
+    def default_contract_number(cls, v: Any) -> str:
+        if not v or not str(v).strip():
+            return "HDP00695"
+        return str(v).strip()
 
 class EspCustomerRecord(BaseModel):
     contract_id: Optional[int] = Field(None, validation_alias="CONTRACTID")
@@ -29,3 +36,6 @@ class EspCustomerLookupResponse(BaseModel):
     success: bool
     customers: List[EspCustomerRecord] = Field(default_factory=list)
     error: Optional[str] = None
+
+class TrilletWebhookResponse(BaseModel):
+    variables: Dict[str, Any] = Field(default_factory=dict)
