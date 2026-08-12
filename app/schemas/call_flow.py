@@ -312,3 +312,26 @@ class FlowValidationResponse(BaseModel):
     validation_errors: List[FlowValidationError] = Field(
         default_factory=list, serialization_alias="validationErrors"
     )
+
+
+class FlowDataListItem(BaseModel):
+    """A single flow's visual/pre-compiled graph, used in the paginated list."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    flow_id: uuid.UUID = Field(..., serialization_alias="flowId")
+    name: str
+    flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
+    flow_data_compiled: Dict[str, Any] | None = Field(None, serialization_alias="flowDataCompiled")
+    updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
+
+
+class PaginatedFlowDataResponse(BaseModel):
+    """Response body for ``GET /api/v2/flows/flow-data``."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    data: List[FlowDataListItem]
+    total: int
+    page: int
+    page_size: int = Field(..., serialization_alias="pageSize")

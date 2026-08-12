@@ -74,6 +74,36 @@ class CallFlowRepository:
         )
         return list(rows), total
 
+    def find_flow_data_by_workspace(
+        self,
+        tenant_id: uuid.UUID,
+        *,
+        page: int = 1,
+        limit: int = 20,
+    ) -> tuple[list[CallFlow], int]:
+        offset = (page - 1) * limit
+        filters = [
+            CallFlow.tenant_id == tenant_id,
+            CallFlow.is_deleted == False,  # noqa: E712
+        ]
+        total = int(
+            self.db.execute(
+                select(func.count(CallFlow.id)).where(*filters)
+            ).scalar_one()
+        )
+        rows = (
+            self.db.execute(
+                select(CallFlow)
+                .where(*filters)
+                .order_by(CallFlow.created_at.desc())
+                .offset(offset)
+                .limit(limit)
+            )
+            .scalars()
+            .all()
+        )
+        return list(rows), total
+
     def update(self, flow: CallFlow, fields: dict[str, Any]) -> CallFlow:
         for key, value in fields.items():
             setattr(flow, key, value)
