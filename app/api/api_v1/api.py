@@ -47,7 +47,6 @@ from app.routers.calendar import router as calendar_router
 from app.routers.inbound_crm import router as inbound_crm_router
 from app.routers.internal_tts import router as internal_tts_router
 from app.routers.internal_stt import router as internal_stt_router
-from app.routers.business_knowledge import router as business_knowledge_router
 from app.routers.recordings import router as recordings_router
 from app.routers.integrations import router as integrations_router
 from app.routers.hubspot_integration import router as hubspot_integration_router
@@ -131,11 +130,6 @@ api_router.include_router(
     include_in_schema=False,
 )
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
-api_router.include_router(
-    business_knowledge_router,
-    prefix="/business-knowledge",
-    tags=["Business Knowledge"],
-)
 api_router.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
 api_router.include_router(inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"])
 api_router.include_router(

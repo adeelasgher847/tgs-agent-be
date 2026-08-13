@@ -30,13 +30,9 @@ from app.models.knowledge_base_chunk import KbChunk, KnowledgeBaseChunk  # noqa:
 
 # Calendar
 from app.models.business_hours import BusinessHours  # noqa: F401  (used by calendar / business hours service)
-from app.models.appointment import Appointment
 from app.models.tenant_inbound_crm_config import TenantInboundCRMConfig
 from app.models.call_log_crm_sync import CallLogCRMSync
 from app.models.job_description import JobDescription
-
-# Business knowledge base
-from app.models.business_knowledge import BusinessKnowledge
 
 # Call flows and versioning
 from app.models.call_flow import CallFlow

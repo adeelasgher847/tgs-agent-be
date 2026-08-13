@@ -180,9 +180,8 @@ class TestListFlowData:
         self, db, workspace
     ):
         agent = _agent(db, workspace)
-        flows = [
-            _flow(db, workspace, agent, name=f"Paginated Flow {i}") for i in range(5)
-        ]
+        for i in range(5):
+            _flow(db, workspace, agent, name=f"Paginated Flow {i}")
 
         client = _build_app(db, _principal(workspace.id))
 

@@ -309,41 +309,6 @@ class ConversationOrchestrator:
                 except Exception:
                     history_text = ""
 
-            # Build authoritative business-knowledge block (tenant/agent scoped).
-            # Best-effort + timeout-capped so voice latency remains predictable.
-            tenant_uuid = self._h.call_session.tenant_id if self._h.call_session else None
-            agent_uuid = self._h.agent.id if self._h.agent else None
-            business_knowledge_block = ""
-            if tenant_uuid:
-                try:
-                    loop = asyncio.get_running_loop()
-
-                    def _build_business_knowledge_block() -> str:
-                        return agent_service.build_business_knowledge_context_block(
-                            db=self._h.db,
-                            tenant_id=tenant_uuid,
-                            agent_id=agent_uuid,
-                        )
-
-                    business_knowledge_block = await asyncio.wait_for(
-                        loop.run_in_executor(None, _build_business_knowledge_block),
-                        timeout=float(
-                            getattr(settings, "VOICE_BUSINESS_KB_FETCH_TIMEOUT_SEC", 0.25) or 0.25
-                        ),
-                    )
-                except Exception as exc:
-                    logger.debug("Business knowledge fetch skipped: %s", exc)
-
-            # When no business facts loaded, inject an explicit "do not invent" guard.
-            _bk_block = business_knowledge_block or (
-                "# AUTHORITATIVE BUSINESS FACTS\n"
-                "No verified business facts are loaded for this call.\n"
-                "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
-                "email, services, prices, hours, or any other specifics).\n"
-                "If the caller asks about the business, say that specific information is not "
-                "available to you right now and offer to help in another way."
-            )
-
             # Build system prompt with agent personality + history
             agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
             agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
@@ -411,8 +376,6 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-{_bk_block}
-
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
 
@@ -466,8 +429,6 @@ These rules override any conflicting custom instructions below. Never deviate fr
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
 
-{_bk_block}
-
 # CUSTOM INSTRUCTIONS
 {effective_custom_prompt}
 
@@ -507,8 +468,6 @@ These rules override any conflicting model instructions below. Never deviate fro
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
 
-{_bk_block}
-
 # MODEL INSTRUCTIONS
 {effective_model_prompt}
 
@@ -535,7 +494,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 system_prompt = base_prompt
 
             call_policy_block = agent_service.build_call_policy_block(
-                business_knowledge_block=business_knowledge_block,
                 transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
             )
             if call_policy_block:
