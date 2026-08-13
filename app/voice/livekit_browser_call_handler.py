@@ -442,6 +442,11 @@ class LiveKitBrowserCallHandler:
             logger.error("[LiveKitBrowserCall] _maybe_process_interim error: %s", exc, exc_info=True)
 
     async def _cancel_inflight_llm_response(self) -> None:
+        prefetch_task = getattr(self, "_rag_prefetch_task", None)
+        if prefetch_task and not prefetch_task.done():
+            prefetch_task.cancel()
+            setattr(self, "_rag_prefetch_task", None)
+
         task = self._llm_response_task
         self._llm_response_task = None
         if task and not task.done():

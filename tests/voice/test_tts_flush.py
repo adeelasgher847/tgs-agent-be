@@ -58,6 +58,27 @@ def test_sentence_flush_exclamation_and_question_marks():
         assert buf[:idx].strip() == f"Are we done here{punct}"
 
 
+def test_first_chunk_flush_two_words_with_comma():
+    buf = "Hello there, how can I help you?"
+    idx = find_sentence_flush_index(buf, min_words=2, max_words=8, first_chunk=True)
+    assert idx is not None
+    assert buf[:idx].strip() == "Hello there,"
+
+
+def test_first_chunk_flush_one_word_returns_none():
+    buf = "Hello,"
+    assert find_sentence_flush_index(buf, min_words=2, max_words=8, first_chunk=True) is None
+
+
+def test_subsequent_chunk_does_not_flush_soft_boundary_under_max_words():
+    buf = "Hello there, how can I help you?"
+    # For subsequent chunks (first_chunk=False), a soft boundary (comma) under max_words (8) is not flushed
+    # sentence end ("help you?") requires min_words=4 which matches
+    idx = find_sentence_flush_index(buf, min_words=4, max_words=8, first_chunk=False)
+    assert idx is not None
+    assert buf[:idx].strip() == "Hello there, how can I help you?"
+
+
 # ---------------------------------------------------------------------------
 # find_time_flush_index
 # ---------------------------------------------------------------------------

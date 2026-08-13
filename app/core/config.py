@@ -627,7 +627,8 @@ class Settings(BaseSettings):
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
     # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
-    VOICE_HISTORY_MAX_MESSAGES: int = 50
+    VOICE_HISTORY_MAX_MESSAGES: int = 12
+    VOICE_TTS_FIRST_CHUNK_MIN_WORDS: int = 2
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.

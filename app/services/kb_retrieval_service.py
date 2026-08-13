@@ -44,10 +44,9 @@ async def _get_embedding_cached(
         except Exception as e:
             logger.debug("Redis embedding cache read failed: %s", e)
 
-    from app.services.embedding_service import embed_text_for_rag
+    from app.services.embedding_service import embed_text_for_rag_async
 
-    loop = asyncio.get_running_loop()
-    embedding: list[float] = await loop.run_in_executor(None, embed_text_for_rag, transcript)
+    embedding: list[float] = await embed_text_for_rag_async(transcript)
 
     if redis_client:
         try:

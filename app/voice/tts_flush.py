@@ -25,13 +25,21 @@ SENTENCE_END_RE = _SENTENCE_END_RE
 SOFT_BOUNDARY_RE = _SOFT_BOUNDARY_RE
 
 
-def find_sentence_flush_index(buf: str, min_words: int, max_words: int) -> int | None:
+def find_sentence_flush_index(
+    buf: str,
+    min_words: int,
+    max_words: int,
+    *,
+    first_chunk: bool = False,
+) -> int | None:
     """
     Return an index (end-exclusive) where `buf` can safely be flushed to TTS.
 
     Prefers sentence boundaries (newline, or ., !, ? followed by whitespace/end).
-    Falls back to a comma/semicolon/colon boundary once the buffer reaches
-    `max_words`, so a long clause without terminal punctuation still flushes.
+    When first_chunk is True, selects the earliest valid boundary (sentence or soft)
+    meeting min_words so initial speech audio starts as early as possible.
+    Falls back to a soft boundary once the buffer reaches `max_words`, so a long clause
+    without terminal punctuation still flushes.
     Returns None if no boundary meeting `min_words` is found.
     """
     if not buf:
@@ -42,6 +50,28 @@ def find_sentence_flush_index(buf: str, min_words: int, max_words: int) -> int |
         prefix = buf[:nl].strip()
         if len(prefix.split()) >= min_words:
             return nl
+
+    if first_chunk:
+        first_soft = None
+        for m in _SOFT_BOUNDARY_RE.finditer(buf):
+            p = buf[: m.end(1)].strip()
+            if len(p.split()) >= min_words:
+                first_soft = m.end(1)
+                break
+
+        first_sent = None
+        for m in _SENTENCE_END_RE.finditer(buf):
+            p = buf[: m.end(1)].strip()
+            if len(p.split()) >= min_words:
+                first_sent = m.end(1)
+                break
+
+        if first_soft is not None and first_sent is not None:
+            return min(first_soft, first_sent)
+        if first_soft is not None:
+            return first_soft
+        if first_sent is not None:
+            return first_sent
 
     last_boundary = None
     for m in _SENTENCE_END_RE.finditer(buf):

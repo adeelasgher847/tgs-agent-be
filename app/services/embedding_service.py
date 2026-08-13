@@ -40,6 +40,32 @@ def embed_text_for_rag(text: str) -> list[float]:
     )
 
 
+async def embed_text_for_rag_async(text: str) -> list[float]:
+    """
+    Async variant of embed_text_for_rag for non-blocking latency critical paths.
+
+    Uses get_async_openai_client() for native async HTTP operations without threadpool execution.
+    """
+    if settings.OPENAI_API_KEY:
+        return await _embed_openai_ada002_async(text)
+
+    if settings.GEMINI_API_KEY:
+        import asyncio
+        from app.services.gemini_service import gemini_service
+
+        return await asyncio.to_thread(
+            gemini_service.embed_text,
+            text=text,
+            model_name=settings.RAG_FALLBACK_EMBEDDING_MODEL,
+            output_dimensionality=settings.VECTOR_DIMENSION,
+            api_key=None,
+        )
+
+    raise RuntimeError(
+        "No embedding provider available. Set OPENAI_API_KEY or GEMINI_API_KEY."
+    )
+
+
 def _embed_openai_ada002(text: str) -> list[float]:
     from app.core.openai_client import get_openai_client
 
@@ -49,3 +75,15 @@ def _embed_openai_ada002(text: str) -> list[float]:
         input=text,
     )
     return resp.data[0].embedding
+
+
+async def _embed_openai_ada002_async(text: str) -> list[float]:
+    from app.core.openai_client import get_async_openai_client
+
+    client = get_async_openai_client()
+    resp = await client.embeddings.create(
+        model=settings.RAG_EMBEDDING_MODEL,
+        input=text,
+    )
+    return resp.data[0].embedding
+

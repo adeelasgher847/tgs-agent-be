@@ -156,8 +156,53 @@ class ConversationOrchestrator:
     async def process_interim(self, transcript: str, confidence: float) -> None:
         """
         Delegates to the bidirectional stream handler (single source of truth).
+        Also kicks off speculative RAG prefetch if the transcript is stable.
         """
         await self._h._maybe_process_interim(transcript, confidence)
+        await self.maybe_prefetch_rag(transcript, confidence)
+
+    async def maybe_prefetch_rag(self, transcript: str, confidence: float) -> None:
+        """
+        Speculative background RAG prefetch on stable interim STT transcripts.
+        Caches retrieved chunks in Redis so that when SttFinalEvent arrives for the
+        matching transcript, retrieve_kb_context_for_turn hits cache instantly (0ms latency).
+        Read-only, fully safe, tagged with current turn ID to ensure stale prefetch tasks
+        are ignored on barge-in / turn transition.
+        """
+        text = (transcript or "").strip()
+        if len(text) < 15 or confidence < 0.7:
+            return
+
+        flow = getattr(self._h, "call_flow", None)
+        flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
+        if not flow_kb_ids or not getattr(self._h, "db", None):
+            return
+
+        async def _do_prefetch():
+            try:
+                from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                from app.utils.redis_client import get_redis
+
+                _kb_timeout_sec = float(
+                    getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
+                )
+                await asyncio.wait_for(
+                    retrieve_kb_context_for_turn(
+                        transcript=text,
+                        kb_ids=flow_kb_ids,
+                        redis_client=get_redis(),
+                    ),
+                    timeout=_kb_timeout_sec,
+                )
+            except Exception as exc:
+                logger.debug("[ConversationOrchestrator] interim RAG prefetch skipped: %s", exc)
+
+        prev_task = getattr(self._h, "_rag_prefetch_task", None)
+        if prev_task and not prev_task.done():
+            prev_task.cancel()
+
+        task = asyncio.create_task(_do_prefetch())
+        setattr(self._h, "_rag_prefetch_task", task)
 
     # ---- Quick acknowledgements ---------------------------------------
 
@@ -739,9 +784,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
                     return out
 
+                first_chunk_min_words = int(
+                    getattr(settings, "VOICE_TTS_FIRST_CHUNK_MIN_WORDS", 2) or 2
+                )
+
                 def _find_flush_index(buf: str):
+                    is_first = (chunk_counter == 0)
+                    min_words = first_chunk_min_words if is_first else self._h.TTS_FLUSH_MIN_WORDS
                     return find_sentence_flush_index(
-                        buf, self._h.TTS_FLUSH_MIN_WORDS, self._h.TTS_FLUSH_MAX_WORDS
+                        buf, min_words, self._h.TTS_FLUSH_MAX_WORDS, first_chunk=is_first
                     )
 
                 def _find_time_flush_index(buf: str):

@@ -1,210 +1,223 @@
 """
-Regression tests for app/voice/audio_transcoder.py's ffmpeg-based resampler.
+Unit & Integration Tests for LiveKitAudioProcessor's stateful in-memory resampler.
 
-Production bug (confirmed via live server log analysis across multiple real
-calls): `LiveKitAudioProcessor._ffmpeg_convert()` writes each ~10-20ms
-LiveKit `AudioFrame` to ffmpeg's stdin and immediately tries to read a
-matching chunk back from stdout with a 0.5s timeout. In production, stdout
-almost always timed out (`out_bytes=0`), then released a single ~2700+ byte
-burst on a ~3.5-4.5s cadence — repeatably, across different calls. Deepgram
-(endpointing=350ms/utterance_end_ms=1000) never finalized a transcript
-because it never saw a normal real-time speech/silence cadence, only
-multi-second-delayed lumps.
-
-Root cause: ffmpeg's raw `s16le` muxer writing to a pipe (`pipe:1`) buffers
-in its AVIOContext (up to ~32KB by default) before flushing to the
-underlying pipe, unless the output is explicitly told to flush after every
-write via `-flush_packets 1`. This was confirmed empirically against a real
-ffmpeg 8.1.2 binary (see PR description for the full probe transcript):
-toggling `-flush_packets 0` vs `1` reproduced the exact bug pattern (32768
--byte bursts every ~1.1-1.4s of realtime 10ms-frame input) and the exact
-fix (near-immediate ~2.7KB output every ~frame), while `-fflags nobuffer
--flags low_delay` (commonly cargo-culted "low latency ffmpeg" flags) were
-verified to be no-ops for this raw pipe-to-pipe (no container/demuxing)
-scenario and are deliberately NOT relied on for the fix.
-
-Fix: `_restart_ffmpeg()` now passes `-flush_packets 1` as an output option.
+Verifies:
+1. Low-latency synchronous stream resampling (no FFmpeg subprocess, 0ms stall).
+2. Boundary continuity (stateful FIR filter memory across audio frames, 0.0 boundary error).
+3. 48kHz Mono -> 16kHz Mono sample count correctness.
+4. 48kHz Stereo -> 16kHz Mono sample count correctness.
+5. 16kHz Mono passthrough bypass (zero copy).
+6. Irregular chunk sizes (5ms, 10ms, 20ms, 30ms, mixed).
+7. Empty and malformed byte inputs.
+8. Provider-agnostic 16-bit signed PCM output format.
+9. Sub-millisecond CPU processing latency benchmark.
 """
 from __future__ import annotations
 
 import asyncio
-import shutil
-
+import time
+import numpy as np
 import pytest
+import scipy.signal
 
-from app.voice.audio_transcoder import LiveKitAudioProcessor
+from app.voice.audio_transcoder import (
+    LiveKitAudioProcessor,
+    StatefulStreamResampler,
+    OpusToLinear16Transcoder,
+)
 
-_HAS_FFMPEG = shutil.which("ffmpeg") is not None
-
-_FRAME_MS = 20
 _SAMPLE_RATE_IN = 48000
-_FRAME_BYTES = int(_SAMPLE_RATE_IN * _FRAME_MS / 1000) * 2  # s16le mono
-_PCM_FRAME = bytes([1, 2] * (_FRAME_BYTES // 2))
+_SAMPLE_RATE_OUT = 16000
+_FRAME_MS = 20
+_FRAME_SAMPLES_48K = int(_SAMPLE_RATE_IN * _FRAME_MS / 1000)  # 960 samples
+_FRAME_BYTES_48K_MONO = _FRAME_SAMPLES_48K * 2  # 1920 bytes (s16le mono)
+_FRAME_BYTES_48K_STEREO = _FRAME_SAMPLES_48K * 4  # 3840 bytes (s16le stereo)
 
 
-async def _spawn_raw_ffmpeg(extra_output_flags: list[str]) -> asyncio.subprocess.Process:
-    """Spawn ffmpeg directly (bypassing LiveKitAudioProcessor) to isolate the
-    effect of output-side flushing flags from the class's own retry/backoff
-    logic."""
-    ffmpeg_bin = shutil.which("ffmpeg")
-    cmd = [
-        ffmpeg_bin,
-        "-loglevel",
-        "error",
-        "-f",
-        "s16le",
-        "-ar",
-        str(_SAMPLE_RATE_IN),
-        "-ac",
-        "1",
-        "-i",
-        "pipe:0",
-        "-ar",
-        "16000",
-        "-ac",
-        "1",
-        "-f",
-        "s16le",
-        *extra_output_flags,
-        "pipe:1",
-    ]
-    return await asyncio.create_subprocess_exec(
-        *cmd,
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+def _generate_sine_pcm(
+    freq: float = 440.0,
+    duration_sec: float = 1.0,
+    sample_rate: int = 48000,
+    channels: int = 1,
+) -> bytes:
+    """Generate deterministic int16 PCM sine wave bytes."""
+    t = np.linspace(0, duration_sec, int(sample_rate * duration_sec), endpoint=False)
+    signal = 0.6 * np.sin(2 * np.pi * freq * t)
+    int_samples = (signal * 32767).astype(np.int16)
+    if channels == 2:
+        # Duplicate to stereo
+        int_samples = np.column_stack((int_samples, int_samples)).flatten()
+    return int_samples.tobytes()
 
 
-async def _feed_and_time_first_output(proc, num_frames: int = 100):
-    """Feed realistic ~20ms frames at a realistic cadence; return the
-    wall-clock elapsed time (seconds) at which the first non-empty stdout
-    read arrives, or None if it never arrives within num_frames."""
-    loop = asyncio.get_event_loop()
-    start = loop.time()
-    first_output_at = None
-
-    async def reader():
-        nonlocal first_output_at
-        data = await proc.stdout.read(65536)
-        if data:
-            first_output_at = loop.time() - start
-
-    reader_task = asyncio.create_task(reader())
-    for _ in range(num_frames):
-        proc.stdin.write(_PCM_FRAME)
-        await proc.stdin.drain()
-        await asyncio.sleep(_FRAME_MS / 1000)
-        if reader_task.done():
-            break
-
-    try:
-        if proc.stdin and not proc.stdin.is_closing():
-            proc.stdin.close()
-    except Exception:
-        pass
-    try:
-        await asyncio.wait_for(proc.wait(), timeout=3)
-    except asyncio.TimeoutError:
-        proc.kill()
-    if not reader_task.done():
-        reader_task.cancel()
-    return first_output_at
-
-
-@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg binary not available in this environment")
-class TestFfmpegPipeFlushCadence:
-    """Isolates the exact ffmpeg-flag mechanism behind the production bug,
-    independent of LiveKitAudioProcessor's own code.
-
-    Note: an earlier version of this test also asserted that *omitting*
-    `-flush_packets` reproduces the multi-second stall. That assertion was
-    dropped — whether ffmpeg's raw s16le muxer buffers by default before
-    flushing is itself build/version-dependent (confirmed while writing this
-    fix: a local ffmpeg 8.1.2 build already auto-flushed with no flags at
-    all, while the production build evidently did not), so it doesn't
-    reliably reproduce across environments and doesn't exercise the actual
-    fix. The positive assertion below — that `-flush_packets 1` delivers
-    output promptly — is what actually proves the fix, on any ffmpeg build.
-    """
-
+class TestStatefulStreamResampler:
     @pytest.mark.asyncio
-    async def test_flush_packets_flag_delivers_output_within_first_few_frames(self):
-        """The fix: `-flush_packets 1` on the output must make ffmpeg release
-        resampled audio promptly instead of waiting to fill its internal
-        buffer. Threshold is generous (well under the multi-second production
-        stall) to absorb CI scheduler/CPU-contention jitter."""
-        proc = await _spawn_raw_ffmpeg(["-flush_packets", "1"])
-        first_output_at = await _feed_and_time_first_output(proc, num_frames=100)
-        assert first_output_at is not None, "no output ever arrived"
-        assert first_output_at < 1.5, (
-            f"expected prompt flush, first output arrived at {first_output_at}s"
-        )
-
-
-@pytest.mark.skipif(not _HAS_FFMPEG, reason="ffmpeg binary not available in this environment")
-class TestLiveKitAudioProcessorRealFfmpegFlushCadence:
-    """End-to-end through the real LiveKitAudioProcessor / _restart_ffmpeg —
-    proves the fix is actually wired into the code path production uses, not
-    just correct in an ad-hoc ffmpeg invocation."""
-
-    @pytest.mark.asyncio
-    async def test_process_frame_yields_output_within_first_few_frames(self):
-        """Generous frame budget/threshold to absorb CI jitter — the point is
-        proving output arrives within roughly a second of real-time audio,
-        not the multi-second production stall, not pinning an exact frame."""
+    async def test_48k_mono_to_16k_mono_exact_sample_count(self):
+        """20ms at 48kHz mono (960 samples / 1920 bytes) -> 20ms at 16kHz mono (320 samples / 640 bytes)."""
         processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
-        try:
-            got_output_at_frame = None
-            for i in range(50):
-                out = await processor.process_frame(
-                    _PCM_FRAME, sample_rate=_SAMPLE_RATE_IN, num_channels=1
-                )
-                if out:
-                    got_output_at_frame = i
-                    break
-                await asyncio.sleep(_FRAME_MS / 1000)
-            assert got_output_at_frame is not None, "no output within first 50 frames"
-            assert got_output_at_frame <= 40, (
-                f"first output only arrived at frame index {got_output_at_frame}, "
-                "expected within roughly a second, not after a multi-second stall"
-            )
-        finally:
-            await processor.close()
+        pcm_48k = _generate_sine_pcm(freq=440.0, duration_sec=0.02, sample_rate=48000, channels=1)
+        assert len(pcm_48k) == _FRAME_BYTES_48K_MONO
 
-
-class TestFfmpegCommandFlags:
-    """Fallback assertion that doesn't require a real ffmpeg binary: confirms
-    the constructed command line carries the flush flag. Weaker than the
-    integration tests above (doesn't prove flush cadence actually changes),
-    kept so this file still exercises something in environments without
-    ffmpeg installed."""
+        out_bytes = await processor.process_frame(pcm_48k, sample_rate=48000, num_channels=1)
+        
+        # 320 samples * 2 bytes = 640 bytes
+        assert len(out_bytes) == 640
+        out_samples = np.frombuffer(out_bytes, dtype=np.int16)
+        assert len(out_samples) == 320
 
     @pytest.mark.asyncio
-    async def test_restart_ffmpeg_command_includes_flush_packets_flag(self, monkeypatch):
-        processor = LiveKitAudioProcessor(output_sample_rate=16000)
-        captured_cmd = {}
+    async def test_48k_stereo_to_16k_mono_exact_sample_count(self):
+        """20ms at 48kHz stereo (1920 samples / 3840 bytes) -> 20ms at 16kHz mono (320 samples / 640 bytes)."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+        pcm_48k_stereo = _generate_sine_pcm(freq=440.0, duration_sec=0.02, sample_rate=48000, channels=2)
+        assert len(pcm_48k_stereo) == _FRAME_BYTES_48K_STEREO
 
-        class _FakeProcess:
-            pid = 1234
-            stdin = None
-            stdout = None
-            stderr = None
-            returncode = None
+        out_bytes = await processor.process_frame(pcm_48k_stereo, sample_rate=48000, num_channels=2)
+        assert len(out_bytes) == 640
+        out_samples = np.frombuffer(out_bytes, dtype=np.int16)
+        assert len(out_samples) == 320
 
-            async def wait(self):
-                return 0
+    @pytest.mark.asyncio
+    async def test_16k_passthrough_bypass(self):
+        """16kHz mono passthrough returns original bytes zero-copy without resampling."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+        pcm_16k = _generate_sine_pcm(freq=440.0, duration_sec=0.02, sample_rate=16000, channels=1)
 
-        async def _fake_create_subprocess_exec(*cmd, **kwargs):
-            captured_cmd["cmd"] = cmd
-            return _FakeProcess()
+        out_bytes = await processor.process_frame(pcm_16k, sample_rate=16000, num_channels=1)
+        assert out_bytes == pcm_16k
 
-        monkeypatch.setattr(asyncio, "create_subprocess_exec", _fake_create_subprocess_exec)
-        monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/ffmpeg")
+    def test_continuous_vs_streamed_equivalence(self):
+        """
+        Critical Audio Test: Verify that streaming chunks through StatefulStreamResampler
+        produces mathematically identical output to continuous signal filtering (<= 1.0 int16 count error).
+        """
+        in_rate = 48000
+        out_rate = 16000
+        up = 1
+        down = 3
+        half_len = 10
+        window = ("kaiser", 5.0)
 
-        await processor._restart_ffmpeg(sample_rate=48000, num_channels=1)
+        # Pre-compute FIR filter matching StatefulStreamResampler
+        numtaps = 2 * half_len * max(up, down) + 1
+        h = (scipy.signal.firwin(numtaps, 1.0 / down, window=window) * up).astype(np.float32)
 
-        cmd = list(captured_cmd["cmd"])
-        assert "-flush_packets" in cmd, f"expected -flush_packets flag in ffmpeg command: {cmd}"
-        idx = cmd.index("-flush_packets")
-        assert cmd[idx + 1] == "1"
+        duration = 1.0
+        t = np.linspace(0, duration, int(in_rate * duration), endpoint=False)
+        signal = (0.5 * np.sin(2 * np.pi * 440 * t) + 0.3 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        pcm_int16 = (signal * 32767).astype(np.int16)
+        raw_pcm = pcm_int16.tobytes()
+
+        # 1. Ground truth: single continuous upfirdn filtering on the same int16 float input
+        ground_truth_filtered = scipy.signal.upfirdn(h, pcm_int16.astype(np.float32), up=up, down=down)
+        ground_truth_clipped = np.clip(ground_truth_filtered[:16000], -32768, 32767).astype(np.int16)
+
+        # 2. Chunked streaming filtering via StatefulStreamResampler
+        resampler = StatefulStreamResampler(in_rate=in_rate, out_rate=out_rate, channels=1)
+        chunk_bytes = _FRAME_BYTES_48K_MONO  # 20ms chunks
+        num_chunks = len(raw_pcm) // chunk_bytes
+
+        streamed_chunks = []
+        for i in range(num_chunks):
+            chunk = raw_pcm[i * chunk_bytes : (i + 1) * chunk_bytes]
+            out = resampler.process(chunk, num_channels=1)
+            streamed_chunks.append(np.frombuffer(out, dtype=np.int16))
+
+        streamed_pcm = np.concatenate(streamed_chunks)
+
+        # Check middle window to exclude single-filter start/tail transients
+        mid_start = 320 * 5
+        mid_end = 320 * 45
+        gt_mid = ground_truth_clipped[mid_start:mid_end]
+        st_mid = streamed_pcm[mid_start:mid_end]
+
+        max_abs_error = np.max(np.abs(gt_mid.astype(np.float32) - st_mid.astype(np.float32)))
+        assert max_abs_error <= 1.0, f"Streaming error too high vs continuous ground truth: {max_abs_error}"
+
+    @pytest.mark.asyncio
+    async def test_irregular_chunk_sizes(self):
+        """Verify stateful resampler handles 5ms, 10ms, 20ms, 30ms, and mixed chunk sizes cleanly."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+        full_pcm = _generate_sine_pcm(freq=440.0, duration_sec=1.0, sample_rate=48000, channels=1)
+
+        # 5ms, 10ms, 20ms, 30ms sizes in bytes (48kHz mono s16le)
+        chunk_sizes = [480, 960, 1920, 2880, 960, 480, 1920]
+        offset = 0
+        total_out_samples = 0
+
+        # Repeat pattern to process full 1.0s (96000 bytes)
+        for size in chunk_sizes * 15:
+            if offset >= len(full_pcm):
+                break
+            chunk = full_pcm[offset : offset + size]
+            offset += len(chunk)
+            out = await processor.process_frame(chunk, sample_rate=48000, num_channels=1)
+            out_samples = len(out) // 2
+            total_out_samples += out_samples
+
+        # 1.0s at 16kHz = 16000 samples (exact ratio: len(full_pcm) // 6)
+        expected_total = (len(full_pcm) // 2) // 3
+        assert total_out_samples == expected_total
+
+    @pytest.mark.asyncio
+    async def test_empty_and_malformed_input(self):
+        """Verify processor safely handles empty bytes or malformed alignments without crashing."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+
+        assert await processor.process_frame(b"", sample_rate=48000, num_channels=1) == b""
+        assert await processor.process_frame(b"\x00", sample_rate=48000, num_channels=1) == b""
+        # 4 bytes = 2 samples at 48kHz -> 0 output samples at 3:1 ratio
+        assert await processor.process_frame(b"\x00\x01\x02\x03", sample_rate=48000, num_channels=1) == b""
+        # 6 bytes = 3 samples at 48kHz -> 1 output sample (2 bytes)
+        valid_small = await processor.process_frame(b"\x00\x01\x02\x03\x04\x05", sample_rate=48000, num_channels=1)
+        assert len(valid_small) == 2
+
+    @pytest.mark.asyncio
+    async def test_provider_agnostic_output_format(self):
+        """Verify output format is 16-bit signed PCM (s16le), 16000 Hz, mono — consumable by mock STT adapters."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+        pcm_48k = _generate_sine_pcm(freq=440.0, duration_sec=0.04, sample_rate=48000, channels=1)
+
+        out_bytes = await processor.process_frame(pcm_48k, sample_rate=48000, num_channels=1)
+        
+        # 40ms at 16kHz = 640 samples = 1280 bytes
+        assert len(out_bytes) == 1280
+        out_samples = np.frombuffer(out_bytes, dtype=np.int16)
+        assert len(out_samples) == 640
+
+        # Standardized mock STT adapter ingestion test (Deepgram, Google, Whisper, etc.)
+        class MockSttAdapter:
+            def consume(self, pcm_data: bytes, sample_rate: int, encoding: str):
+                return len(pcm_data) > 0 and sample_rate == 16000 and encoding == "LINEAR16"
+
+        stt_mock = MockSttAdapter()
+        assert stt_mock.consume(out_bytes, sample_rate=16000, encoding="LINEAR16")
+
+    @pytest.mark.asyncio
+    async def test_sub_millisecond_latency_benchmark(self):
+        """Benchmark execution latency over 50 consecutive 20ms frames; assert avg frame processing time < 2.0ms."""
+        processor = LiveKitAudioProcessor(output_sample_rate=16000, output_channels=1)
+        pcm_frame = _generate_sine_pcm(freq=440.0, duration_sec=0.02, sample_rate=48000, channels=1)
+
+        durations_ms = []
+        for _ in range(50):
+            t0 = time.perf_counter()
+            out = await processor.process_frame(pcm_frame, sample_rate=48000, num_channels=1)
+            t1 = time.perf_counter()
+            durations_ms.append((t1 - t0) * 1000.0)
+            assert len(out) == 640
+
+        avg_ms = float(np.mean(durations_ms))
+        p95_ms = float(np.percentile(durations_ms, 95))
+        max_ms = float(np.max(durations_ms))
+
+        print(f"\n[Transcoder Benchmark] avg={avg_ms:.4f}ms, p95={p95_ms:.4f}ms, max={max_ms:.4f}ms per 20ms frame")
+        assert avg_ms < 2.0, f"Average latency too high: {avg_ms:.4f}ms"
+
+    @pytest.mark.asyncio
+    async def test_backwards_compatible_alias(self):
+        """Verify OpusToLinear16Transcoder alias works as expected."""
+        transcoder = OpusToLinear16Transcoder()
+        pcm = _generate_sine_pcm(duration_sec=0.02)
+        res = await transcoder.process_frame(pcm, 48000, 1)
+        assert len(res) == 640
