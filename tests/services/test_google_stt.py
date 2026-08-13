@@ -223,7 +223,6 @@ def test_chirp3_catalog_maps_to_phone_call_api_model():
         language=None,
         voice_type=None,
         is_inbound_agent=False,
-        is_follow_up_agent=False,
     )
     out = agent_to_out(fake_agent)
     assert out.stt_model is not None
@@ -370,7 +369,6 @@ def test_agent_to_out_includes_stt_model():
         language=None,
         voice_type=None,
         is_inbound_agent=False,
-        is_follow_up_agent=False,
     )
 
     out = agent_to_out(fake_agent)
@@ -403,7 +401,6 @@ def test_agent_to_out_stt_model_none_when_missing():
         language=None,
         voice_type=None,
         is_inbound_agent=False,
-        is_follow_up_agent=False,
     )
 
     out = agent_to_out(fake_agent)

@@ -203,7 +203,6 @@ class TestAgentOutStatusFallback:
         agent.language = None
         agent.voice_type = None
         agent.is_inbound_agent = False
-        agent.is_follow_up_agent = False
 
         out = agent_to_out(agent)
         assert out.status == AgentStatusEnum.pending
@@ -229,7 +228,6 @@ class TestAgentOutStatusFallback:
         agent.language = None
         agent.voice_type = None
         agent.is_inbound_agent = None
-        agent.is_follow_up_agent = None
 
         assert agent_to_out(agent).status == AgentStatusEnum.pending
 

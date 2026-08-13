@@ -1,4 +1,4 @@
-from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Index, text, JSON
+from sqlalchemy import Column, String, Text, DateTime, ForeignKey, Integer, Boolean, Index, JSON
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -82,8 +82,6 @@ class Agent(Base):
     is_deleted = Column(Boolean, default=False, nullable=False, server_default='false')
     # Dedicated inbound entry point agent (max one active per tenant)
     is_inbound_agent = Column(Boolean, default=False, nullable=False, server_default='false')
-    # Appointment reminder / follow-up outbound agent (max one active per tenant)
-    is_follow_up_agent = Column(Boolean, default=False, nullable=False, server_default='false')
 
     # Optional default human transfer route (tenant-scoped; see TransferRoute)
     transfer_route_id = Column(
@@ -99,7 +97,6 @@ class Agent(Base):
     updater = relationship("User", foreign_keys=[updated_by], back_populates="updated_agents")
     call_sessions = relationship("CallSession", back_populates="agent")
     transcript_messages = relationship("TranscriptMessage", back_populates="agent")
-    appointments = relationship("Appointment", back_populates="agent")
     model = relationship("Model")
     provider = relationship("Provider")  # Provider relationship for filtering models
     tts_provider = relationship("TTSProvider", back_populates="agents")
@@ -111,10 +108,4 @@ class Agent(Base):
 
     __table_args__ = (
         Index("ix_agent_tenant_id", "tenant_id"),
-        Index(
-            "uq_agent_single_follow_up_per_tenant",
-            "tenant_id",
-            unique=True,
-            postgresql_where=text("is_follow_up_agent = true AND is_deleted = false"),
-        ),
     )

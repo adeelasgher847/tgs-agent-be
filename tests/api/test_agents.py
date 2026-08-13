@@ -25,17 +25,16 @@ from app.models.tenant import Tenant
 _API_KEY = "test-agents-key"
 
 
-# Postgres-only partial unique indexes (``is_inbound_agent``,
-# ``is_follow_up_agent`` per tenant) collapse to plain UNIQUE(tenant_id) under
-# SQLite because the ``postgresql_where`` predicate is ignored. Drop them once
-# for this module so the in-memory test DB allows multiple agents per tenant.
+# Postgres-only partial unique index (``is_inbound_agent`` per tenant)
+# collapses to plain UNIQUE(tenant_id) under SQLite because the
+# ``postgresql_where`` predicate is ignored. Drop it once for this module so
+# the in-memory test DB allows multiple agents per tenant.
 @pytest.fixture(scope="module", autouse=True)
 def _drop_partial_unique_indexes(db):
     from sqlalchemy import text
 
     for index_name in (
         "uq_agent_single_inbound_per_tenant",
-        "uq_agent_single_follow_up_per_tenant",
     ):
         try:
             db.execute(text(f"DROP INDEX IF EXISTS {index_name}"))

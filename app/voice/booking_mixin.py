@@ -1,20 +1,18 @@
 """
 Booking & Calendar Token Mixin for BidirectionalStreamHandler.
-Handles calendar slot caching, booking intent detection, and appointment token processing.
+Handles Calendly-backed booking (via Gemini function-calling), in-call
+calendar-slot memory/dedup, and TTS-safe control-token stripping.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 import time
-import uuid
 from datetime import datetime, date, timedelta, timezone
-from typing import TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.models.appointment import Appointment
 from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_tts
 
 if TYPE_CHECKING:
@@ -162,16 +160,6 @@ class BookingMixin:
         value = (value or "").strip().lower().replace(".", "")
         return re.sub(r"\s+", " ", value)
 
-    def _cache_calendar_slots(self, slots: List) -> None:
-        self._last_offered_calendar_slots = [slot.slot_start for slot in slots]
-        self._last_selected_calendar_slot = None
-
-    @staticmethod
-    def _has_calendar_token(text: str) -> bool:
-        if not text:
-            return False
-        return bool(re.search(r"\[\s*(?:CHECK_SLOTS|BOOK_APPOINTMENT)\s*:", text, flags=re.IGNORECASE))
-
     def _is_booking_intent_turn(self, user_text: str, model_text: str = "") -> bool:
         """Conservative booking-intent detector for token-budget and fallback extraction."""
         haystack = f"{user_text or ''} {model_text or ''}".lower()
@@ -191,15 +179,6 @@ class BookingMixin:
         if not bool(getattr(settings, "VOICE_ENABLE_LATENCY_FASTPATH", True)):
             return False
         if booking_intent_turn:
-            return False
-        # Never use fast path when a restricted service area is configured: any turn
-        # could carry a location statement ("Houston, Texas" = 2 words) and needs
-        # the full KB + policy block so the service area gate fires correctly.
-        if (
-            self._kb_cache_ready
-            and self._cached_business_knowledge_block
-            and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
-        ):
             return False
         text = (user_text or "").strip().lower()
         if not text:
@@ -306,98 +285,6 @@ class BookingMixin:
             if overlap / shorter >= 0.80:
                 return True
         return False
-
-    def _extract_caller_location_from_transcript(self) -> str:
-        """
-        Scan the in-memory conversation history for a client message that looks like a
-        location response.  Returns the first matching client utterance (truncated to 80
-        chars) or an empty string when nothing is found.
-
-        Heuristic: a client message is treated as a location if it contains a US state
-        name/abbreviation, or if it was immediately preceded by an agent turn that asked
-        about city/state/location.  Scanning is limited to the most recent 30 pairs so
-        the check stays O(1) on long calls.
-        """
-        import re as _re
-
-        # Common US state names and two-letter abbreviations (covers the vast majority of
-        # service-area lookups; non-US businesses will typically use global coverage).
-        _STATE_RE = _re.compile(
-            r"\b(?:alabama|alaska|arizona|arkansas|california|colorado|connecticut|delaware|"
-            r"florida|georgia|hawaii|idaho|illinois|indiana|iowa|kansas|kentucky|louisiana|"
-            r"maine|maryland|massachusetts|michigan|minnesota|mississippi|missouri|montana|"
-            r"nebraska|nevada|new hampshire|new jersey|new mexico|new york|north carolina|"
-            r"north dakota|ohio|oklahoma|oregon|pennsylvania|rhode island|south carolina|"
-            r"south dakota|tennessee|texas|utah|vermont|virginia|washington|west virginia|"
-            r"wisconsin|wyoming|"
-            r"\bAL\b|\bAK\b|\bAZ\b|\bAR\b|\bCA\b|\bCO\b|\bCT\b|\bDE\b|\bFL\b|\bGA\b|"
-            r"\bHI\b|\bID\b|\bIL\b|\bIN\b|\bIA\b|\bKS\b|\bKY\b|\bLA\b|\bME\b|\bMD\b|"
-            r"\bMA\b|\bMI\b|\bMN\b|\bMS\b|\bMO\b|\bMT\b|\bNE\b|\bNV\b|\bNH\b|\bNJ\b|"
-            r"\bNM\b|\bNY\b|\bNC\b|\bND\b|\bOH\b|\bOK\b|\bOR\b|\bPA\b|\bRI\b|\bSC\b|"
-            r"\bSD\b|\bTN\b|\bTX\b|\bUT\b|\bVT\b|\bVA\b|\bWA\b|\bWV\b|\bWI\b|\bWY\b)",
-            _re.IGNORECASE,
-        )
-        _LOCATION_QUESTION_RE = _re.compile(
-            r"\b(?:city|state|zip|area|location|address|where|neighbourhood|neighborhood|borough|county|region)\b",
-            _re.IGNORECASE,
-        )
-
-        history = self._conversation_history_cache[-60:]  # last 30 pairs max
-        prev_agent_asked_location = False
-        for role, text in history:
-            if role == "agent":
-                prev_agent_asked_location = bool(_LOCATION_QUESTION_RE.search(text or ""))
-            elif role in ("client", "user"):
-                txt = (text or "").strip()
-                if not txt:
-                    prev_agent_asked_location = False
-                    continue
-                if _STATE_RE.search(txt) or prev_agent_asked_location:
-                    return txt[:80]
-                prev_agent_asked_location = False
-        return ""
-
-    def _is_location_in_service_area(self, location: str) -> bool:
-        """
-        Return True when *location* appears to be within the business's service areas.
-
-        Reads the verbatim service areas text from _cached_business_knowledge_block.
-        Uses word-level intersection: if any significant word from the caller's location
-        (3+ chars, not a stop-word) appears in the service areas blob, we treat it as
-        a match.  This is intentionally permissive — a false-negative (blocking a valid
-        caller) is far worse than a false-positive here; the LLM gate handles nuance.
-        """
-        if not location or not self._cached_business_knowledge_block:
-            return True  # no block to check against — allow by default
-
-        service_area_text = self._get_service_area_text_from_bk_block()
-        if not service_area_text:
-            return True  # service areas not parseable — allow
-
-        loc_lower = location.lower()
-        sa_lower = service_area_text.lower()
-
-        # Direct substring match first (fast path for well-formed data).
-        if loc_lower in sa_lower:
-            return True
-
-        _stop = {"in", "the", "of", "and", "or", "at", "to", "for", "a", "is", "are", "we", "our"}
-        loc_words = [w for w in loc_lower.split() if len(w) >= 3 and w not in _stop]
-        if not loc_words:
-            return True  # location too vague to deny — allow
-
-        return any(word in sa_lower for word in loc_words)
-
-    def _get_service_area_text_from_bk_block(self) -> str:
-        """
-        Extract the verbatim 'Service Areas (verbatim): ...' line from the cached BK block.
-        Returns the area text, or an empty string when the line is not present.
-        """
-        import re as _re
-
-        block = self._cached_business_knowledge_block or ""
-        m = _re.search(r"Service Areas \(verbatim\):\s*(.+)", block)
-        return m.group(1).strip() if m else ""
 
     def _remember_agent_turn(self, user_text: str | None, agent_text: str) -> None:
         """Append (user_norm, agent_norm, ts) and bound the buffer to the last few entries."""
@@ -545,71 +432,6 @@ class BookingMixin:
         if resolved_slot is not None:
             self._last_selected_calendar_slot = resolved_slot
 
-    def _build_follow_up_appointment_block(self) -> str:
-        """Extra instructions when this outbound call was scheduled as an appointment reminder."""
-        if not self.call_session or not self.call_session.call_metadata:
-            return ""
-        aid_raw = str(self.call_session.call_metadata.get("appointment_id") or "").strip()
-        if not aid_raw:
-            return ""
-        appt = None
-        try:
-            appt_id = uuid.UUID(aid_raw)
-            appt = (
-                self.db.query(Appointment)
-                .filter(
-                    Appointment.id == appt_id,
-                    Appointment.tenant_id == self.call_session.tenant_id,
-                )
-                .first()
-            )
-        except Exception:
-            appt = None
-
-        details: list[str] = []
-        if appt:
-            if (appt.customer_name or "").strip():
-                details.append(f"- Customer name: {appt.customer_name.strip()}.")
-            if (appt.customer_phone or "").strip():
-                details.append(f"- Customer phone: {appt.customer_phone.strip()}.")
-            if (appt.appointment_reason or "").strip():
-                details.append(f"- Appointment reason: {appt.appointment_reason.strip()}.")
-            if appt.slot_start:
-                try:
-                    from app.services.calendar_service import calendar_service as _calendar_service
-
-                    _tz_label, slot_start_local, _slot_end_local = _calendar_service.appointment_local_display(
-                        self.db,
-                        self.call_session.tenant_id,
-                        appt,
-                    )
-                    details.append(
-                        "- Scheduled appointment time (local): "
-                        f"{slot_start_local.strftime('%A, %B %d at %I:%M %p').replace(' 0', ' ')}."
-                    )
-                except Exception as exc:
-                    logger.debug("Failed to format local appointment time for appt=%s: %s", appt.id, exc)
-        else:
-            details.append(f"- Appointment ID: {aid_raw}.")
-
-        details_block = "\n".join(details)
-        if details_block:
-            details_block = f"{details_block}\n"
-
-        return (
-            "# APPOINTMENT FOLLOW-UP REMINDER (THIS CALL ONLY)\n"
-            f"{details_block}"
-            "- The customer has an appointment on file. Confirm whether they (or someone for the service) will attend at the scheduled time.\n"
-            "- When you mention the appointment time, use the local time shown above. Do not mention UTC or any timezone name.\n"
-            "- If they clearly confirm attendance: thank them briefly, then put [FOLLOWUP_CONFIRM] alone on its own line at the end of your message, "
-            "then end with [END_CALL] on the next line.\n"
-            "- If they want to cancel the appointment: acknowledge, then put [FOLLOWUP_CANCEL] alone on its own line at the end.\n"
-            "- If they want to reschedule: collect a concrete new date and time they agree to, then put exactly one line at the end: "
-            "[FOLLOWUP_RESCHEDULE:slot=<ISO8601 datetime>]. Use UTC with offset or Z (e.g. 2026-05-10T15:00:00+00:00). "
-            "If they have not given a new time yet, ask for it — do not emit RESCHEDULE until the slot is explicit.\n"
-            "- Do not use [BOOK_APPOINTMENT:...] in this reminder flow.\n"
-        )
-
     def _build_booking_memory_block(self) -> str:
         if not self._is_booking_context_active():
             return ""
@@ -649,12 +471,12 @@ class BookingMixin:
         Remove assistant self-confirmations so final confirmation comes only after backend success.
 
         The voice agent must NOT tell the caller their booking is confirmed
-        during the call — the actual Appointment row is created post-call by
-        post_call_appointment_service after contact + slot validation. If the
-        LLM ignores that rule and says "your appointment is booked",
-        "your plumbing service is booked", "you're all set", etc., we strip
-        those sentences before they reach TTS so the caller never hears a
-        false confirmation.
+        during the call — booking confirmation is owned by the connected
+        Calendly integration (see `_execute_calendly_tool_call`), not the
+        agent's own words. If the LLM ignores that rule and says "your
+        appointment is booked", "your plumbing service is booked", "you're
+        all set", etc., we strip those sentences before they reach TTS so the
+        caller never hears a false confirmation.
         """
         if not text:
             return ""
@@ -695,11 +517,6 @@ class BookingMixin:
         out = _RE_VOICE_SCREENING_QUALIFIED.sub("", out)
         out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
-        out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
-        out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
-        out = re.sub(r"\[\s*FOLLOWUP_CONFIRM\s*\]", "", out, flags=re.IGNORECASE)
-        out = re.sub(r"\[\s*FOLLOWUP_CANCEL\s*\]", "", out, flags=re.IGNORECASE)
-        out = re.sub(r"\[\s*FOLLOWUP_RESCHEDULE:[^\]]*\]", "", out, flags=re.IGNORECASE)
         # Strip all known ElevenLabs-style audio tags and common variants so they
         # are never spoken as literal words regardless of TTS provider.
         out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
@@ -707,13 +524,13 @@ class BookingMixin:
         out = re.sub(r"\[\s*\d{1,3}\s*\]", "", out)
         # Malformed bracket-open tokens without closing bracket
         out = re.sub(
-            r"\[(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE):[^\]\n\r]*",
+            r"\[OUTCOME:[^\]\n\r]*",
             "",
             out,
         )
         # Unbracketed control tails occasionally produced by model
         out = re.sub(
-            r"(?im)\b(?:OUTCOME|CHECK_SLOTS|BOOK_APPOINTMENT|FOLLOWUP_RESCHEDULE)\s*:\s*[^\n\r]*",
+            r"(?im)\bOUTCOME\s*:\s*[^\n\r]*",
             "",
             out,
         )
@@ -728,14 +545,7 @@ class BookingMixin:
             return False
         t = text.lower()
         leak_patterns = (
-            r"\bbook_appointment\b",
-            r"\bcheck_slots\b",
             r"\boutcome\b",
-            r"\bslot\s*=",
-            r"\breason\s*=",
-            r"\bname\s*=",
-            r"\bemail\s*=",
-            r"\bphone\s*=",
             r"\bclient phone number slot\b",
         )
         return any(re.search(p, t, flags=re.IGNORECASE) for p in leak_patterns)
@@ -751,70 +561,6 @@ class BookingMixin:
             logger.warning("TTSGuard: dropped token-like leak text=%r", cleaned[:180])
             return ""
         return cleaned
-
-    async def _extract_calendar_action_token(
-        self,
-        *,
-        llm_service,
-        model_name: str,
-        api_key: str | None,
-        user_text: str,
-        assistant_text: str,
-        history_text: str,
-        temperature: float,
-    ) -> str | None:
-        """Second-pass action extraction. Returns one action token or None."""
-        if not self.call_session:
-            return None
-
-        offered_slots = ", ".join(
-            slot.strftime("%Y-%m-%d %H:%M")
-            for slot in self._last_offered_calendar_slots[:16]
-        )
-        extraction_system_prompt = (
-            "You suggest a single calendar hint line from a phone-call turn. "
-            "Output is not authoritative; the server validates everything.\n"
-            "Return exactly one line and nothing else:\n"
-            "- [BOOK_APPOINTMENT:name=<placeholder>,slot=<slot>,reason=<reason>] "
-            "(optional phone=...,email=...)\n"
-            "- [CHECK_SLOTS:date=YYYY-MM-DD]\n"
-            "- NONE\n"
-            "Rules:\n"
-            "1) If user selected a concrete offered slot, return BOOK_APPOINTMENT with slot.\n"
-            "2) If user asked to check availability, return CHECK_SLOTS.\n"
-            "3) If uncertain, return NONE.\n"
-            "4) Keep reason short and without commas.\n"
-        )
-        extraction_prompt = (
-            f"Now (UTC): {datetime.now(timezone.utc).isoformat()}\n\n"
-            f"Recent history:\n{history_text or '(empty)'}\n\n"
-            f"Latest user text:\n{user_text or '(empty)'}\n\n"
-            f"Assistant draft text:\n{assistant_text or '(empty)'}\n\n"
-            f"Offered slot starts (YYYY-MM-DD HH:MM):\n{offered_slots or '(none cached)'}\n"
-        )
-
-        try:
-            loop = asyncio.get_running_loop()
-            result = await loop.run_in_executor(
-                None,
-                lambda: llm_service.generate_text(
-                    prompt=extraction_prompt,
-                    system_prompt=extraction_system_prompt,
-                    model_name=model_name,
-                    temperature=min(temperature, 0.15),
-                    max_tokens=180,
-                    api_key=api_key,
-                ),
-            )
-            content = (result.get("content") or "").strip()
-            if re.search(r"^\[\s*BOOK_APPOINTMENT\s*:", content, flags=re.IGNORECASE):
-                return content.splitlines()[0].strip()
-            if re.search(r"^\[\s*CHECK_SLOTS\s*:", content, flags=re.IGNORECASE):
-                return content.splitlines()[0].strip()
-            return None
-        except Exception as e:
-            logger.warning("Calendar action extraction pass failed: %s", e)
-            return None
 
     def _resolve_cached_calendar_slot(self, slot_raw: str) -> datetime | None:
         normalized = self._normalize_calendar_slot_key(slot_raw)
@@ -872,78 +618,6 @@ class BookingMixin:
 
         return None
 
-    async def _handle_check_slots_token(self, llm_response: str):
-        """
-        Called when LLM emits [CHECK_SLOTS:date=<value>].
-        Fetches available slots and speaks them directly via TTS (no second LLM call).
-        """
-        try:
-            import re as _re
-            from datetime import date as _date, timedelta as _td, datetime as _dt, timezone as _tz
-            from zoneinfo import ZoneInfo as _ZI
-            from app.services.calendar_service import calendar_service as _cal
-
-            m = _re.search(r"\[CHECK_SLOTS:date=([^\]]+)\]", llm_response)
-            if not m:
-                return
-
-            if not self.call_session:
-                return
-
-            tenant_id = self.call_session.tenant_id
-            agent_id = self.agent.id if self.agent else None
-
-            loop = asyncio.get_running_loop()
-            tenant_tz_str = await loop.run_in_executor(
-                None,
-                lambda: _cal.get_tenant_timezone(self.db, tenant_id),
-            )
-            try:
-                tenant_tz = _ZI(tenant_tz_str)
-            except Exception:
-                tenant_tz = _tz.utc
-
-            today = _dt.now(tenant_tz).date()
-            raw_date = m.group(1).strip().lower()
-
-            if raw_date in ("today", "aaj"):
-                target = today
-            elif raw_date in ("tomorrow", "kal", "tomorrow's"):
-                target = today + _td(days=1)
-            else:
-                try:
-                    target = _date.fromisoformat(raw_date)
-                except ValueError:
-                    target = today + _td(days=1)
-
-            result = await loop.run_in_executor(
-                None,
-                lambda: _cal.get_available_slots(self.db, tenant_id, target, agent_id),
-            )
-            self._cache_calendar_slots(result.slots)
-            self._last_requested_calendar_date = target
-
-            if not result.slots:
-                msg = f"Sorry, there are no available slots on {target.strftime('%A, %B %d')}. Please try another date."
-            else:
-                slot_labels = ", ".join(s.slot_label for s in result.slots[:6])
-                suffix = f" and {len(result.slots) - 6} more" if len(result.slots) > 6 else ""
-                msg = (
-                    f"On {target.strftime('%A, %B %d')}, these slots are available: "
-                    f"{slot_labels}{suffix}. Which time works for you?"
-                )
-
-            await self._add_to_transcript("agent", msg, "calendar_slots")
-            if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": msg,
-                    "chunk_id": "calendar_slots",
-                    "use_ssml": False,
-                    "is_final": True,
-                })
-        except Exception as e:
-            logger.error("Error in _handle_check_slots_token: %s", e, exc_info=True)
-
     def _client_transcript_lines_newest_first(self, limit: int = 16) -> list[str]:
         """Recent client utterances (newest first) for voice email recovery."""
         conversation_history: list = []
@@ -973,270 +647,3 @@ class BookingMixin:
                 if len(out) >= limit:
                     break
         return out
-
-    def _follow_up_appointment_uuid(self) -> uuid.UUID | None:
-        if not self.call_session or not self.call_session.call_metadata:
-            return None
-        raw = (self.call_session.call_metadata.get("appointment_id") or "").strip()
-        if not raw:
-            return None
-        try:
-            return uuid.UUID(raw)
-        except ValueError:
-            return None
-
-    async def _handle_followup_confirm_token(self, llm_response: str) -> None:
-        try:
-            appt_id = self._follow_up_appointment_uuid()
-            if not appt_id or not self.call_session:
-                return
-            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
-
-            send_follow_up_outcome_staff_email(
-                self.db,
-                staff_user_id=self.call_session.user_id,
-                tenant_id=self.call_session.tenant_id,
-                appointment_id=appt_id,
-                outcome="confirmed_attendance",
-                detail="Customer confirmed attendance on the reminder call.",
-            )
-        except Exception as e:
-            logger.error("Error in _handle_followup_confirm_token: %s", e, exc_info=True)
-
-    async def _handle_followup_cancel_token(self, llm_response: str) -> None:
-        try:
-            appt_id = self._follow_up_appointment_uuid()
-            if not appt_id or not self.call_session:
-                return
-            from app.services.calendar_service import calendar_service
-            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
-
-            calendar_service.update_appointment_status(
-                self.db,
-                appt_id,
-                self.call_session.tenant_id,
-                "cancelled",
-                cancellation_reason="Customer requested cancellation on reminder call.",
-                notify_user_id=self.call_session.user_id,
-            )
-            send_follow_up_outcome_staff_email(
-                self.db,
-                staff_user_id=self.call_session.user_id,
-                tenant_id=self.call_session.tenant_id,
-                appointment_id=appt_id,
-                outcome="cancelled",
-                detail="Appointment cancelled from reminder call.",
-            )
-            try:
-                self.db.refresh(self.call_session)
-            except Exception as exc:
-                logger.debug("Failed to refresh call_session %s after cancel: %s", self.call_session.id, exc)
-        except ValueError as ve:
-            logger.warning("Follow-up cancel: %s", ve)
-        except Exception as e:
-            logger.error("Error in _handle_followup_cancel_token: %s", e, exc_info=True)
-
-    async def _handle_followup_reschedule_token(self, llm_response: str) -> None:
-        try:
-            appt_id = self._follow_up_appointment_uuid()
-            if not appt_id or not self.call_session:
-                return
-            m = re.search(r"\[\s*FOLLOWUP_RESCHEDULE:([^\]]+)\]", llm_response, flags=re.IGNORECASE)
-            if not m:
-                return
-            inner = " ".join((m.group(1) or "").split())
-            sm = re.search(r"slot=(?P<slot>.+)", inner, flags=re.IGNORECASE)
-            slot_raw = (sm.group("slot") or "").strip() if sm else ""
-            if not slot_raw:
-                logger.warning("FOLLOWUP_RESCHEDULE missing slot: %s", inner[:300])
-                return
-            from datetime import datetime as _dt
-
-            from app.services.calendar_service import calendar_service
-            from app.services.appointment_follow_up_service import send_follow_up_outcome_staff_email
-
-            try:
-                slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
-            except ValueError:
-                resolved = self._resolve_cached_calendar_slot(slot_raw)
-                if resolved is None:
-                    logger.warning("FOLLOWUP_RESCHEDULE invalid slot: %s", slot_raw)
-                    return
-                slot_start = resolved
-
-            calendar_service.reschedule_appointment(
-                db=self.db,
-                tenant_id=self.call_session.tenant_id,
-                appointment_id=appt_id,
-                slot_start=slot_start,
-                notify_user_id=self.call_session.user_id,
-            )
-            send_follow_up_outcome_staff_email(
-                self.db,
-                staff_user_id=self.call_session.user_id,
-                tenant_id=self.call_session.tenant_id,
-                appointment_id=appt_id,
-                outcome="rescheduled",
-                detail=f"New slot (UTC instant): {slot_start.isoformat()}",
-            )
-            try:
-                self.db.refresh(self.call_session)
-            except Exception as exc:
-                logger.debug("Failed to refresh call_session %s after reschedule: %s", self.call_session.id, exc)
-        except ValueError as ve:
-            logger.warning("Follow-up reschedule: %s", ve)
-        except Exception as e:
-            logger.error("Error in _handle_followup_reschedule_token: %s", e, exc_info=True)
-
-    async def _handle_book_appointment_token(self, llm_response: str):
-        """
-        LLM may emit [BOOK_APPOINTMENT:...] as a non-authoritative intent hint.
-        Backend stores only slot / reason in call_metadata.booking_intent.
-        Name and email from the token are ignored. No in-call reservation or appointment commit.
-        Final booking runs in post_call_appointment_service after validation.
-
-        Service area gate: if COVERAGE: RESTRICTED, the caller's location must be present
-        (from the token's location= field or from the transcript) and confirmed within the
-        listed service areas before the booking intent is stored.
-        """
-        try:
-            import re as _re
-            from datetime import datetime as _dt
-
-            from app.services.call_session_contact_state import persist_booking_intent_fields
-
-            m = _re.search(r"\[BOOK_APPOINTMENT:([^\]]+)\]", llm_response)
-            if m:
-                raw = m.group(1)
-            else:
-                # Tolerate malformed token without closing bracket during live calls.
-                m_fallback = _re.search(r"\[BOOK_APPOINTMENT:(.+)$", llm_response, flags=_re.DOTALL)
-                if not m_fallback:
-                    return
-                raw = m_fallback.group(1).strip()
-                logger.warning(
-                    "BOOK_APPOINTMENT token missing closing bracket; using fallback parser. token_tail=%s",
-                    raw[:300],
-                )
-
-            raw_single_line = " ".join((raw or "").split())
-
-            # Backward-compatible key extractor (used for location and fallback slot/reason).
-            def _get(key: str) -> str:
-                km = _re.search(rf"{key}=([^,\]]+)", raw_single_line)
-                return km.group(1).strip() if km else ""
-
-            # Robust parse: name, optional location, optional phone/email, slot, optional reason.
-            strict = _re.search(
-                r"name=(?P<name>.*?),\s*(?:location=(?P<location>.*?),\s*)?"
-                r"(?:phone=(?P<phone>.*?),\s*)?(?:email=(?P<email>.*?),\s*)?"
-                r"slot=(?P<slot>.*?)(?:,\s*reason=(?P<reason>.*))?$",
-                raw_single_line,
-            )
-            if strict:
-                slot_raw = (strict.group("slot") or "").strip()
-                reason_val = (strict.group("reason") or "").strip()
-                reason = reason_val or None
-                location_from_token = (strict.group("location") or "").strip()
-            else:
-                slot_raw = _get("slot")
-                reason = _get("reason") or None
-                location_from_token = _get("location")
-
-            if not slot_raw:
-                logger.warning("BOOK_APPOINTMENT token missing slot: %s", raw_single_line[:500])
-                return
-
-            if not self.call_session:
-                return
-
-            # --- Service Area Gate ---
-            # If the business has restricted coverage, validate caller location before
-            # storing any booking intent. This is the last line of defence — the LLM
-            # prompt already instructs the model not to emit BOOK_APPOINTMENT without a
-            # confirmed in-area location, but LLMs can bypass prompt rules.
-            if (
-                self._cached_business_knowledge_block
-                and "COVERAGE: RESTRICTED" in self._cached_business_knowledge_block
-            ):
-                caller_location = location_from_token or self._extract_caller_location_from_transcript()
-
-                if not caller_location:
-                    logger.warning(
-                        "BOOK_APPOINTMENT blocked: COVERAGE: RESTRICTED but no caller location found. token=%s",
-                        raw_single_line[:300],
-                    )
-                    msg = (
-                        "Before I can schedule, I need to confirm your location. "
-                        "What city and state is the property in?"
-                    )
-                    await self._add_to_transcript("agent", msg, "service_area_location_request")
-                    if self._tts_pipeline:
-                        await self._tts_pipeline.queue_tts({
-                            "text": msg,
-                            "chunk_id": "service_area_location_request",
-                            "use_ssml": False,
-                            "is_final": True,
-                        })
-                    return
-
-                if not self._is_location_in_service_area(caller_location):
-                    service_area_text = self._get_service_area_text_from_bk_block()
-                    area_phrase = f" We serve {service_area_text}." if service_area_text else ""
-                    logger.warning(
-                        "BOOK_APPOINTMENT blocked: location=%r not in service area. token=%s",
-                        caller_location,
-                        raw_single_line[:300],
-                    )
-                    msg = (
-                        f"I'm sorry, but we don't currently provide services in {caller_location}.{area_phrase} "
-                        "Thank you for calling, and I hope you find the help you need."
-                    )
-                    await self._add_to_transcript("agent", msg, "service_area_rejection")
-                    if self._tts_pipeline:
-                        await self._tts_pipeline.queue_tts({
-                            "text": msg,
-                            "chunk_id": "service_area_rejection",
-                            "use_ssml": False,
-                            "is_final": True,
-                        })
-                    return
-
-            slot_start = self._resolve_cached_calendar_slot(slot_raw)
-            if slot_start is None:
-                try:
-                    slot_start = _dt.fromisoformat(slot_raw.replace("Z", "+00:00"))
-                except ValueError:
-                    logger.warning("BOOK_APPOINTMENT: invalid slot datetime: %s", slot_raw)
-                    return
-
-            slot_iso = slot_start.isoformat()
-
-            persist_booking_intent_fields(
-                self.db,
-                self.call_session,
-                slot_start_iso=slot_iso,
-                appointment_reason=reason,
-            )
-            self._last_selected_calendar_slot = slot_start
-            try:
-                self.db.refresh(self.call_session)
-            except Exception as exc:
-                logger.debug("Failed to refresh call_session %s after booking intent persist: %s", self.call_session.id, exc)
-
-            msg = (
-                "I've noted your preferred time. After we finish the call, our system will finalize "
-                "your appointment if everything checks out. Anything else I can help with?"
-            )
-
-            await self._add_to_transcript("agent", msg, "calendar_booking")
-            if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": msg,
-                    "chunk_id": "calendar_booking",
-                    "use_ssml": False,
-                    "is_final": True,
-                })
-        except Exception as e:
-            logger.error("Error in _handle_book_appointment_token: %s", e, exc_info=True)
-

@@ -438,11 +438,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._llm_last_answered_transcript: str = ""
         self._llm_last_answered_ts: float = 0.0
 
-        # KB / business-knowledge blocks: agent-level data that never changes during
+        # KB block: agent-level data that never changes during
         # a call.  Fetched once in the background at call start so every subsequent
-        # turn pays zero DB latency for these blocks (saves 50-200ms per slow turn).
+        # turn pays zero DB latency for this block (saves 50-200ms per slow turn).
         self._cached_inbound_kb_block: str = ""
-        self._cached_business_knowledge_block: str = ""
         self._kb_cache_ready: bool = False  # True once the background fetch completes
 
         # In-memory conversation history: avoids re-parsing the growing
@@ -660,8 +659,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
     async def _prefetch_kb_blocks_at_call_start(self) -> None:
         """
-        Fetch inbound-KB and business-knowledge context blocks once at call start.
-        These are agent/tenant-level and don't change during a call, so caching here
+        Fetch the inbound-KB context block once at call start.
+        This is agent/tenant-level and doesn't change during a call, so caching here
         saves the 50-200ms parallel-executor cost that was previously paid on every
         slow-path turn inside generate_and_stream_response.
         """
@@ -688,25 +687,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     logger.warning("[KB prefetch] inbound KB fetch failed: %s", exc)
                     return ""
 
-            async def _fetch_business_knowledge() -> str:
-                if not tenant_uuid:
-                    return ""
-                try:
-                    return await loop.run_in_executor(
-                        None,
-                        lambda: agent_service.build_business_knowledge_context_block(
-                            db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
-                        ),
-                    )
-                except Exception as exc:
-                    logger.warning("[KB prefetch] business knowledge fetch failed: %s", exc)
-                    return ""
-
-            kb, bk = await asyncio.gather(_fetch_inbound_kb(), _fetch_business_knowledge())
+            kb = await _fetch_inbound_kb()
             self._cached_inbound_kb_block = kb
-            self._cached_business_knowledge_block = bk
             self._kb_cache_ready = True
-            logger.debug("[KB prefetch] cache ready (inbound_kb=%d chars, bk=%d chars)", len(kb), len(bk))
+            logger.debug("[KB prefetch] cache ready (inbound_kb=%d chars)", len(kb))
         except Exception as exc:
             logger.warning("[KB prefetch] call-start fetch failed: %s", exc)
             self._kb_cache_ready = True  # allow the call to proceed without KB context
@@ -1609,11 +1593,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # Fall back to live fetch only if the cache background task hasn't finished yet
             # (race on the very first turn of an extremely fast caller — rare in practice).
             inbound_kb_docs_context_block = ""
-            business_knowledge_block = ""
             if not low_latency_fastpath:
                 if self._kb_cache_ready:
                     inbound_kb_docs_context_block = self._cached_inbound_kb_block
-                    business_knowledge_block = self._cached_business_knowledge_block
                 else:
                     skip_live_kb = bool(
                         getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
@@ -1638,23 +1620,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                                 logger.warning("KB live-fetch (inbound) failed: %s", exc)
                                 return ""
 
-                        async def _fetch_bk_live() -> str:
-                            if not tenant_uuid:
-                                return ""
-                            try:
-                                return await _loop.run_in_executor(
-                                    None,
-                                    lambda: agent_service.build_business_knowledge_context_block(
-                                        db=self.db, tenant_id=tenant_uuid, agent_id=agent_uuid,
-                                    ),
-                                )
-                            except Exception as exc:
-                                logger.warning("KB live-fetch (business) failed: %s", exc)
-                                return ""
-
                         try:
-                            inbound_kb_docs_context_block, business_knowledge_block = await asyncio.wait_for(
-                                asyncio.gather(_fetch_inbound_kb_live(), _fetch_bk_live()),
+                            inbound_kb_docs_context_block = await asyncio.wait_for(
+                                _fetch_inbound_kb_live(),
                                 timeout=_remaining_slowpath_budget(0.25),
                             )
                         except asyncio.TimeoutError:
@@ -1726,7 +1694,6 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
             
             booking_memory_block = self._build_booking_memory_block()
-            follow_up_appt_block = self._build_follow_up_appointment_block()
 
             # Build system prompt with agent personality + history
             agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
@@ -1798,9 +1765,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 - If an intro already played at call start, do not repeat the same full intro; continue the flow.
 """
 
-            # When no business facts are loaded, inject an explicit "do not invent" guard
-            # so the LLM never fills the empty section with hallucinated details.
-            _bk_block = business_knowledge_block or (
+            # No business facts source remains; always inject the "do not invent" guard
+            # so the LLM never fabricates business details.
+            _bk_block = (
                 "# AUTHORITATIVE BUSINESS FACTS\n"
                 "No verified business facts are loaded for this call.\n"
                 "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
@@ -1814,7 +1781,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
                 _vertex_kb_context = build_kb_context_for_vertex(
                     inbound_kb_docs_context_block,
-                    business_knowledge_block,
+                    "",
                     empty_guard=_bk_block,
                 )
                 inbound_kb_docs_context_block = ""
@@ -1841,7 +1808,6 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
-{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
@@ -1858,15 +1824,6 @@ Previous conversation:
 {elevenlabs_audio_tag_block}
 
 {_bk_block}
-# CALENDAR ASSIST
-- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
-- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD] (ISO date or the date the caller asked about).
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
-- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
-- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
-- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
-
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
 
@@ -1908,7 +1865,6 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
-{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
@@ -1919,15 +1875,6 @@ Previous conversation:
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
-
-# CALENDAR ASSIST
-- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
-- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
-- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
-- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
-- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -1959,7 +1906,6 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
-{follow_up_appt_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
@@ -1970,25 +1916,13 @@ Previous conversation:
 
 {elevenlabs_audio_tag_block}
 
-# CALENDAR ASSIST
-- Collect details naturally. Do not tell the caller the appointment is confirmed, booked, or held during this call; the server finalizes scheduling after the call when checks pass.
-- To list availability emit exactly: [CHECK_SLOTS:date=YYYY-MM-DD].
-- When they choose a slot the system offered, you may emit on one line: [BOOK_APPOINTMENT:name=<spoken name>,location=<caller city and state>,slot=<exact offered ISO datetime>,reason=<short reason with no commas>]. That line is only a machine hint; the server does not store name or email from it.
-- Put each calendar token on ONE line; always end with ]. Field order: name, location, optional phone/email, slot, reason.
-- If they change their mind, run [CHECK_SLOTS:...] again, then a new [BOOK_APPOINTMENT:...] with the new slot.
-- Only use times from slots this call already returned; never pick a time in the past (see CURRENT DATE & TIME).
-- NEVER emit [BOOK_APPOINTMENT:...] until the caller has clearly stated their city and state AND (if service areas are restricted) that location is confirmed to be within the covered areas.
-
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
             else:
                 # Use base prompt
                 system_prompt = base_prompt
 
-            # Use _bk_block (never empty) so the service area gate is derived from
-            # the actual loaded knowledge — not the raw block which is "" on cold cache.
             call_policy_block = agent_service.build_call_policy_block(
-                business_knowledge_block=_bk_block,
                 transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
             )
             if call_policy_block:
@@ -2375,8 +2309,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 transcript_text = _RE_VOICE_END_CALL.sub(
                     "", self._strip_control_tokens_for_tts(final_text)
                 ).strip()
-                if "[BOOK_APPOINTMENT:" in final_text:
-                    transcript_text = self._strip_premature_booking_confirmation(transcript_text)
                 if transcript_text:
                     await self._add_to_transcript(
                         "agent",
@@ -2388,53 +2320,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         },
                     )
                     self._schedule_recreate_stt_for_email_collection(transcript_text)
-
-                # Handle calendar tokens (fire-and-forget — TTS already queued above).
-                # Two-step reliability: if booking intent exists but the LLM omitted the
-                # token, run _extract_calendar_action_token as a background task so it
-                # never blocks the voice pipeline.  The extracted token fires its own
-                # calendar handler asynchronously after the spoken response is done.
-                if re.search(r"\[\s*CHECK_SLOTS\s*:", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_check_slots_token(final_text))
-                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
-                    pass  # handled below
-                elif booking_intent_turn:
-                    # No token emitted — run extraction in the background (non-blocking)
-                    async def _deferred_extraction() -> None:
-                        try:
-                            token = await asyncio.wait_for(
-                                self._extract_calendar_action_token(
-                                    llm_service=llm_service,
-                                    model_name=model_name,
-                                    api_key=api_key,
-                                    user_text=user_text,
-                                    assistant_text=final_text,
-                                    history_text=history_text,
-                                    temperature=temperature,
-                                ),
-                                timeout=5.0,
-                            )
-                            if token:
-                                logger.info("[CalAction] deferred extraction: %s", token[:120])
-                                combined = f"{final_text}\n{token}"
-                                if re.search(r"\[\s*CHECK_SLOTS\s*:", token, flags=re.IGNORECASE):
-                                    await self._handle_check_slots_token(combined)
-                                elif re.search(r"\[\s*BOOK_APPOINTMENT\s*:", token, flags=re.IGNORECASE):
-                                    await self._handle_book_appointment_token(combined)
-                        except asyncio.TimeoutError:
-                            logger.debug("[CalAction] deferred extraction timed out")
-                        except Exception as exc:
-                            logger.debug("[CalAction] deferred extraction error: %s", exc)
-                    asyncio.create_task(_deferred_extraction())
-
-                if re.search(r"\[\s*BOOK_APPOINTMENT\s*:", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_book_appointment_token(final_text))
-                if re.search(r"\[\s*FOLLOWUP_CONFIRM\s*\]", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_followup_confirm_token(final_text))
-                if re.search(r"\[\s*FOLLOWUP_CANCEL\s*\]", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_followup_cancel_token(final_text))
-                if re.search(r"\[\s*FOLLOWUP_RESCHEDULE\s*:", final_text, flags=re.IGNORECASE):
-                    asyncio.create_task(self._handle_followup_reschedule_token(final_text))
 
                 try:
                     self._voice_metrics.log_turn_summary(
@@ -2703,11 +2588,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as exc:
             logger.debug("VoiceOrchestrator shutdown failed: %s", exc)
 
-        # Finalize voice appointment booking from transcript (exactly once per call handler)
-        if not self._post_call_orchestration_scheduled:
-            self._post_call_orchestration_scheduled = True
-            asyncio.create_task(self._post_call_appointment_workflow())
-
         try:
             await self._teardown_livekit_recording()
         except Exception as rec_stop_err:
@@ -2809,27 +2689,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 exc,
             )
             await self._disconnect_livekit_recording_publishers()
-
-    def _post_call_appointment_sync(self) -> None:
-        from app.db.session import SessionLocal
-        from app.services.post_call_appointment_service import post_call_appointment_service
-
-        db = SessionLocal()
-        try:
-            post_call_appointment_service.process_call_session(
-                db, uuid.UUID(self.call_session_id)
-            )
-        except Exception as e:
-            logger.error("Post-call appointment processing failed: %s", e, exc_info=True)
-        finally:
-            db.close()
-
-    async def _post_call_appointment_workflow(self) -> None:
-        try:
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._post_call_appointment_sync)
-        except Exception as e:
-            logger.error("Post-call appointment workflow error: %s", e, exc_info=True)
 
     async def handle_stop_message(self, message: dict):
         """Handle Twilio stream `stop` event — delegates to unified shutdown."""
