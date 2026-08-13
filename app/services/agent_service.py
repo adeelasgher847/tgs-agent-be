@@ -7,7 +7,6 @@ from app.models.phone_number import PhoneNumber
 from app.models.transfer_route import TransferRoute
 from app.models.model import Model
 from app.models.knowledge_base_document import KnowledgeBase
-from app.models.business_knowledge import BusinessKnowledge
 from app.models.tts_provider import TTSProvider
 from app.models.tts_voice import TTSVoice
 from app.models.stt_provider import STTProvider
@@ -513,21 +512,6 @@ class AgentService:
         self._validate_tts_settings_payload(agent_data.get("tts_settings_json"))
         self._validate_transfer_route_for_tenant(db, tenant_id, agent_data.get("transfer_route_id"))
 
-
-
-        # Enforce one follow-up appointment agent per tenant.
-        if agent_data.get("is_follow_up_agent"):
-            existing_fu = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
-            ).first()
-            if existing_fu:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one follow-up appointment agent is allowed per tenant.",
-                )
-        
         try:
             db_agent = repo.create(agent_data)
         except IntegrityError:
@@ -602,22 +586,6 @@ class AgentService:
             exclude={"tts_model", "stt_model", "stt_settings", "eleven_labs_api_key", "llm_model", "status"},
         )
         self._apply_ticket_update(db, agent_update, agent, update_dict)
-
-
-
-        # Enforce one follow-up appointment agent per tenant.
-        if update_dict.get("is_follow_up_agent") is True:
-            existing_fu = db.query(Agent).filter(
-                Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
-                Agent.id != agent_id,
-            ).first()
-            if existing_fu:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                    detail="Only one follow-up appointment agent is allowed per tenant.",
-                )
 
         self._validate_tts_settings_payload(update_dict.get("tts_settings_json"))
 
@@ -822,18 +790,6 @@ No active tenant knowledge base documents were found.
             .first()
         )
 
-    def get_follow_up_agent_by_tenant(self, db: Session, tenant_id: uuid.UUID) -> Agent | None:
-        """Tenant's single appointment follow-up / reminder agent, if configured."""
-        return (
-            db.query(Agent)
-            .filter(
-                Agent.tenant_id == tenant_id,
-                ~Agent.is_deleted,
-                Agent.is_follow_up_agent,
-            )
-            .first()
-        )
-    
     def search_agents(
         self, 
         db: Session, 
@@ -895,325 +851,16 @@ No active tenant knowledge base documents were found.
         
         return effective_config
 
-    def get_business_knowledge_for_agent(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        agent_id: uuid.UUID | None = None,
-    ) -> List[BusinessKnowledge]:
-        """
-        Return active business knowledge records for the given tenant/agent.
-        Agent-scoped records come first; tenant-wide records follow as fallback.
-        Multiple active records are supported and all are returned.
-        """
-        records: List[BusinessKnowledge] = []
-
-        if agent_id:
-            agent_records = (
-                db.query(BusinessKnowledge)
-                .filter(
-                    BusinessKnowledge.tenant_id == tenant_id,
-                    BusinessKnowledge.agent_id == agent_id,
-                    BusinessKnowledge.is_active == True,  # noqa: E712
-                )
-                .order_by(BusinessKnowledge.created_at)
-                .all()
-            )
-            records.extend(agent_records)
-
-        tenant_records = (
-            db.query(BusinessKnowledge)
-            .filter(
-                BusinessKnowledge.tenant_id == tenant_id,
-                BusinessKnowledge.agent_id == None,  # noqa: E711
-                BusinessKnowledge.is_active == True,  # noqa: E712
-            )
-            .order_by(BusinessKnowledge.created_at)
-            .all()
-        )
-        records.extend(tenant_records)
-
-        return records
-
-    def build_business_knowledge_context_block(
-        self,
-        db: Session,
-        tenant_id: uuid.UUID,
-        agent_id: uuid.UUID | None = None,
-    ) -> str:
-        """
-        Build a prompt block containing active business knowledge for the agent.
-
-        The block carries two things in one place (single source of truth):
-        1. AUTHORITATIVE BUSINESS FACTS — verified spoken-form details the agent
-           must read out when asked.
-        2. BUSINESS SCOPE & SERVICE-AREA POLICY — strict rules that prevent the
-           agent from inventing services we do not provide, and from accepting
-           callers outside our service area (with a global/remote escape hatch).
-
-        Returns an empty string when no knowledge is configured so existing
-        prompts are not affected.
-        """
-        records = self.get_business_knowledge_for_agent(db, tenant_id, agent_id)
-        if not records:
-            return ""
-
-        # ── Aggregate scope info across all active records ────────────────
-        primary_services: List[str] = []
-        secondary_services: List[str] = []
-        specializations_list: List[str] = []
-        service_area_texts: List[str] = []
-
-        for rec in records:
-            if rec.primary_service and rec.primary_service.strip():
-                primary_services.append(rec.primary_service.strip())
-            if rec.secondary_service and rec.secondary_service.strip():
-                secondary_services.append(rec.secondary_service.strip())
-            if rec.specializations and rec.specializations.strip():
-                specializations_list.append(rec.specializations.strip())
-            if rec.service_areas and rec.service_areas.strip():
-                service_area_texts.append(rec.service_areas.strip())
-
-        has_scope_info = bool(
-            primary_services or secondary_services or specializations_list
-        )
-        has_service_area = bool(service_area_texts)
-
-        # Detect "we serve everyone" coverage in the configured service-areas
-        # text so we can give the LLM a deterministic hint instead of relying
-        # only on its own interpretation. Keep this conservative — when in
-        # doubt, fall back to the LLM reading the raw text.
-        global_coverage_keywords = (
-            "anywhere",
-            "any where",
-            "everywhere",
-            "every where",
-            "globally",
-            "global",
-            "worldwide",
-            "world wide",
-            "world-wide",
-            "international",
-            "internationally",
-            "remote",
-            "remotely",
-            "online only",
-            "online-only",
-            "fully online",
-            "virtual only",
-            "virtually",
-            "nationwide",
-            "nation wide",
-            "all over",
-            "all states",
-            "all countries",
-            "any country",
-            "any city",
-            "any state",
-        )
-        service_area_blob = " | ".join(service_area_texts).lower()
-        is_global_coverage = has_service_area and any(
-            kw in service_area_blob for kw in global_coverage_keywords
-        )
-
-        lines: List[str] = [
-            "# AUTHORITATIVE BUSINESS FACTS",
-            "The following information is verified and authoritative for this business.",
-            "ALWAYS use these facts when the caller asks about the business name, address, phone, email, website, services, areas served, or pricing.",
-            "Say the details exactly as written — they are already in natural spoken form.",
-            "This section overrides any conflicting or missing information elsewhere in the prompt.",
-            "",
-        ]
-
-        for rec in records:
-            if rec.business_name:
-                lines.append(f"Business Name: {rec.business_name}")
-            if rec.business_type:
-                lines.append(f"Business Type: {rec.business_type}")
-            if rec.business_description:
-                lines.append(f"About: {rec.business_description}")
-            if rec.address:
-                lines.append(f"Address: {rec.address}")
-            if rec.phone:
-                lines.append(f"Phone: {rec.phone}")
-            if rec.email:
-                lines.append(f"Email: {rec.email}")
-            if rec.website_url:
-                lines.append(f"Website: {rec.website_url}")
-            if rec.primary_service:
-                lines.append(f"Primary Service(s): {rec.primary_service}")
-            if rec.secondary_service:
-                lines.append(f"Secondary Service(s): {rec.secondary_service}")
-            if rec.specializations:
-                lines.append(f"Specializations: {rec.specializations}")
-            if rec.service_areas:
-                lines.append(f"Service Areas: {rec.service_areas}")
-            if rec.pricing_information:
-                lines.append(f"Pricing: {rec.pricing_information}")
-            if rec.additional_information:
-                lines.append(f"Additional Info: {rec.additional_information}")
-            lines.append("")
-
-        # ── BUSINESS SCOPE & POLICY (strict, non-negotiable) ──────────────
-        lines.append("# BUSINESS SCOPE & POLICY — STRICT RULES")
-        lines.append(
-            "These rules are non-negotiable and override general helpfulness. "
-            "Follow them exactly, even if other parts of the prompt are silent."
-        )
-        lines.append("")
-
-        # 1) Service scope — only offer what the business actually provides.
-        lines.append("## 1) SERVICES WE OFFER (allowed scope)")
-        if has_scope_info:
-            if primary_services:
-                lines.append(
-                    f"- Primary services: {' | '.join(primary_services)}"
-                )
-            if secondary_services:
-                lines.append(
-                    f"- Secondary services: {' | '.join(secondary_services)}"
-                )
-            if specializations_list:
-                lines.append(
-                    f"- Specializations: {' | '.join(specializations_list)}"
-                )
-            lines.append("")
-            lines.append("RULES:")
-            lines.append(
-                "- ONLY offer, quote, schedule, or take details for the services listed above. "
-                "Treat anything outside this list as NOT offered by this business."
-            )
-            lines.append(
-                "- If the caller asks for a service that is NOT in the allowed scope:"
-            )
-            lines.append(
-                "  a) Politely say this business does not offer that specific service. "
-                "Do NOT pretend, improvise, or promise it."
-            )
-            lines.append(
-                "  b) In the SAME reply, briefly mention what this business actually does — "
-                "lead with the primary services, then optionally add secondary services or "
-                "specializations if relevant."
-            )
-            lines.append(
-                "  c) Ask if any of those would help. If yes, continue the call normally. "
-                "If they only want the unsupported service, thank them warmly, say a short "
-                "goodbye, and end your response with exactly [END_CALL]."
-            )
-            lines.append(
-                "- Do NOT invent prices, timelines, packages, guarantees, or capabilities for "
-                "services that are not explicitly described in AUTHORITATIVE BUSINESS FACTS above."
-            )
-        else:
-            lines.append(
-                "- Service scope is not explicitly configured for this business. "
-                "Do not make up specific services, prices, or capabilities. If asked what we do, "
-                "say you can take a message and have the team follow up."
-            )
-        lines.append("")
-
-        # 2) Service area — refuse / accept based on configured coverage.
-        lines.append("## 2) SERVICE AREA (where we operate)")
-        if has_service_area:
-            lines.append(f"- Service Areas (verbatim): {' | '.join(service_area_texts)}")
-            if is_global_coverage:
-                lines.append(
-                    "- COVERAGE: GLOBAL / REMOTE. The Service Areas text indicates the business "
-                    "serves callers anywhere (globally, remotely, online, worldwide, or nationwide)."
-                )
-                lines.append("")
-                lines.append("RULES:")
-                lines.append(
-                    "- NEVER refuse, redirect, or end the call based on the caller's location. "
-                    "Treat every caller as in-area."
-                )
-                lines.append(
-                    "- Do not ask the caller for their city/area solely to qualify them — only ask "
-                    "for location if it is required to deliver the service."
-                )
-            else:
-                lines.append(
-                    "- COVERAGE: RESTRICTED. The Service Areas above are the ONLY locations this "
-                    "business currently serves. Read the text carefully — it is authoritative."
-                )
-                lines.append("")
-                lines.append("RULES:")
-                lines.append(
-                    "- When the caller mentions or implies a city, neighborhood, region, state, or "
-                    "country, check whether it falls within the listed Service Areas. If you cannot "
-                    "tell, ask once politely for the caller's location."
-                )
-                lines.append(
-                    "- If the caller's location IS covered, proceed normally."
-                )
-                lines.append(
-                    "- If the caller's location is NOT covered:"
-                )
-                lines.append(
-                    "  a) Apologize warmly and clearly say this business does not currently provide "
-                    "services in that area."
-                )
-                lines.append(
-                    "  b) Briefly name the areas the business does cover (use the Service Areas "
-                    "text above)."
-                )
-                lines.append(
-                    "  c) Thank them for calling, say a short, friendly goodbye, and end your "
-                    "response with exactly [END_CALL]."
-                )
-                lines.append(
-                    "  d) Do NOT collect personal details, do NOT schedule, and do NOT take "
-                    "payment for out-of-area callers."
-                )
-        else:
-            lines.append(
-                "- Service Areas are not configured for this business."
-            )
-            lines.append("")
-            lines.append("RULES:")
-            lines.append(
-                "- Do NOT refuse the caller based on their location. Coverage is unspecified, so "
-                "treat every caller as potentially in-area."
-            )
-            lines.append(
-                "- If the caller asks where the business operates, say the service area is not "
-                "specified on file and offer to take a message for the team to follow up."
-            )
-        lines.append("")
-
-        # 3) Pricing & additional information — never fabricate.
-        lines.append("## 3) PRICING & ADDITIONAL INFORMATION")
-        lines.append(
-            "- For pricing, only quote what is written under 'Pricing:' in AUTHORITATIVE BUSINESS "
-            "FACTS. If pricing is not listed for the requested service, say it varies and offer to "
-            "take their details for a follow-up — do NOT guess or invent a number."
-        )
-        lines.append(
-            "- For policies, hours, requirements, guarantees, or anything else, only state what is "
-            "written under 'Additional Info:' or elsewhere in AUTHORITATIVE BUSINESS FACTS. If "
-            "something is not documented, say you don't have that information on hand and offer a "
-            "follow-up — do NOT fabricate."
-        )
-
-        return "\n".join(lines)
-
     def build_call_policy_block(
         self,
         *,
-        business_knowledge_block: str = "",
         transfer_route: TransferRoute | None = None,
     ) -> str:
         """
         Top-of-prompt operational gates that take priority over style, tone,
         and any custom/model instructions later in the system prompt.
 
-        Three gates, only the relevant ones are emitted:
-        - Service Area Gate: only when business knowledge declares restricted
-          coverage (we look for the COVERAGE: RESTRICTED marker emitted by
-          ``build_business_knowledge_context_block``).
-        - Booking Gate: always emitted because the calendar/booking flow is
-          available on every call. Enforces the name/location/issue triad
-          before any [BOOK_APPOINTMENT] hint.
+        One gate, emitted only when relevant:
         - Transfer Gate: only when an agent has a ``transfer_route``
           configured. Reinforces that [TRANSFER_CALL] is the only thing that
           actually triggers a transfer.
@@ -1222,69 +869,29 @@ No active tenant knowledge base documents were found.
         across the prompt) keeps the policy enforceable on long calls where
         custom instructions and history would otherwise drown the rules out.
         """
-        has_restricted_area = "COVERAGE: RESTRICTED" in (business_knowledge_block or "")
-        has_transfer_route = transfer_route is not None
+        if transfer_route is None:
+            return ""
 
+        t_type = (getattr(transfer_route, "transfer_type", None) or "cold").lower()
+        friendly = getattr(transfer_route, "friendly_name", None) or "human contact"
         lines: List[str] = [
             "# CALL POLICY (NON-NEGOTIABLE — APPLY IMMEDIATELY)",
             "These rules take priority over style/tone instructions and any custom or model "
             "instructions that appear later in this prompt. Apply them at every turn.",
             "",
+            "## 1. Transfer & Escalation Gate",
+            f"- A human contact is configured for this agent ({friendly}; transfer type: "
+            f"{t_type}).",
+            "- Use [TRANSFER_CALL] ONLY for genuine emergencies, safety threats, or when the "
+            "caller clearly needs a human and you cannot help.",
+            "- Unless there is immediate danger to life, ask up to two short confirmation "
+            "questions about the situation BEFORE you transfer.",
+            "- A transfer is triggered ONLY when you emit [TRANSFER_CALL] at the end of your "
+            "reply. Phrases like 'silent transfer' or 'connecting you' do nothing without "
+            "that exact token.",
+            "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; "
+            "transfer takes priority.",
         ]
-
-        section = 1
-
-        if has_restricted_area:
-            lines.extend([
-                f"## {section}. Service Area Gate",
-                "- Before offering a slot, scheduling, or emitting [BOOK_APPOINTMENT], you MUST "
-                "confirm the caller's location is within the Service Areas listed in "
-                "AUTHORITATIVE BUSINESS FACTS.",
-                "- If the caller's stated city/area is NOT in the listed Service Areas: apologize "
-                "briefly, name the covered areas (use the verbatim text), and end your reply with "
-                "exactly [END_CALL]. Do not propose slots, take further details, or transfer.",
-                "- If the caller has not stated a location yet, ask for it BEFORE discussing "
-                "scheduling. One question per turn.",
-                "",
-            ])
-            section += 1
-
-        lines.extend([
-            f"## {section}. Booking Gate",
-            "- Never emit [BOOK_APPOINTMENT] until you have clearly captured ALL of: (a) the "
-            "caller's name, (b) a service location (city and state), and (c) a brief reason or "
-            "issue for the visit.",
-            "- The caller's city and state MUST have been explicitly stated in the conversation "
-            "before you emit [BOOK_APPOINTMENT]. Do not assume or infer a location — ask for it "
-            "if it has not been given.",
-            "- If service areas are restricted, confirm the stated location is covered BEFORE "
-            "offering slots or emitting [BOOK_APPOINTMENT]. If not covered, end the call per the "
-            "Service Area Gate rules above.",
-            "- If any required field is missing, your next reply must ask only the single missing "
-            "one. Do not bundle multiple questions in a single turn.",
-            "- Never tell the caller the appointment is confirmed, booked, or held during the "
-            "call. The server finalizes scheduling after the call when checks pass.",
-            "",
-        ])
-        section += 1
-
-        if has_transfer_route:
-            t_type = (getattr(transfer_route, "transfer_type", None) or "cold").lower()
-            friendly = getattr(transfer_route, "friendly_name", None) or "human contact"
-            lines.extend([
-                f"## {section}. Transfer & Escalation Gate",
-                f"- A human contact is configured for this agent ({friendly}; transfer type: "
-                f"{t_type}).",
-                "- Use [TRANSFER_CALL] ONLY for genuine emergencies, safety threats, or when the "
-                "caller clearly needs a human and you cannot help.",
-                "- Unless there is immediate danger to life, ask up to two short confirmation "
-                "questions about the situation BEFORE you transfer.",
-                "- A transfer is triggered ONLY when you emit [TRANSFER_CALL] at the end of your "
-                "reply. Phrases like 'silent transfer' or 'connecting you' do nothing without "
-                "that exact token.",
-                "- If you use [TRANSFER_CALL], do not also use [END_CALL] in the same reply; "
-                "transfer takes priority.",
-            ])
 
         return "\n".join(lines).rstrip() + "\n"
 

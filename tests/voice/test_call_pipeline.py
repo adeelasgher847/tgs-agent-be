@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import asyncio
 import uuid
-from datetime import datetime, timezone, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -132,7 +131,6 @@ def _base_handler() -> Handler:
 
     # KB cache
     h._cached_inbound_kb_block = ""
-    h._cached_business_knowledge_block = ""
     h._kb_cache_ready = True
 
     # Calendar booking state
@@ -484,7 +482,7 @@ class TestTtsPipeline:
 
     def test_looks_like_control_leak_detects_brackets(self):
         h = _base_handler()
-        assert h._looks_like_control_leak("[CHECK_SLOTS:date=2026-05-15]") is True
+        assert h._looks_like_control_leak("[OUTCOME:qualified]") is True
         assert h._looks_like_control_leak("Sure, what time works?") is False
 
 
@@ -642,45 +640,8 @@ class TestVoicemailDetection:
 # 7. BUSINESS KNOWLEDGE — KB block injection and service area gating
 # ─────────────────────────────────────────────────────────────────────────────
 
-class TestBusinessKnowledge:
-    """Verify business knowledge blocks are correctly injected and service area logic works."""
-
-    def test_cached_bk_block_used_without_db_call(self):
-        """KB should be returned from cache, not fetched from DB again."""
-        h = _base_handler()
-        h._cached_business_knowledge_block = (
-            "Service Areas (verbatim): Dallas, Plano, Frisco"
-        )
-        h._kb_cache_ready = True
-        result = h._get_service_area_text_from_bk_block()
-        assert "Dallas" in result
-
-    def test_service_area_text_absent_when_bk_empty(self):
-        h = _base_handler()
-        h._cached_business_knowledge_block = ""
-        result = h._get_service_area_text_from_bk_block()
-        assert result == ""
-
-    def test_location_in_service_area_match(self):
-        h = _base_handler()
-        h._cached_business_knowledge_block = (
-            "COVERAGE: RESTRICTED\nService Areas (verbatim): Dallas, Plano, Frisco, McKinney"
-        )
-        assert h._is_location_in_service_area("Dallas") is True
-
-    def test_location_outside_service_area_rejected(self):
-        h = _base_handler()
-        h._cached_business_knowledge_block = (
-            "COVERAGE: RESTRICTED\nService Areas (verbatim): Dallas, Plano, Frisco"
-        )
-        assert h._is_location_in_service_area("Houston") is False
-
-    def test_no_coverage_restriction_allows_any_location(self):
-        """Without COVERAGE: RESTRICTED flag, any location passes."""
-        h = _base_handler()
-        h._cached_business_knowledge_block = "Service areas: Dallas, Plano"
-        # No RESTRICTED flag means open service area
-        assert h._is_location_in_service_area("Austin") is True
+class TestLatencyFastpathGating:
+    """Verify latency fastpath gating around booking intent detection."""
 
     def test_latency_fastpath_skips_slow_path_for_small_talk(self):
         h = _base_handler()
@@ -734,194 +695,6 @@ class TestCallTransfer:
         # When no transfer route, _full_shutdown is called and method returns gracefully
         asyncio.run(h._transfer_after_agent_request())
         h._full_shutdown.assert_called_once()
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 9. APPOINTMENT BOOKING — [BOOK_APPOINTMENT] token end-to-end
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestAppointmentBooking:
-    """Validate the booking token parser, slot resolution, and intent persistence."""
-
-    def _booking_handler(self) -> Handler:
-        h = _base_handler()
-        h._tts_pipeline.queue_tts = AsyncMock()
-        h._add_to_transcript = AsyncMock()
-        h.call_session.call_metadata = {}
-        h.call_session.customer_name = None
-        h.call_session.customer_phone = None
-        h.call_session.customer_email = None
-        h._get_service_area_text_from_bk_block = MagicMock(return_value="")
-        h._is_location_in_service_area = MagicMock(return_value=True)
-        h._build_booking_memory_block = MagicMock(return_value="")
-        return h
-
-    def test_book_appointment_token_persists_intent(self):
-        h = self._booking_handler()
-        slot_iso = "2026-05-20T14:00:00"
-        token = f"[BOOK_APPOINTMENT:name=John Smith,slot={slot_iso},reason=Consultation]"
-
-        with patch.object(h, "_resolve_cached_calendar_slot", return_value=None):
-            asyncio.run(h._handle_book_appointment_token(token))
-
-        metadata = h.call_session.call_metadata
-        assert "booking_intent" in metadata or h._tts_pipeline.queue_tts.called
-
-    def test_book_appointment_sends_confirmation_tts(self):
-        h = self._booking_handler()
-        slot_iso = "2026-05-20T14:00:00"
-        token = f"[BOOK_APPOINTMENT:name=Jane,slot={slot_iso},reason=Follow-up]"
-
-        with patch.object(h, "_resolve_cached_calendar_slot", return_value=None):
-            asyncio.run(h._handle_book_appointment_token(token))
-
-        assert h._tts_pipeline.queue_tts.called
-
-    def test_book_appointment_outside_service_area_rejected(self):
-        h = self._booking_handler()
-        # Must be set directly; code checks this attribute for "COVERAGE: RESTRICTED"
-        h._cached_business_knowledge_block = (
-            "COVERAGE: RESTRICTED\nService Areas (verbatim): Dallas, Plano"
-        )
-        h._is_location_in_service_area = MagicMock(return_value=False)
-        h._extract_caller_location_from_transcript = MagicMock(return_value="Houston")
-
-        slot_iso = "2026-05-20T14:00:00"
-        token = f"[BOOK_APPOINTMENT:name=Bob,location=Houston,slot={slot_iso},reason=Service]"
-
-        with patch.object(h, "_resolve_cached_calendar_slot", return_value=None):
-            asyncio.run(h._handle_book_appointment_token(token))
-
-        # TTS should inform caller they are out of service area
-        assert h._tts_pipeline.queue_tts.called
-        queued_arg = h._tts_pipeline.queue_tts.call_args[0][0]
-        queued_text = queued_arg["text"] if isinstance(queued_arg, dict) else queued_arg
-        assert any(w in queued_text.lower() for w in ["area", "service", "outside", "cover"])
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 10. SLOT AVAILABILITY — [CHECK_SLOTS] token handling
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestSlotAvailability:
-    """Validate available slot fetching and TTS announcement."""
-
-    def _slots_handler(self) -> Handler:
-        h = _base_handler()
-        h._tts_pipeline.queue_tts = AsyncMock()
-        h._add_to_transcript = AsyncMock()
-        h.call_session.call_metadata = {}
-        return h
-
-    def _mock_slots_response(self, slot_datetimes):
-        """Return an AvailableSlotsResponse-like mock with .slots populated."""
-        from types import SimpleNamespace
-        slots = []
-        for dt in slot_datetimes:
-            s = MagicMock()
-            s.slot_start = dt
-            s.slot_label = dt.strftime("%-I:%M %p")
-            slots.append(s)
-        return SimpleNamespace(slots=slots, total=len(slots))
-
-    def test_check_slots_announces_available_times(self):
-        h = self._slots_handler()
-        monday = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
-        resp = self._mock_slots_response([monday, monday + timedelta(hours=1)])
-
-        with patch("app.services.calendar_service.calendar_service.get_available_slots",
-                   return_value=resp), \
-             patch("app.services.calendar_service.calendar_service.get_tenant_timezone",
-                   return_value="America/Chicago"):
-            asyncio.run(h._handle_check_slots_token("[CHECK_SLOTS:date=2026-05-18]"))
-
-        assert h._tts_pipeline.queue_tts.called
-        queued_arg = h._tts_pipeline.queue_tts.call_args[0][0]
-        queued_text = queued_arg["text"] if isinstance(queued_arg, dict) else queued_arg
-        assert any(w in queued_text.lower() for w in ["available", "slot", "monday", "open", "these"])
-
-    def test_check_slots_no_availability_informs_caller(self):
-        h = self._slots_handler()
-        resp = self._mock_slots_response([])
-
-        with patch("app.services.calendar_service.calendar_service.get_available_slots",
-                   return_value=resp), \
-             patch("app.services.calendar_service.calendar_service.get_tenant_timezone",
-                   return_value="America/Chicago"):
-            asyncio.run(h._handle_check_slots_token("[CHECK_SLOTS:date=2026-05-18]"))
-
-        assert h._tts_pipeline.queue_tts.called
-        queued_arg = h._tts_pipeline.queue_tts.call_args[0][0]
-        queued_text = queued_arg["text"] if isinstance(queued_arg, dict) else queued_arg
-        assert any(w in queued_text.lower() for w in ["no", "unavailable", "full", "available", "sorry"])
-
-    def test_check_slots_caches_returned_slots(self):
-        h = self._slots_handler()
-        monday = datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
-        resp = self._mock_slots_response([monday])
-
-        with patch("app.services.calendar_service.calendar_service.get_available_slots",
-                   return_value=resp), \
-             patch("app.services.calendar_service.calendar_service.get_tenant_timezone",
-                   return_value="UTC"):
-            asyncio.run(h._handle_check_slots_token("[CHECK_SLOTS:date=2026-05-18]"))
-
-        assert len(h._last_offered_calendar_slots) == 1
-
-    def test_check_slots_invalid_date_does_not_crash(self):
-        h = self._slots_handler()
-        # Should handle gracefully, no exception
-        asyncio.run(h._handle_check_slots_token("[CHECK_SLOTS:date=not-a-date]"))
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 12. FOLLOW-UP APPOINTMENT SCENARIOS — confirm / cancel / reschedule
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestFollowUpAppointment:
-    """Validate follow-up call token handlers."""
-
-    def _followup_handler(self) -> Handler:
-        h = _base_handler()
-        h._tts_pipeline.queue_tts = AsyncMock()
-        h._add_to_transcript = AsyncMock()
-        # Inject an appointment_id so _follow_up_appointment_uuid() returns a real UUID
-        appt_id = uuid.uuid4()
-        h.call_session.call_metadata = {"appointment_id": str(appt_id)}
-        h.call_session.user_id = uuid.uuid4()
-        return h
-
-    def test_followup_confirm_calls_update_status(self):
-        h = self._followup_handler()
-        with patch(
-            "app.services.appointment_follow_up_service.send_follow_up_outcome_staff_email"
-        ) as mock_send:
-            asyncio.run(h._handle_followup_confirm_token("[FOLLOWUP_CONFIRM]"))
-        mock_send.assert_called_once()
-
-    def test_followup_cancel_sets_status_cancelled(self):
-        h = self._followup_handler()
-        with patch("app.services.calendar_service.calendar_service.update_appointment_status") as mock_update, \
-             patch("app.services.appointment_follow_up_service.send_follow_up_outcome_staff_email"):
-            asyncio.run(h._handle_followup_cancel_token("[FOLLOWUP_CANCEL:reason=No longer needed]"))
-        mock_update.assert_called_once()
-        # Confirm "cancelled" status was passed
-        call_kwargs = mock_update.call_args
-        status_arg = call_kwargs.kwargs.get("new_status") or (
-            call_kwargs.args[3] if len(call_kwargs.args) > 3 else None
-        )
-        assert status_arg == "cancelled"
-
-    def test_followup_reschedule_calls_reschedule(self):
-        h = self._followup_handler()
-        slot_iso = "2026-05-25T10:00:00Z"
-        h._last_offered_calendar_slots = [datetime(2026, 5, 25, 10, 0, tzinfo=timezone.utc)]
-
-        with patch("app.services.calendar_service.calendar_service.reschedule_appointment") as mock_reschedule, \
-             patch("app.services.appointment_follow_up_service.send_follow_up_outcome_staff_email"):
-            asyncio.run(h._handle_followup_reschedule_token(f"[FOLLOWUP_RESCHEDULE:slot={slot_iso}]"))
-
-        mock_reschedule.assert_called_once()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -981,88 +754,3 @@ class TestTranscriptAccuracy:
         ]
         lines = h._client_transcript_lines_newest_first(limit=10)
         assert len(lines) <= 10
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 14. END-TO-END CALL SCENARIO — simulate a complete inbound booking call
-# ─────────────────────────────────────────────────────────────────────────────
-
-class TestEndToEndBookingCall:
-    """
-    Simulates a complete inbound call lifecycle:
-    Greeting → User asks to book → Slots offered → User picks slot → Booking noted → Goodbye
-    """
-
-    def _e2e_handler(self) -> Handler:
-        h = _base_handler()
-        h._tts_pipeline.queue_tts = AsyncMock()
-        h._add_to_transcript = AsyncMock()
-        h._voice_orchestrator = MagicMock()
-        h.call_session.call_metadata = {}
-        h.call_session.call_type = "inbound"
-        h._get_service_area_text_from_bk_block = MagicMock(return_value="")
-        h._is_location_in_service_area = MagicMock(return_value=True)
-        h._build_booking_memory_block = MagicMock(return_value="")
-        return h
-
-    def test_full_booking_turn_sequence(self):
-        """
-        Turn 1: Greeting queued
-        Turn 2: User asks to book → LLM streams response
-        Turn 3: Slots token → slots announced
-        Turn 4: Book token → intent persisted, confirmation TTS queued
-        Turn 5: Goodbye → call ended
-        """
-        h = self._e2e_handler()
-
-        # TURN 1: Greeting
-        asyncio.run(h.generate_and_stream_response("", 1.0, is_greeting=True))
-        assert h._tts_pipeline.queue_tts.called, "Greeting must queue TTS"
-        h._tts_pipeline.queue_tts.reset_mock()
-
-        # TURN 2: User asks to book
-        fake_stream = _async_llm_stream(
-            "Sure, let me check available times for you. "
-            "[CHECK_SLOTS:date=2026-05-20]"
-        )
-        with patch("app.routers.bidirectional_stream.openai_service.stream_text", new=fake_stream), \
-             patch.object(h, "_send_in_progress_status", new=AsyncMock()):
-            asyncio.run(h.generate_and_stream_response("I want to book an appointment", 0.9))
-
-        h._tts_pipeline.queue_tts.reset_mock()
-
-        # TURN 3: Check slots token
-        from types import SimpleNamespace as _NS
-        monday = datetime(2026, 5, 20, 9, 0, tzinfo=timezone.utc)
-        mock_slot = MagicMock()
-        mock_slot.slot_start = monday
-        mock_slot.slot_label = "9:00 AM"
-        slots_resp = _NS(slots=[mock_slot], total=1)
-
-        with patch("app.services.calendar_service.calendar_service.get_available_slots",
-                   return_value=slots_resp), \
-             patch("app.services.calendar_service.calendar_service.get_tenant_timezone",
-                   return_value="UTC"):
-            asyncio.run(h._handle_check_slots_token("[CHECK_SLOTS:date=2026-05-20]"))
-
-        assert h._tts_pipeline.queue_tts.called, "Slot announcement must queue TTS"
-        h._tts_pipeline.queue_tts.reset_mock()
-
-        # TURN 4: Book appointment token
-        token = "[BOOK_APPOINTMENT:name=Alice,slot=2026-05-20T09:00:00,reason=Consultation]"
-        with patch.object(h, "_resolve_cached_calendar_slot", return_value=None):
-            asyncio.run(h._handle_book_appointment_token(token))
-
-        assert h._tts_pipeline.queue_tts.called, "Booking confirmation must queue TTS"
-        h._tts_pipeline.queue_tts.reset_mock()
-
-        # TURN 5: Goodbye
-        with patch("app.services.call_session_service.call_session_service.update_call_session_status"), \
-             patch("app.services.twilio_service.twilio_service.end_call_with_credentials", new=AsyncMock()), \
-             patch("app.utils.voice_twilio_utils.get_twilio_credentials_for_call",
-                   return_value=("ACtest", "authtest")), \
-             patch("app.routers.general_websocket.broadcast_call_status_update", new=AsyncMock()):
-            ended = asyncio.run(h._check_and_end_call_if_goodbye("thank you goodbye"))
-
-        assert ended is True
-        assert h._call_ended is True

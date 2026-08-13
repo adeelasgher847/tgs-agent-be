@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Body, Depends, Request, status
+from fastapi import APIRouter, Body, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -16,6 +16,7 @@ from app.schemas.call_flow import (
     FlowDataResponse,
     FlowDataUpdate,
     FlowValidationResponse,
+    PaginatedFlowDataResponse,
 )
 from app.services.audit_service import log_audit_event
 from app.services.call_flow_service import call_flow_service
@@ -25,6 +26,23 @@ router = APIRouter(prefix="/flows", tags=["Visual Flow Editor"])
 
 def _tenant_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     return principal.current_tenant_id
+
+
+@router.get(
+    "/flow-data",
+    response_model=PaginatedFlowDataResponse,
+    status_code=status.HTTP_200_OK,
+    summary="List visual and pre-compiled flow graphs across the workspace",
+)
+def list_flow_data(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> PaginatedFlowDataResponse:
+    return call_flow_service.list_flow_data(
+        db, _tenant_id(principal), page, page_size
+    )
 
 
 @router.put(

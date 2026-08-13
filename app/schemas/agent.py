@@ -204,7 +204,6 @@ class AgentCreate(BaseModel):
     )
     greeting_message: str | None = None
     is_inbound_agent: bool = False
-    is_follow_up_agent: bool = False
     transfer_route_id: uuid.UUID | None = None
 
     @field_validator("name")
@@ -268,7 +267,6 @@ class AgentUpdate(BaseModel):
     )
     greeting_message: str | None = None
     is_inbound_agent: bool | None = None
-    is_follow_up_agent: bool | None = None
     transfer_route_id: uuid.UUID | None = None
 
     @field_validator("name")
@@ -323,7 +321,6 @@ class AgentOut(BaseModel):
     language: str | None = None
     voice_type: str | None = None
     is_inbound_agent: bool | None = None
-    is_follow_up_agent: bool | None = None
 
 
 def agent_to_out(agent: Agent) -> AgentOut:
@@ -370,7 +367,6 @@ def agent_to_out(agent: Agent) -> AgentOut:
         language=agent.language,
         voice_type=agent.voice_type,
         is_inbound_agent=agent.is_inbound_agent,
-        is_follow_up_agent=agent.is_follow_up_agent,
     )
 
 

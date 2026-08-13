@@ -5596,353 +5596,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/business-knowledge:
-    post:
-      tags:
-      - Business Knowledge
-      summary: Create Business Knowledge
-      operationId: create_business_knowledge_api_v1_business_knowledge_post
-      security:
-      - HTTPBearer: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BusinessKnowledgeCreate'
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_BusinessKnowledgeOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    get:
-      tags:
-      - Business Knowledge
-      summary: List Business Knowledge
-      operationId: list_business_knowledge_api_v1_business_knowledge_get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: agent_id
-        in: query
-        required: false
-        schema:
-          type: string
-          format: uuid
-          nullable: true
-      - name: include_inactive
-        in: query
-        required: false
-        schema:
-          type: boolean
-          default: false
-          title: Include Inactive
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_BusinessKnowledgeList_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/business-knowledge/{record_id}:
-    get:
-      tags:
-      - Business Knowledge
-      summary: Get Business Knowledge
-      operationId: get_business_knowledge_api_v1_business_knowledge__record_id__get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: record_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Record Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_BusinessKnowledgeOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    patch:
-      tags:
-      - Business Knowledge
-      summary: Update Business Knowledge
-      operationId: update_business_knowledge_api_v1_business_knowledge__record_id__patch
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: record_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Record Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/BusinessKnowledgeUpdate'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_BusinessKnowledgeOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      tags:
-      - Business Knowledge
-      summary: Delete Business Knowledge
-      operationId: delete_business_knowledge_api_v1_business_knowledge__record_id__delete
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: record_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Record Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_dict_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/calendar/appointments:
-    post:
-      tags:
-      - Calendar
-      summary: Create Appointment
-      description: Log an appointment (already scheduled on Calendly, or via legacy
-        web flow).
-      operationId: create_appointment_api_v1_calendar_appointments_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AppointmentCreate'
-        required: true
-      responses:
-        '201':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AppointmentOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
-  /api/v1/calendar/appointments/{appointment_id}/intake-summary:
-    get:
-      tags:
-      - Calendar
-      summary: Get Appointment Intake Summary
-      description: 'Generate a fresh intake briefing from the call transcript linked
-        to this appointment.
-
-        Not stored — suitable for demo; each request runs a new LLM extraction.
-
-
-        Omits sentiment scores, satisfaction metrics, and emotional analytics by design.'
-      operationId: get_appointment_intake_summary_api_v1_calendar_appointments__appointment_id__intake_summary_get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: appointment_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Appointment Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AppointmentIntakeSummaryResponse_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/calendar/appointments/{appointment_id}:
-    get:
-      tags:
-      - Calendar
-      summary: Get Appointment
-      operationId: get_appointment_api_v1_calendar_appointments__appointment_id__get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: appointment_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Appointment Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AppointmentDetailOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    patch:
-      tags:
-      - Calendar
-      summary: Update Appointment Status
-      description: Update appointment status (confirm/cancel/complete/no_show).
-      operationId: update_appointment_status_api_v1_calendar_appointments__appointment_id__patch
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: appointment_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Appointment Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AppointmentStatusUpdate'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AppointmentOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-    delete:
-      tags:
-      - Calendar
-      summary: Delete Appointment
-      description: Permanently delete an appointment.
-      operationId: delete_appointment_api_v1_calendar_appointments__appointment_id__delete
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: appointment_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Appointment Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_dict_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/calendar/appointments/{appointment_id}/reschedule:
-    patch:
-      tags:
-      - Calendar
-      summary: Reschedule Appointment
-      description: Move a confirmed/pending appointment's local record to a new time.
-      operationId: reschedule_appointment_api_v1_calendar_appointments__appointment_id__reschedule_patch
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: appointment_id
-        in: path
-        required: true
-        schema:
-          type: string
-          format: uuid
-          title: Appointment Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/AppointmentReschedule'
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse_AppointmentOut_'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/calendar/business-hours:
     get:
       tags:
@@ -8966,6 +8619,45 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/flow-data:
+    get:
+      tags:
+      - Visual Flow Editor
+      summary: List visual and pre-compiled flow graphs across the workspace
+      operationId: list_flow_data_api_v2_flows_flow_data_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: pageSize
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Pagesize
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedFlowDataResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/flow-data:
     put:
       tags:
@@ -10284,10 +9976,6 @@ components:
           type: boolean
           title: Is Inbound Agent
           default: false
-        is_follow_up_agent:
-          type: boolean
-          title: Is Follow Up Agent
-          default: false
         transfer_route_id:
           type: string
           format: uuid
@@ -10368,9 +10056,6 @@ components:
           type: string
           nullable: true
         is_inbound_agent:
-          type: boolean
-          nullable: true
-        is_follow_up_agent:
           type: boolean
           nullable: true
       type: object
@@ -10467,9 +10152,6 @@ components:
           type: string
           nullable: true
         is_inbound_agent:
-          type: boolean
-          nullable: true
-        is_follow_up_agent:
           type: boolean
           nullable: true
         transfer_route_id:
@@ -10602,323 +10284,6 @@ components:
       - created_at
       title: ApiKeyOut
       description: API key as returned from list/get — never includes the raw secret.
-    AppointmentCreate:
-      properties:
-        customer_name:
-          type: string
-          maxLength: 255
-          minLength: 1
-          title: Customer Name
-        customer_phone:
-          type: string
-          maxLength: 50
-          minLength: 5
-          title: Customer Phone
-        customer_email:
-          type: string
-          nullable: true
-        appointment_reason:
-          type: string
-          nullable: true
-        slot_start:
-          type: string
-          format: date-time
-          title: Slot Start
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        notes:
-          type: string
-          nullable: true
-      type: object
-      required:
-      - customer_name
-      - customer_phone
-      - slot_start
-      title: AppointmentCreate
-    AppointmentDetailOut:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        tenant_id:
-          type: string
-          format: uuid
-          title: Tenant Id
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        customer_name:
-          type: string
-          title: Customer Name
-        customer_phone:
-          type: string
-          title: Customer Phone
-        customer_email:
-          type: string
-          nullable: true
-        appointment_reason:
-          type: string
-          nullable: true
-        duration_minutes:
-          type: integer
-          title: Duration Minutes
-        status:
-          type: string
-          title: Status
-        created_via:
-          type: string
-          title: Created Via
-        notes:
-          type: string
-          nullable: true
-        cancellation_reason:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          nullable: true
-        business_timezone:
-          type: string
-          nullable: true
-        slot_start_local:
-          type: string
-          format: date-time
-          nullable: true
-        slot_end_local:
-          type: string
-          format: date-time
-          nullable: true
-      type: object
-      required:
-      - id
-      - tenant_id
-      - customer_name
-      - customer_phone
-      - duration_minutes
-      - status
-      - created_via
-      - created_at
-      title: AppointmentDetailOut
-    AppointmentIntakeSummaryFields:
-      properties:
-        reason_for_visit:
-          type: string
-          nullable: true
-        health_symptoms_or_conditions:
-          type: string
-          nullable: true
-        customer_details_mentioned:
-          type: string
-          nullable: true
-        staff_briefing:
-          type: string
-          nullable: true
-        key_points:
-          type: string
-          nullable: true
-      type: object
-      title: AppointmentIntakeSummaryFields
-      description: Structured briefing for staff; excludes sentiment / satisfaction
-        scores.
-    AppointmentIntakeSummaryResponse:
-      properties:
-        appointment_id:
-          type: string
-          format: uuid
-          title: Appointment Id
-        call_session_id:
-          type: string
-          format: uuid
-          title: Call Session Id
-        customer_name:
-          type: string
-          title: Customer Name
-        customer_phone:
-          type: string
-          title: Customer Phone
-        customer_email:
-          type: string
-          nullable: true
-        appointment_reason:
-          type: string
-          nullable: true
-        duration_minutes:
-          type: integer
-          title: Duration Minutes
-        status:
-          type: string
-          title: Status
-        reviewed_at:
-          type: string
-          format: date-time
-          nullable: true
-        generated_at:
-          type: string
-          format: date-time
-          title: Generated At
-        model_used:
-          type: string
-          title: Model Used
-        transcript_message_count:
-          type: integer
-          title: Transcript Message Count
-        intake:
-          $ref: '#/components/schemas/AppointmentIntakeSummaryFields'
-      type: object
-      required:
-      - appointment_id
-      - call_session_id
-      - customer_name
-      - customer_phone
-      - duration_minutes
-      - status
-      - generated_at
-      - model_used
-      - transcript_message_count
-      - intake
-      title: AppointmentIntakeSummaryResponse
-    AppointmentOut:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        tenant_id:
-          type: string
-          format: uuid
-          title: Tenant Id
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        customer_name:
-          type: string
-          title: Customer Name
-        customer_phone:
-          type: string
-          title: Customer Phone
-        customer_email:
-          type: string
-          nullable: true
-        appointment_reason:
-          type: string
-          nullable: true
-        slot_start:
-          type: string
-          format: date-time
-          title: Slot Start
-        slot_end:
-          type: string
-          format: date-time
-          title: Slot End
-        duration_minutes:
-          type: integer
-          title: Duration Minutes
-        status:
-          type: string
-          title: Status
-        created_via:
-          type: string
-          title: Created Via
-        notes:
-          type: string
-          nullable: true
-        cancellation_reason:
-          type: string
-          nullable: true
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          nullable: true
-        business_timezone:
-          type: string
-          nullable: true
-        slot_start_local:
-          type: string
-          format: date-time
-          nullable: true
-        slot_end_local:
-          type: string
-          format: date-time
-          nullable: true
-      type: object
-      required:
-      - id
-      - tenant_id
-      - customer_name
-      - customer_phone
-      - slot_start
-      - slot_end
-      - duration_minutes
-      - status
-      - created_via
-      - created_at
-      title: AppointmentOut
-    AppointmentReschedule:
-      properties:
-        slot_start:
-          type: string
-          format: date-time
-          title: Slot Start
-        duration_minutes:
-          type: integer
-          maximum: 120.0
-          minimum: 15.0
-          nullable: true
-        customer_name:
-          type: string
-          maxLength: 255
-          minLength: 1
-          nullable: true
-        customer_phone:
-          type: string
-          maxLength: 50
-          minLength: 5
-          nullable: true
-        customer_email:
-          type: string
-          nullable: true
-        appointment_reason:
-          type: string
-          nullable: true
-        notes:
-          type: string
-          nullable: true
-      type: object
-      required:
-      - slot_start
-      title: AppointmentReschedule
-      description: Move appointment to a new slot. Optional fields update customer
-        details when provided.
-    AppointmentStatusUpdate:
-      properties:
-        status:
-          type: string
-          pattern: ^(pending|confirmed|cancelled|completed|no_show)$
-          title: Status
-        cancellation_reason:
-          type: string
-          nullable: true
-        notes:
-          type: string
-          nullable: true
-      type: object
-      required:
-      - status
-      title: AppointmentStatusUpdate
     AuditEventOut:
       properties:
         id:
@@ -11481,211 +10846,6 @@ components:
       required:
       - day_of_week
       title: BusinessHoursUpsert
-    BusinessKnowledgeCreate:
-      properties:
-        label:
-          type: string
-          maxLength: 255
-          title: Label
-          description: Admin label to identify this record
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        business_name:
-          type: string
-          maxLength: 255
-          nullable: true
-        business_type:
-          type: string
-          maxLength: 255
-          nullable: true
-        business_description:
-          type: string
-          nullable: true
-        address:
-          type: string
-          nullable: true
-        phone:
-          type: string
-          maxLength: 255
-          nullable: true
-        email:
-          type: string
-          maxLength: 255
-          nullable: true
-        website_url:
-          type: string
-          maxLength: 512
-          nullable: true
-        primary_service:
-          type: string
-          nullable: true
-        secondary_service:
-          type: string
-          nullable: true
-        service_areas:
-          type: string
-          nullable: true
-        specializations:
-          type: string
-          nullable: true
-        pricing_information:
-          type: string
-          nullable: true
-        additional_information:
-          type: string
-          nullable: true
-      type: object
-      required:
-      - label
-      title: BusinessKnowledgeCreate
-    BusinessKnowledgeList:
-      properties:
-        items:
-          items:
-            $ref: '#/components/schemas/BusinessKnowledgeOut'
-          type: array
-          title: Items
-        total:
-          type: integer
-          title: Total
-      type: object
-      required:
-      - items
-      - total
-      title: BusinessKnowledgeList
-    BusinessKnowledgeOut:
-      properties:
-        id:
-          type: string
-          format: uuid
-          title: Id
-        tenant_id:
-          type: string
-          format: uuid
-          title: Tenant Id
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        label:
-          type: string
-          title: Label
-        business_name:
-          type: string
-          nullable: true
-        business_type:
-          type: string
-          nullable: true
-        business_description:
-          type: string
-          nullable: true
-        address:
-          type: string
-          nullable: true
-        phone:
-          type: string
-          nullable: true
-        email:
-          type: string
-          nullable: true
-        website_url:
-          type: string
-          nullable: true
-        primary_service:
-          type: string
-          nullable: true
-        secondary_service:
-          type: string
-          nullable: true
-        service_areas:
-          type: string
-          nullable: true
-        specializations:
-          type: string
-          nullable: true
-        pricing_information:
-          type: string
-          nullable: true
-        additional_information:
-          type: string
-          nullable: true
-        is_active:
-          type: boolean
-          title: Is Active
-        created_at:
-          type: string
-          format: date-time
-          title: Created At
-        updated_at:
-          type: string
-          format: date-time
-          nullable: true
-      type: object
-      required:
-      - id
-      - tenant_id
-      - label
-      - is_active
-      - created_at
-      title: BusinessKnowledgeOut
-    BusinessKnowledgeUpdate:
-      properties:
-        label:
-          type: string
-          maxLength: 255
-          nullable: true
-        agent_id:
-          type: string
-          format: uuid
-          nullable: true
-        business_name:
-          type: string
-          maxLength: 255
-          nullable: true
-        business_type:
-          type: string
-          maxLength: 255
-          nullable: true
-        business_description:
-          type: string
-          nullable: true
-        address:
-          type: string
-          nullable: true
-        phone:
-          type: string
-          maxLength: 255
-          nullable: true
-        email:
-          type: string
-          maxLength: 255
-          nullable: true
-        website_url:
-          type: string
-          maxLength: 512
-          nullable: true
-        primary_service:
-          type: string
-          nullable: true
-        secondary_service:
-          type: string
-          nullable: true
-        service_areas:
-          type: string
-          nullable: true
-        specializations:
-          type: string
-          nullable: true
-        pricing_information:
-          type: string
-          nullable: true
-        additional_information:
-          type: string
-          nullable: true
-      type: object
-      title: BusinessKnowledgeUpdate
     CRMConfigCreate:
       properties:
         crm_type:
@@ -13412,6 +12572,34 @@ components:
       - skill
       - confidence
       title: ExtractedSkill
+    FlowDataListItem:
+      properties:
+        flowId:
+          type: string
+          format: uuid
+          title: Flowid
+        name:
+          type: string
+          title: Name
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        flowDataCompiled:
+          additionalProperties: true
+          type: object
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - flowId
+      - name
+      title: FlowDataListItem
+      description: A single flow's visual/pre-compiled graph, used in the paginated
+        list.
     FlowDataResponse:
       properties:
         flowData:
@@ -15260,6 +14448,30 @@ components:
       - page
       - page_size
       title: PaginatedBatchJobs
+    PaginatedFlowDataResponse:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/FlowDataListItem'
+          type: array
+          title: Data
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        pageSize:
+          type: integer
+          title: Pagesize
+      type: object
+      required:
+      - data
+      - total
+      - page
+      - pageSize
+      title: PaginatedFlowDataResponse
+      description: Response body for ``GET /api/v2/flows/flow-data``.
     PaginatedPaymentResponse:
       properties:
         items:
@@ -17500,54 +16712,6 @@ components:
       required:
       - data
       title: SuccessResponse[ApiKeyOut]
-    SuccessResponse_AppointmentDetailOut_:
-      properties:
-        data:
-          $ref: '#/components/schemas/AppointmentDetailOut'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[AppointmentDetailOut]
-    SuccessResponse_AppointmentIntakeSummaryResponse_:
-      properties:
-        data:
-          $ref: '#/components/schemas/AppointmentIntakeSummaryResponse'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[AppointmentIntakeSummaryResponse]
-    SuccessResponse_AppointmentOut_:
-      properties:
-        data:
-          $ref: '#/components/schemas/AppointmentOut'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[AppointmentOut]
     SuccessResponse_BatchCallMetrics_:
       properties:
         data:
@@ -17612,38 +16776,6 @@ components:
       required:
       - data
       title: SuccessResponse[BoundAgentBindingList]
-    SuccessResponse_BusinessKnowledgeList_:
-      properties:
-        data:
-          $ref: '#/components/schemas/BusinessKnowledgeList'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[BusinessKnowledgeList]
-    SuccessResponse_BusinessKnowledgeOut_:
-      properties:
-        data:
-          $ref: '#/components/schemas/BusinessKnowledgeOut'
-        message:
-          type: string
-          title: Message
-          default: ''
-        status_code:
-          type: integer
-          title: Status Code
-          default: 200
-      type: object
-      required:
-      - data
-      title: SuccessResponse[BusinessKnowledgeOut]
     SuccessResponse_CRMConfigListResponse_:
       properties:
         data:

@@ -6,6 +6,7 @@ import uuid
 from fastapi import HTTPException, status
 from scipy.stats import chi2_contingency
 from sqlalchemy import case, func, select
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.core.logger import logger
@@ -34,10 +35,12 @@ from app.schemas.call_flow import (
     CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
     CallFlowUpdate,
+    FlowDataListItem,
     FlowDataResponse,
     FlowDataUpdate,
     FlowValidationError,
     FlowValidationResponse,
+    PaginatedFlowDataResponse,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
     PostCallAnalysisSettingsResponse,
@@ -770,6 +773,46 @@ class CallFlowService:
 
 
     # ── Visual Flow Editor ────────────────────────────────────────────────
+
+    def list_flow_data(
+        self,
+        db: Session,
+        tenant_id: uuid.UUID,
+        page: int,
+        limit: int,
+    ) -> PaginatedFlowDataResponse:
+        repo = CallFlowRepository(db)
+        try:
+            rows, total = repo.find_flow_data_by_workspace(
+                tenant_id, page=page, limit=limit
+            )
+        except SQLAlchemyError:
+            logger.exception(
+                "Failed to list flow-data for tenant %s (page=%s, limit=%s)",
+                tenant_id,
+                page,
+                limit,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to list flow data",
+            )
+
+        return PaginatedFlowDataResponse(
+            data=[
+                FlowDataListItem(
+                    flow_id=f.id,
+                    name=f.name,
+                    flow_data=f.flow_data,
+                    flow_data_compiled=f.flow_data_compiled,
+                    updated_at=f.updated_at,
+                )
+                for f in rows
+            ],
+            total=total,
+            page=page,
+            page_size=limit,
+        )
 
     def get_flow_data(
         self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID

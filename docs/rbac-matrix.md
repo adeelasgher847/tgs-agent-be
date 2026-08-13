@@ -167,10 +167,6 @@ their pre-existing `require_tenant` / legacy-alias gating, listed in the
 | POST | `/api/v1/kb/retrieve-preview` (legacy) | `read_only` | also accepts API-key principals |
 | DELETE | `/api/v1/kb/documents/{id}` (legacy) | `config_only` | also accepts API-key principals |
 
-### Business knowledge — `app/routers/business_knowledge.py`
-
-All 5 endpoints (create/list/get/update/delete): `admin`.
-
 ### Workspace name update / delete — `app/api/api_v1/endpoints/workspace.py`
 
 | Method | Path | Min role | Notes |
