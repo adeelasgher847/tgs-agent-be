@@ -38,6 +38,7 @@ authlib==1.7.2
 google-auth==2.52.0
 google-auth-oauthlib==1.4.0
 deepgram-sdk==6.1.1
+speechmatics-rt==1.1.0
 google-cloud-texttospeech==2.36.0
 google-cloud-speech==2.40.0
 geopy==2.4.1

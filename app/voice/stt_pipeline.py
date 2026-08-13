@@ -1,8 +1,9 @@
 """
 SttPipeline — provider-agnostic streaming STT wrapper.
 
-Supports Deepgram (existing Twilio MULAW path) and Google STT (LiveKit LINEAR16
-path). Provider is selected at construction time via provider_slug.
+Supports Deepgram (existing Twilio MULAW path), Google STT (LiveKit LINEAR16
+path), and Speechmatics (Twilio MULAW path, native VAD/end-of-utterance).
+Provider is selected at construction time via provider_slug.
 
 Public interface is unchanged for existing callers (VoiceOrchestrator):
   feed_audio_chunk(bytes)
@@ -39,8 +40,10 @@ class SttPipeline:
     emits typed events, and calls legacy interim/final callbacks.
 
     Providers:
-      "deepgram"  — DeepgramSTTService (MULAW 8kHz, Twilio path)
-      "google"    — GoogleSttService (LINEAR16 16kHz, LiveKit path)
+      "deepgram"     — DeepgramSTTService (MULAW 8kHz, Twilio path)
+      "google"       — GoogleSttService (LINEAR16 16kHz, LiveKit path)
+      "speechmatics" — SpeechmaticsSTTService (MULAW 8kHz, Twilio path; native
+                       EndOfUtterance drives turn-end, no app-side endpointing)
     """
 
     def __init__(
@@ -151,6 +154,8 @@ class SttPipeline:
 
         if self._provider_slug == "google":
             await self._ensure_google_session()
+        elif self._provider_slug == "speechmatics":
+            await self._ensure_speechmatics_session()
         else:
             await self._ensure_deepgram_session()
 
@@ -180,6 +185,19 @@ class SttPipeline:
             interim_results=True,
             api_config=self._api_config,
             silence_threshold_ms=self._silence_threshold_ms,
+        )
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        asyncio.create_task(self._stt_session.start())
+
+    async def _ensure_speechmatics_session(self) -> None:
+        from app.services.speechmatics_stt_service import speechmatics_stt_service
+
+        self._stt_session = speechmatics_stt_service.create_streaming_session(
+            language_code=self._language_code,
+            encoding=self._encoding,
+            sample_rate=self._sample_rate_hz,
+            model=self._model_id,
+            api_config=self._api_config,
         )
         self._reader_task = asyncio.create_task(self._reader_loop())
         asyncio.create_task(self._stt_session.start())

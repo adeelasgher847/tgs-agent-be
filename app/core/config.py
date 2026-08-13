@@ -551,6 +551,18 @@ class Settings(BaseSettings):
     GOOGLE_STT_SAMPLE_RATE: int = 8000
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
 
+    # Speechmatics Speech-to-Text (optional provider — native VAD/end-of-utterance)
+    SPEECHMATICS_API_KEY: str = ""
+    # Leave blank to use the speechmatics-rt SDK default (wss://eu2.rt.speechmatics.com/v2)
+    SPEECHMATICS_RT_URL: str = ""
+    SPEECHMATICS_STT_MODEL: str = "enhanced"  # "enhanced" | "standard"
+    SPEECHMATICS_STT_LANGUAGE: str = "en"
+    # Silence (seconds) before Speechmatics' server-side EndOfUtterance fires.
+    # Range 0-2s per Speechmatics docs; must stay below SPEECHMATICS_MAX_DELAY.
+    SPEECHMATICS_EOT_SILENCE_TRIGGER_SEC: float = 0.5
+    # Max seconds of latency Speechmatics may take to finalize a transcript segment.
+    SPEECHMATICS_MAX_DELAY_SEC: float = 2.0
+
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
