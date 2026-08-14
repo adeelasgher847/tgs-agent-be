@@ -258,6 +258,63 @@ def test_sender_loop_forwards_audio_chunks_as_raw_binary():
     assert ws.sent[0] == b"\x01\x02\x03"
 
 
+def test_send_failure_result_is_marked_non_recoverable():
+    """A send() failure tears the session down immediately (finally pushes
+    done) -- the error result must say so, or a future recoverable-aware
+    consumer would wrongly treat this as a transient/retryable condition."""
+    session = _make_session()
+
+    class _FailingWebSocket:
+        async def send(self, data):
+            raise ConnectionError("boom")
+
+        async def close(self):
+            return None
+
+    session._ws = _FailingWebSocket()
+
+    async def _run():
+        session._ready_evt.set()
+        session.push_audio(b"\x01\x02\x03")
+        session.finish()
+        await session._sender_loop()
+
+    asyncio.run(_run())
+
+    error_result = session._results_q.get_nowait()
+    assert error_result["error"] == "boom"
+    assert error_result["recoverable"] is False
+
+    done_result = session._results_q.get_nowait()
+    assert done_result == {"done": True}
+
+
+def test_start_without_api_key_closes_session_so_push_audio_is_dropped():
+    """No sender/receiver task is ever created when start() fails before
+    connecting -- push_audio() must not keep enqueueing into a queue with no
+    consumer."""
+    session = XaiGrokSTTService.StreamingSTTSession(
+        api_key=None,
+        language_code="en",
+        encoding="MULAW",
+        sample_rate=8000,
+        endpointing_ms=10,
+        smart_turn_threshold=0.5,
+        smart_turn_timeout_ms=3000,
+    )
+
+    asyncio.run(session.start())
+
+    error_result = session._results_q.get_nowait()
+    assert error_result["recoverable"] is False
+    done_result = session._results_q.get_nowait()
+    assert done_result == {"done": True}
+
+    # push_audio() after the failed start() must be a no-op, not silently queued forever.
+    session.push_audio(b"\x01\x02\x03")
+    assert session._audio_q.qsize() == 0
+
+
 def test_push_done_is_idempotent():
     session = _make_session()
     session._push_done()

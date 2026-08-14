@@ -163,9 +163,10 @@ class XaiGrokSTTService:
 
             if not self._api_key:
                 await self._results_q.put(
-                    {"error": "xAI client not initialized", "transcript": "", "confidence": 0.0, "is_final": True}
+                    {"error": "xAI client not initialized", "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False}
                 )
                 self._push_done()
+                self._closed = True  # no sender/receiver task will ever drain push_audio()
                 return
 
             xai_encoding = "mulaw" if self._encoding == "MULAW" else "pcm"
@@ -198,6 +199,7 @@ class XaiGrokSTTService:
                     {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False}
                 )
                 self._push_done()
+                self._closed = True  # no sender/receiver task will ever drain push_audio()
                 return
 
             self._receiver_task = asyncio.create_task(self._receiver_loop())
@@ -298,7 +300,7 @@ class XaiGrokSTTService:
                         session_end_reason = "send_audio_failed"
                         logger.error("[xAI Grok STT] send failed: %s", exc, exc_info=True)
                         await self._results_q.put(
-                            {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
+                            {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False}
                         )
                         return
 
