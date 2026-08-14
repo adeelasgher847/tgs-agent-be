@@ -563,6 +563,18 @@ class Settings(BaseSettings):
     # Max seconds of latency Speechmatics may take to finalize a transcript segment.
     SPEECHMATICS_MAX_DELAY_SEC: float = 2.0
 
+    # ElevenLabs Scribe v2 Realtime STT — reuses ELEVENLABS_API_KEY (TTS, below)
+    # rather than a separate key; same ElevenLabs account for both.
+    ELEVENLABS_SCRIBE_MODEL: str = "scribe_v2_realtime"
+    ELEVENLABS_SCRIBE_LANGUAGE: str = "en"
+    # Native server-side VAD/commit-strategy tuning (commit_strategy="vad").
+    # Ranges per ElevenLabs docs: silence_threshold 0.3-3.0s, vad_threshold 0.1-0.9,
+    # min_speech/min_silence_duration_ms 50-2000ms.
+    ELEVENLABS_SCRIBE_VAD_SILENCE_THRESHOLD_SECS: float = 1.5
+    ELEVENLABS_SCRIBE_VAD_THRESHOLD: float = 0.4
+    ELEVENLABS_SCRIBE_MIN_SPEECH_DURATION_MS: int = 100
+    ELEVENLABS_SCRIBE_MIN_SILENCE_DURATION_MS: int = 100
+
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"

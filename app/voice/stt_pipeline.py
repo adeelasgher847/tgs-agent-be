@@ -2,7 +2,8 @@
 SttPipeline — provider-agnostic streaming STT wrapper.
 
 Supports Deepgram (existing Twilio MULAW path), Google STT (LiveKit LINEAR16
-path), and Speechmatics (Twilio MULAW path, native VAD/end-of-utterance).
+path), Speechmatics (Twilio MULAW path, native VAD/end-of-utterance), and
+ElevenLabs Scribe v2 Realtime (Twilio MULAW path, native VAD/commit strategy).
 Provider is selected at construction time via provider_slug.
 
 Public interface is unchanged for existing callers (VoiceOrchestrator):
@@ -44,6 +45,8 @@ class SttPipeline:
       "google"       — GoogleSttService (LINEAR16 16kHz, LiveKit path)
       "speechmatics" — SpeechmaticsSTTService (MULAW 8kHz, Twilio path; native
                        EndOfUtterance drives turn-end, no app-side endpointing)
+      "elevenlabs"   — ElevenLabsScribeSTTService (MULAW 8kHz, Twilio path;
+                       native VAD/commit_strategy drives turn-end)
     """
 
     def __init__(
@@ -156,6 +159,8 @@ class SttPipeline:
             await self._ensure_google_session()
         elif self._provider_slug == "speechmatics":
             await self._ensure_speechmatics_session()
+        elif self._provider_slug == "elevenlabs":
+            await self._ensure_elevenlabs_session()
         else:
             await self._ensure_deepgram_session()
 
@@ -193,6 +198,19 @@ class SttPipeline:
         from app.services.speechmatics_stt_service import speechmatics_stt_service
 
         self._stt_session = speechmatics_stt_service.create_streaming_session(
+            language_code=self._language_code,
+            encoding=self._encoding,
+            sample_rate=self._sample_rate_hz,
+            model=self._model_id,
+            api_config=self._api_config,
+        )
+        self._reader_task = asyncio.create_task(self._reader_loop())
+        asyncio.create_task(self._stt_session.start())
+
+    async def _ensure_elevenlabs_session(self) -> None:
+        from app.services.elevenlabs_scribe_stt_service import elevenlabs_scribe_stt_service
+
+        self._stt_session = elevenlabs_scribe_stt_service.create_streaming_session(
             language_code=self._language_code,
             encoding=self._encoding,
             sample_rate=self._sample_rate_hz,
