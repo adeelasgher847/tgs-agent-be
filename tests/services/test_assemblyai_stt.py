@@ -255,6 +255,53 @@ def test_unexpected_close_before_termination_is_treated_as_fatal():
     assert session._closed is True
 
 
+def test_unrecognized_message_type_is_captured_not_silently_dropped():
+    """Regression test: a live incident showed AssemblyAI closing with code
+    3007 and reason 'See Error message for details' -- a generic reason that
+    points at a separate JSON message sent just before the close. The old
+    if/elif in _handle_message had no else branch, so that message (an
+    undocumented type outside Begin/Turn/Termination) was silently dropped,
+    leaving zero diagnostic detail in the logs. It must now be captured."""
+    session = _make_session()
+    session._handle_message({"type": "Error", "error": "invalid encoding parameter"})
+
+    assert "Error" in session._last_server_message
+    assert "invalid encoding parameter" in session._last_server_message
+    # Must not be mistaken for Begin/Turn/Termination routing.
+    assert not session._ready_evt.is_set()
+    assert not session._termination_received
+    assert session._results_q.empty()
+
+
+def test_fatal_close_error_message_includes_captured_server_detail():
+    """The pushed fatal-error result must surface whatever server message was
+    captured before the close, not just a generic 'closed before
+    Termination' string with no actionable detail."""
+    session = _make_session()
+
+    class _DeadWebSocketWithPriorErrorMessage:
+        def __init__(self, session):
+            self._session = session
+            self._sent = False
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if not self._sent:
+                self._sent = True
+                return json.dumps({"type": "Error", "error": "invalid encoding parameter"})
+            raise StopAsyncIteration
+
+    session._ws = _DeadWebSocketWithPriorErrorMessage(session)
+
+    asyncio.run(session._receiver_loop())
+
+    error_result = session._results_q.get_nowait()
+    assert error_result["recoverable"] is False
+    assert "invalid encoding parameter" in error_result["error"]
+
+
 def test_close_after_termination_received_is_not_treated_as_fatal():
     session = _make_session()
 

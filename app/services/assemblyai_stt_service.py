@@ -158,6 +158,10 @@ class AssemblyAiSTTService:
             # _receiver_loop's finally) if the socket dies before that.
             self._termination_evt = asyncio.Event()
             self._termination_received = False
+            # Last unrecognized (non Begin/Turn/Termination) server payload,
+            # e.g. an undocumented validation-error message sent just before
+            # a close -- surfaced in the fatal error text if the socket dies.
+            self._last_server_message: str = ""
 
         def push_audio(self, audio_chunk: bytes) -> None:
             if self._closed:
@@ -222,28 +226,37 @@ class AssemblyAiSTTService:
             self._sender_task = asyncio.create_task(self._sender_loop())
 
         async def _receiver_loop(self) -> None:
+            close_detail = ""
             try:
                 async for raw in self._ws:
                     try:
                         data = json.loads(raw)
                     except (TypeError, ValueError):
+                        logger.warning("[AssemblyAI STT] non-JSON message received: %r", raw)
                         continue
                     self._handle_message(data)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
-                logger.error("[AssemblyAI STT] receiver loop error: %s", exc, exc_info=True)
+                close_detail = self._describe_close_exception(exc)
+                logger.error(
+                    "[AssemblyAI STT] receiver loop error: %s (close_detail=%s)",
+                    exc, close_detail, exc_info=True,
+                )
             finally:
                 if not self._termination_received:
                     # No documented in-band recoverable error type for this
                     # API -- a close/exception here before Termination was
                     # ever observed is always fatal, unlike xAI's `error`.
+                    reason_bits = [b for b in (close_detail, self._last_server_message) if b]
+                    reason = " | ".join(reason_bits) if reason_bits else "no further detail from server"
                     logger.warning(
-                        "[AssemblyAI STT] connection ended before Termination was received — treating as fatal"
+                        "[AssemblyAI STT] connection ended before Termination was received — "
+                        "treating as fatal (%s)", reason,
                     )
                     self._results_q.put_nowait(
                         {
-                            "error": "AssemblyAI connection closed before Termination",
+                            "error": f"AssemblyAI connection closed before Termination ({reason})",
                             "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False,
                         }
                     )
@@ -254,6 +267,19 @@ class AssemblyAiSTTService:
                 # Unblock a shutdown that's waiting on Termination if the
                 # socket just died instead of gracefully closing.
                 self._termination_evt.set()
+
+        @staticmethod
+        def _describe_close_exception(exc: Exception) -> str:
+            """Pull the actual WebSocket close code/reason out of a
+            ConnectionClosed[Error|OK] exception -- str(exc) alone often just
+            says e.g. 'received 3007 ... See Error message for details',
+            which is the server pointing at a JSON payload we need to have
+            captured separately (see _handle_message's unrecognized-type
+            branch), not information present in the exception itself."""
+            rcvd = getattr(exc, "rcvd", None)
+            if rcvd is not None:
+                return f"close_code={rcvd.code} close_reason={rcvd.reason!r}"
+            return ""
 
         def _handle_message(self, data: Dict[str, Any]) -> None:
             msg_type = data.get("type")
@@ -272,6 +298,14 @@ class AssemblyAiSTTService:
                 )
                 self._termination_received = True
                 self._termination_evt.set()
+            else:
+                # Catch-all: AssemblyAI's documented message set is
+                # Begin/Turn/Termination/Heartbeat, but an undocumented or
+                # future message type (e.g. a config-validation error payload
+                # sent just before a close) must never be silently dropped --
+                # stash it so a subsequent fatal close can report it.
+                logger.warning("[AssemblyAI STT] unrecognized message type=%r payload=%s", msg_type, data)
+                self._last_server_message = f"server_message type={msg_type!r} payload={data}"
 
         def _handle_turn(self, data: Dict[str, Any]) -> None:
             transcript = (data.get("transcript") or "").strip()
