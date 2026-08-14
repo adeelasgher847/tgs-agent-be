@@ -68,6 +68,7 @@ class SttProviderEnum(str, Enum):
     elevenlabs = "elevenlabs"
     speechmatics = "speechmatics"
     xai = "xai"
+    assemblyai = "assemblyai"
 
 
 class SttModelSchema(BaseModel):

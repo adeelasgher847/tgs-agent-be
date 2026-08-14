@@ -592,6 +592,28 @@ class Settings(BaseSettings):
     # of Smart Turn confidence, so a session can't hang indefinitely. Range 1-5000ms.
     XAI_STT_SMART_TURN_TIMEOUT_MS: int = 3000
 
+    # AssemblyAI Universal-Streaming STT (wss://streaming.assemblyai.com/v3/ws)
+    # — dedicated key, no existing AssemblyAI credential to reuse.
+    ASSEMBLYAI_API_KEY: str = ""
+    # No `language` query param exists on this API -- language is baked into
+    # the speech_model choice (english vs multilingual variants). Kept only
+    # for interface parity/logging, same rationale as xAI's unused `model`.
+    ASSEMBLYAI_STT_LANGUAGE: str = "en"
+    ASSEMBLYAI_STT_SPEECH_MODEL: str = "universal-3-5-pro"
+    # Silence (ms) before AssemblyAI's native end-of-turn detection considers
+    # a turn boundary. Range 50-10000ms per docs; no vendor-documented default.
+    ASSEMBLYAI_STT_MIN_TURN_SILENCE_MS: int = 400
+    # Vendor default per docs; same 50-10000ms range as min_turn_silence.
+    ASSEMBLYAI_STT_MAX_TURN_SILENCE_MS: int = 1536
+    # Vendor default per docs. Range 0.0-1.0. Only applies to Universal
+    # English/Multilingual models, not universal-3-5-pro.
+    ASSEMBLYAI_STT_END_OF_TURN_CONFIDENCE_THRESHOLD: float = 0.4
+    # Vendor default for universal-3-5-pro per docs (0.4 default on Universal
+    # models). Range 0.0-1.0.
+    ASSEMBLYAI_STT_VAD_THRESHOLD: float = 0.2
+    # Whether finalized Turn transcripts are punctuation/cased-formatted.
+    ASSEMBLYAI_STT_FORMAT_TURNS: bool = True
+
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"
