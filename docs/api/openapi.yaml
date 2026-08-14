@@ -16540,6 +16540,8 @@ components:
       - deepgram
       - google
       - elevenlabs
+      - speechmatics
+      - xai
       title: SttProviderEnum
     SttSettingsJsonSchema:
       properties:
