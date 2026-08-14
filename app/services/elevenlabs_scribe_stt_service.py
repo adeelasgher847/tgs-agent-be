@@ -75,6 +75,16 @@ def _clamp(value: float, lo: float, hi: float, *, label: str) -> float:
     return value
 
 
+def _mask_key(key: str | None) -> str:
+    """Safe, non-reversible preview for diagnostics — never logs the raw key.
+    e.g. "sk_ab...wx (len=51)". Callers must never log `key` itself."""
+    if not key:
+        return "<empty>"
+    if len(key) <= 8:
+        return f"<masked len={len(key)}>"
+    return f"{key[:4]}...{key[-2:]} (len={len(key)})"
+
+
 class ElevenLabsScribeSTTService:
     """Service for ElevenLabs Scribe v2 Realtime streaming STT."""
 
@@ -82,7 +92,13 @@ class ElevenLabsScribeSTTService:
         key = (settings.ELEVENLABS_API_KEY or "").strip()
         self._api_key = key or None
         if key:
-            logger.info("ElevenLabs Scribe STT configured (reusing ELEVENLABS_API_KEY)")
+            logger.info(
+                "ElevenLabs Scribe STT configured (reusing ELEVENLABS_API_KEY, %s) — "
+                "same key must have Speech-to-Text/Scribe access enabled on the "
+                "ElevenLabs account, not just Text-to-Speech (ElevenLabs API keys "
+                "can be scoped to specific products in their dashboard)",
+                _mask_key(key),
+            )
         else:
             logger.warning("ELEVENLABS_API_KEY not set — Scribe STT will fail until configured")
 
@@ -175,9 +191,10 @@ class ElevenLabsScribeSTTService:
 
                 logger.info(
                     "[ElevenLabs Scribe STT] session_start model=%s language=%s sample_rate=%s "
-                    "encoding=%s vad_silence_threshold_secs=%s vad_threshold=%s",
+                    "encoding=%s vad_silence_threshold_secs=%s vad_threshold=%s api_key=%s",
                     self._model, self._language_code, self._sample_rate,
                     self._encoding, self._vad_silence_threshold_secs, self._vad_threshold,
+                    _mask_key(self._api_key),
                 )
                 self._connection = await scribe.connect(options)
                 # No `await` between connect() returning and handlers being

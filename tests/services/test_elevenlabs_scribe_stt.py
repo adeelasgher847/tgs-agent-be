@@ -8,7 +8,7 @@ import asyncio
 
 import pytest
 
-from app.services.elevenlabs_scribe_stt_service import ElevenLabsScribeSTTService
+from app.services.elevenlabs_scribe_stt_service import ElevenLabsScribeSTTService, _mask_key
 from app.voice.stt_pipeline import SttPipeline
 from elevenlabs.realtime import RealtimeEvents
 
@@ -44,6 +44,31 @@ def _partial_msg(text: str) -> dict:
 
 def _committed_msg(text: str) -> dict:
     return {"message_type": "committed_transcript", "text": text}
+
+
+# ── Authentication: key never logged raw, and correctly propagated ────────
+
+
+def test_mask_key_never_reveals_the_raw_key():
+    assert _mask_key(None) == "<empty>"
+    assert _mask_key("") == "<empty>"
+    assert _mask_key("short") == "<masked len=5>"
+
+    masked = _mask_key("sk_abcdefghijklmnopqrstuvwxyz")
+    assert "sk_abcdefghijklmnopqrstuvwxyz" not in masked
+    assert masked.startswith("sk_a")
+    assert masked.endswith("yz (len=29)")
+
+
+def test_create_streaming_session_passes_through_configured_key_unchanged():
+    """The exact settings.ELEVENLABS_API_KEY value (same key TTS uses) must
+    reach the session unmodified -- no truncation, re-encoding, or accidental
+    swap for a different/empty value."""
+    svc = ElevenLabsScribeSTTService()
+    svc._api_key = "el_test_key_1234567890"
+
+    session = svc.create_streaming_session()
+    assert session._api_key == "el_test_key_1234567890"
 
 
 # ── create_streaming_session ──────────────────────────────────────────────
