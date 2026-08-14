@@ -4,23 +4,25 @@ Revision ID: 20260814_assemblyai_stt
 Revises: 20260814_xai_grok_stt
 Create Date: 2026-08-14
 
-Seeds a new 'assemblyai' sttprovider row + one sttmodel row per real,
-selectable `speech_model` value (universal-3-5-pro, universal-streaming-
-english, universal-streaming-multilingual), MULAW 8kHz Twilio-native,
-matching the Deepgram/Speechmatics/ElevenLabs/xAI convention.
+Seeds a new 'assemblyai' sttprovider row + a single sttmodel row for the
+`universal-streaming-multilingual` speech_model (MULAW 8kHz Twilio-native),
+matching the Deepgram/Speechmatics/ElevenLabs/xAI convention. AssemblyAI
+also exposes `universal-3-5-pro` and `universal-streaming-english`, but only
+`universal-streaming-multilingual` is seeded here per explicit product
+decision to offer just one AssemblyAI model in the catalog.
 
 Unlike xAI's placeholder 'default' external_model_id (xAI has no model
 parameter at all), AssemblyAI's `speech_model` is a real, sent API
-parameter -- so each catalog row's external_model_id IS the value actually
-sent to AssemblyAI. See app/services/assemblyai_stt_service.py's
+parameter -- so this row's external_model_id IS the value actually sent to
+AssemblyAI. See app/services/assemblyai_stt_service.py's
 create_streaming_session().
 
 metadata_json carries AssemblyAI's native turn-detection tuning
 (min_turn_silence_ms, max_turn_silence_ms, end_of_turn_confidence_threshold,
 vad_threshold, format_turns) so resolve_stt_runtime() needs no code changes,
 same pattern as every other provider's catalog row. vad_threshold defaults
-to 0.2 for universal-3-5-pro and 0.4 for the two Universal-family models,
-per AssemblyAI's documented per-model defaults.
+to 0.4 for the Universal-family models per AssemblyAI's documented
+per-model defaults.
 """
 from typing import Sequence, Union
 
@@ -55,36 +57,6 @@ def upgrade() -> None:
         return
 
     model_rows = [
-        (
-            "universal-3-5-pro",
-            "AssemblyAI Universal 3.5 Pro",
-            "en",
-            8000,
-            "MULAW",
-            {
-                "speech_model": "universal-3-5-pro",
-                "min_turn_silence_ms": 400,
-                "max_turn_silence_ms": 1536,
-                "end_of_turn_confidence_threshold": 0.4,
-                "vad_threshold": 0.2,
-                "format_turns": True,
-            },
-        ),
-        (
-            "universal-streaming-english",
-            "AssemblyAI Universal Streaming (English)",
-            "en",
-            8000,
-            "MULAW",
-            {
-                "speech_model": "universal-streaming-english",
-                "min_turn_silence_ms": 400,
-                "max_turn_silence_ms": 1536,
-                "end_of_turn_confidence_threshold": 0.4,
-                "vad_threshold": 0.4,
-                "format_turns": True,
-            },
-        ),
         (
             "universal-streaming-multilingual",
             "AssemblyAI Universal Streaming (Multilingual)",

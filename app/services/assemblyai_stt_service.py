@@ -16,10 +16,12 @@ matching xAI/Speechmatics. Config is via URL query parameters only -- no
 setup message required (`speech_model`, `encoding`, `sample_rate`, plus
 AssemblyAI's native turn-detection tunables: `min_turn_silence`,
 `max_turn_silence`, `end_of_turn_confidence_threshold`, `vad_threshold`,
-`format_turns`). `speech_model` is a genuine, selectable catalog value here
-(`universal-3-5-pro` / `universal-streaming-english` /
-`universal-streaming-multilingual`) -- unlike xAI's `model`, which has no
-server-side meaning at all.
+`format_turns`). `speech_model` is a genuine, selectable API parameter --
+unlike xAI's `model`, which has no server-side meaning at all. AssemblyAI
+offers `universal-3-5-pro`, `universal-streaming-english`, and
+`universal-streaming-multilingual`; only `universal-streaming-multilingual`
+is seeded in this repo's sttmodel catalog (product decision), though any of
+the three can still be passed through `api_config`/`model` directly.
 
 CRITICAL contrast with xAI: this API's `Turn` message is *two-state*, not
 three-state. `end_of_turn: false` -> interim (`is_final=False`).

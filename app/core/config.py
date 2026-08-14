@@ -599,18 +599,20 @@ class Settings(BaseSettings):
     # the speech_model choice (english vs multilingual variants). Kept only
     # for interface parity/logging, same rationale as xAI's unused `model`.
     ASSEMBLYAI_STT_LANGUAGE: str = "en"
-    ASSEMBLYAI_STT_SPEECH_MODEL: str = "universal-3-5-pro"
+    # Only universal-streaming-multilingual is seeded in the sttmodel catalog
+    # (product decision -- AssemblyAI also offers universal-3-5-pro and
+    # universal-streaming-english, deliberately not offered here).
+    ASSEMBLYAI_STT_SPEECH_MODEL: str = "universal-streaming-multilingual"
     # Silence (ms) before AssemblyAI's native end-of-turn detection considers
     # a turn boundary. Range 50-10000ms per docs; no vendor-documented default.
     ASSEMBLYAI_STT_MIN_TURN_SILENCE_MS: int = 400
     # Vendor default per docs; same 50-10000ms range as min_turn_silence.
     ASSEMBLYAI_STT_MAX_TURN_SILENCE_MS: int = 1536
-    # Vendor default per docs. Range 0.0-1.0. Only applies to Universal
-    # English/Multilingual models, not universal-3-5-pro.
+    # Vendor default per docs. Range 0.0-1.0. Applies to the Universal
+    # English/Multilingual model family (this deployment's only model).
     ASSEMBLYAI_STT_END_OF_TURN_CONFIDENCE_THRESHOLD: float = 0.4
-    # Vendor default for universal-3-5-pro per docs (0.4 default on Universal
-    # models). Range 0.0-1.0.
-    ASSEMBLYAI_STT_VAD_THRESHOLD: float = 0.2
+    # Vendor default for the Universal-family models per docs. Range 0.0-1.0.
+    ASSEMBLYAI_STT_VAD_THRESHOLD: float = 0.4
     # Whether finalized Turn transcripts are punctuation/cased-formatted.
     ASSEMBLYAI_STT_FORMAT_TURNS: bool = True
 
