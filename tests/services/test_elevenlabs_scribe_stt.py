@@ -74,6 +74,29 @@ def test_create_streaming_session_uses_defaults_and_overrides():
     assert overridden._min_speech_duration_ms == 200
 
 
+def test_create_streaming_session_clamps_out_of_range_vad_params():
+    """ElevenLabs rejects out-of-bounds VAD params server-side as
+    invalid_request -- a message type the vendored SDK's RealtimeEvents enum
+    doesn't recognize, so it's silently dropped with no error surfaced and no
+    {"done": True} pushed, leaving a call with total STT dead-air. Clamping
+    here must make that scenario structurally impossible."""
+    svc = ElevenLabsScribeSTTService()
+    svc._api_key = "test-key"
+
+    session = svc.create_streaming_session(
+        api_config={
+            "vad_silence_threshold_secs": 10.0,  # docs range: 0.3-3.0
+            "vad_threshold": -1.0,  # docs range: 0.1-0.9
+            "min_speech_duration_ms": 5,  # docs range: 50-2000
+            "min_silence_duration_ms": 99999,  # docs range: 50-2000
+        },
+    )
+    assert session._vad_silence_threshold_secs == pytest.approx(3.0)
+    assert session._vad_threshold == pytest.approx(0.1)
+    assert session._min_speech_duration_ms == 50
+    assert session._min_silence_duration_ms == 2000
+
+
 # ── Event translation: partial / committed (single-event turn-final) ───────
 
 
@@ -150,6 +173,20 @@ def test_server_error_reads_error_field_not_reason_and_stops_session():
     done_result = session._results_q.get_nowait()
     assert done_result == {"done": True}
     assert session._closed is True
+
+
+def test_push_done_is_idempotent():
+    """_on_error pushes {"done": True} and cancels _sender_task; that task's
+    own finally block also calls _push_done() on its way out. Only one
+    {"done": True} should ever reach the queue, not an orphaned second one."""
+    session = _make_session()
+
+    session._push_done()
+    session._push_done()
+    session._push_done()
+
+    assert session._results_q.qsize() == 1
+    assert session._results_q.get_nowait() == {"done": True}
 
 
 # ── Forced commit on close (no flush-on-close primitive in this SDK) ───────

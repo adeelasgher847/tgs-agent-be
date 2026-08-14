@@ -51,6 +51,29 @@ _SAMPLE_RATE_TO_PCM_FORMAT = {
     48000: AudioFormat.PCM_48000,
 }
 
+# Documented bounds for connect()'s VAD params. Values outside these ranges
+# are rejected server-side as `invalid_request` -- but the vendored SDK's
+# RealtimeEvents enum doesn't include that message type, so the SDK's
+# _start_message_handler silently drops it (unmatched message_type -> no
+# handler fires, {"done": True} never pushed). A misconfigured env var or
+# catalog metadata_json value would otherwise produce a call with total STT
+# dead-air and no error surfaced anywhere. Clamp here so an out-of-range
+# value can never reach the server in the first place.
+_VAD_SILENCE_THRESHOLD_SECS_RANGE = (0.3, 3.0)
+_VAD_THRESHOLD_RANGE = (0.1, 0.9)
+_MIN_SPEECH_DURATION_MS_RANGE = (50, 2000)
+_MIN_SILENCE_DURATION_MS_RANGE = (50, 2000)
+
+
+def _clamp(value: float, lo: float, hi: float, *, label: str) -> float:
+    if value < lo or value > hi:
+        logger.warning(
+            "[ElevenLabs Scribe STT] %s=%s out of range [%s, %s] — clamping",
+            label, value, lo, hi,
+        )
+        return max(lo, min(hi, value))
+    return value
+
 
 class ElevenLabsScribeSTTService:
     """Service for ElevenLabs Scribe v2 Realtime streaming STT."""
@@ -98,6 +121,10 @@ class ElevenLabsScribeSTTService:
             self._closed = False
             self._task_started = False
             self._sender_task: asyncio.Task | None = None
+            # Guards against pushing {"done": True} twice (e.g. _on_error
+            # pushes it, then cancels _sender_task, whose finally block would
+            # otherwise push a second, orphaned one).
+            self._done_pushed = False
 
             # Tracks whether audio has been sent since the last commit, so
             # close() knows whether a forced commit is needed to avoid
@@ -123,7 +150,7 @@ class ElevenLabsScribeSTTService:
                 await self._results_q.put(
                     {"error": "ElevenLabs client not initialized", "transcript": "", "confidence": 0.0, "is_final": True}
                 )
-                await self._results_q.put({"done": True})
+                self._push_done()
                 return
 
             audio_format = (
@@ -163,7 +190,7 @@ class ElevenLabsScribeSTTService:
                 await self._results_q.put(
                     {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False}
                 )
-                await self._results_q.put({"done": True})
+                self._push_done()
                 return
 
             self._sender_task = asyncio.create_task(self._sender_loop())
@@ -196,10 +223,16 @@ class ElevenLabsScribeSTTService:
             self._results_q.put_nowait(
                 {"error": str(reason), "transcript": "", "confidence": 0.0, "is_final": True, "recoverable": False}
             )
-            self._results_q.put_nowait({"done": True})
+            self._push_done()
             self._closed = True
             if self._sender_task and not self._sender_task.done():
                 self._sender_task.cancel()
+
+        def _push_done(self) -> None:
+            if self._done_pushed:
+                return
+            self._done_pushed = True
+            self._results_q.put_nowait({"done": True})
 
         async def _sender_loop(self) -> None:
             session_end_reason = "unknown"
@@ -254,7 +287,7 @@ class ElevenLabsScribeSTTService:
                 )
             finally:
                 logger.info("[ElevenLabs Scribe STT] session_end reason=%s", session_end_reason)
-                await self._results_q.put({"done": True})
+                self._push_done()
 
         async def get_result(self) -> Dict[str, Any]:
             return await self._results_q.get()
@@ -272,22 +305,36 @@ class ElevenLabsScribeSTTService:
             raise RuntimeError("ElevenLabs client not initialized — set ELEVENLABS_API_KEY")
 
         cfg = api_config or {}
+        vad_silence_threshold_secs = _clamp(
+            float(cfg.get("vad_silence_threshold_secs", settings.ELEVENLABS_SCRIBE_VAD_SILENCE_THRESHOLD_SECS)),
+            *_VAD_SILENCE_THRESHOLD_SECS_RANGE,
+            label="vad_silence_threshold_secs",
+        )
+        vad_threshold = _clamp(
+            float(cfg.get("vad_threshold", settings.ELEVENLABS_SCRIBE_VAD_THRESHOLD)),
+            *_VAD_THRESHOLD_RANGE,
+            label="vad_threshold",
+        )
+        min_speech_duration_ms = _clamp(
+            int(cfg.get("min_speech_duration_ms", settings.ELEVENLABS_SCRIBE_MIN_SPEECH_DURATION_MS)),
+            *_MIN_SPEECH_DURATION_MS_RANGE,
+            label="min_speech_duration_ms",
+        )
+        min_silence_duration_ms = _clamp(
+            int(cfg.get("min_silence_duration_ms", settings.ELEVENLABS_SCRIBE_MIN_SILENCE_DURATION_MS)),
+            *_MIN_SILENCE_DURATION_MS_RANGE,
+            label="min_silence_duration_ms",
+        )
         return ElevenLabsScribeSTTService.StreamingSTTSession(
             api_key=self._api_key,
             language_code=language_code,
             encoding=encoding or "MULAW",
             sample_rate=sample_rate or settings.STT_SAMPLE_RATE or 8000,
             model=model or cfg.get("model") or settings.ELEVENLABS_SCRIBE_MODEL,
-            vad_silence_threshold_secs=float(
-                cfg.get("vad_silence_threshold_secs", settings.ELEVENLABS_SCRIBE_VAD_SILENCE_THRESHOLD_SECS)
-            ),
-            vad_threshold=float(cfg.get("vad_threshold", settings.ELEVENLABS_SCRIBE_VAD_THRESHOLD)),
-            min_speech_duration_ms=int(
-                cfg.get("min_speech_duration_ms", settings.ELEVENLABS_SCRIBE_MIN_SPEECH_DURATION_MS)
-            ),
-            min_silence_duration_ms=int(
-                cfg.get("min_silence_duration_ms", settings.ELEVENLABS_SCRIBE_MIN_SILENCE_DURATION_MS)
-            ),
+            vad_silence_threshold_secs=vad_silence_threshold_secs,
+            vad_threshold=vad_threshold,
+            min_speech_duration_ms=int(min_speech_duration_ms),
+            min_silence_duration_ms=int(min_silence_duration_ms),
         )
 
 
