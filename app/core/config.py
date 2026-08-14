@@ -575,6 +575,23 @@ class Settings(BaseSettings):
     ELEVENLABS_SCRIBE_MIN_SPEECH_DURATION_MS: int = 100
     ELEVENLABS_SCRIBE_MIN_SILENCE_DURATION_MS: int = 100
 
+    # xAI Grok Speech-to-Text (wss://api.x.ai/v1/stt) — dedicated key, no
+    # existing xAI credential to reuse.
+    XAI_API_KEY: str = ""
+    XAI_STT_LANGUAGE: str = "en"
+    # Silence (ms) before a turn-boundary check fires. Low by design (xAI
+    # default is 10ms) -- Smart Turn's ML judgment, not raw silence duration,
+    # is what actually governs speech_final; see below.
+    XAI_STT_ENDPOINTING_MS: int = 10
+    # Native server-side turn detection: Smart Turn ML model demotes false-
+    # positive silence boundaries (mid-sentence pauses, dictating numbers) to
+    # chunk-final instead of firing speech_final. Threshold range 0.0-1.0;
+    # 0.5 = "balanced" per xAI's own docs.
+    XAI_STT_SMART_TURN_THRESHOLD: float = 0.5
+    # Safety net: force speech_final after this many ms of silence regardless
+    # of Smart Turn confidence, so a session can't hang indefinitely. Range 1-5000ms.
+    XAI_STT_SMART_TURN_TIMEOUT_MS: int = 3000
+
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
     DEEPGRAM_STT_MODEL: str = "nova-3"

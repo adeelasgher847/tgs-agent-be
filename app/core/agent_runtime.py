@@ -73,7 +73,7 @@ class ResolvedLlmRuntime:
 class ResolvedSttRuntime:
     """Runtime STT config resolved from agent + optional flow settings override."""
 
-    provider_slug: str          # "deepgram" | "google" | "speechmatics" | "elevenlabs"
+    provider_slug: str          # "deepgram" | "google" | "speechmatics" | "elevenlabs" | "xai"
     model_id: str               # user-facing modelId e.g. "nova-3", "chirp-3"
     language_code: str          # BCP-47 e.g. "en-AU", "en"
     sample_rate_hz: int         # from sttmodel catalog (e.g. 8000 or 16000)
