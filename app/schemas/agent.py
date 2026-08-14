@@ -67,6 +67,7 @@ class SttProviderEnum(str, Enum):
     google = "google"
     elevenlabs = "elevenlabs"
     speechmatics = "speechmatics"
+    xai = "xai"
 
 
 class SttModelSchema(BaseModel):
