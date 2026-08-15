@@ -21,6 +21,14 @@ ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
     "gpt-4.1",
     "gpt-4.1-mini",
     "gpt-4-turbo",
+    # OpenAI — GPT-5 reasoning family (new; NOT set as any existing agent's
+    # default — see app/services/openai_service.py for the temperature /
+    # max_completion_tokens handling this family requires).
+    "gpt-5",
+    "gpt-5-mini",
+    "gpt-5.1",
+    "gpt-5.2",
+    "gpt-5.4",
     # Google Gemini — ticket required + existing
     "gemini-2.5-flash",
     "gemini-2.0-flash-001",
