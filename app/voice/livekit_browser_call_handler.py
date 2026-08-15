@@ -314,6 +314,27 @@ class LiveKitBrowserCallHandler:
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
         )
         self._barge_in_min_words: int = max(1, int(getattr(settings, "VOICE_BARGE_IN_MIN_WORDS", 2) or 2))
+
+        # ── RAG interim-prefetch ─────────────────────────────────────────────
+        # Mirrors bidirectional_stream.py's _prefetch_rag_context pattern
+        # (fire vector/KB retrieval in the background on the first qualifying
+        # STT interim of a turn, so it overlaps STT endpointing instead of
+        # blocking the eventual LLM start), adapted to this transport's
+        # retrieval call (kb_retrieval_service.retrieve_kb_context_for_turn —
+        # see _maybe_start_rag_prefetch / _prefetch_kb_context below).
+        # Single-slot state, same model as _llm_response_task: None means
+        # "not fired for this turn"; consumed-once-and-reset-to-None by
+        # ConversationOrchestrator.generate_and_stream_response on STT final,
+        # or discarded by _cancel_inflight_llm_response on barge-in — so it
+        # can never leak into a later, unrelated turn.
+        self._rag_prefetch_task: asyncio.Task | None = None
+        self._rag_prefetch_source_text: str = ""
+        self._rag_prefetch_min_words: int = max(
+            1, int(getattr(settings, "VOICE_RAG_PREFETCH_MIN_WORDS", 1) or 1)
+        )
+        self._rag_prefetch_min_confidence: float = float(
+            getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
+        )
         # Pickup-detection tunables: unused by this path (LiveKit rooms have no
         # Twilio ringing/system-message phase to skip) but VoiceOrchestrator's
         # __init__ reads them off the handler unconditionally.
@@ -415,31 +436,119 @@ class LiveKitBrowserCallHandler:
 
     async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         """
-        Barge-in only. LiveKit rooms have their own echo cancellation and the
-        default platform setting (VOICE_ENABLE_INTERIM_LLM=False) means the
-        Twilio path doesn't start early LLM generation on interims either —
-        so this mirrors that default behaviour rather than reimplementing the
+        Barge-in + RAG interim-prefetch trigger.
+
+        Barge-in is resolved FIRST via a single `is_barge_in` boolean, and
+        `return`s immediately when it applies — mirrors
+        bidirectional_stream.py's `_maybe_process_interim` ordering exactly
+        (computes `is_barge_in`, cancels + `return`s when true; its RAG-
+        prefetch block is only reached when `is_barge_in` is false). This
+        ordering matters here specifically because the RAG-prefetch gate
+        (VOICE_RAG_PREFETCH_MIN_WORDS/MIN_CONFIDENCE) is strictly weaker than
+        the barge-in gate — every interim that qualifies for barge-in also
+        qualifies to fire a prefetch, and `_cancel_inflight_llm_response()`
+        (called on barge-in) unconditionally discards `_rag_prefetch_task`.
+        Firing the prefetch before checking barge-in would mean every
+        barge-in-initiated turn wastes a prefetch attempt (fired then
+        immediately cancelled) and gets zero prefetch benefit — precisely
+        the highest-value case (a user interrupting the agent) would get
+        none of the benefit.
+
+        Note `is_barge_in` being false does NOT require `_is_tts_playing` to
+        be false — an interim while TTS *is* playing but that doesn't meet
+        the barge-in word/confidence thresholds is also `is_barge_in=False`
+        and still eligible to fire a prefetch, exactly matching Twilio's
+        structure (its prefetch block isn't gated on `_is_tts_playing`
+        either, only on `is_barge_in`).
+
+        LiveKit rooms have their own echo cancellation and the default
+        platform setting (VOICE_ENABLE_INTERIM_LLM=False) means the Twilio
+        path doesn't start early LLM generation on interims either — so this
+        mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
         try:
-            if not self._is_tts_playing or not transcript:
-                return
-            text = transcript.strip()
+            text = (transcript or "").strip()
             if not text:
                 return
             word_count = len(text.split())
-            if word_count < self._barge_in_min_words:
-                return
+
             min_conf = self._barge_in_min_conf_1w if word_count < 2 else self._barge_in_min_conf
-            if confidence < min_conf:
-                return
-            logger.info(
-                "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
-                word_count, confidence, text[:40],
+            is_barge_in = (
+                self._is_tts_playing
+                and word_count >= self._barge_in_min_words
+                and confidence >= min_conf
             )
-            await self._cancel_inflight_llm_response()
+            if is_barge_in:
+                logger.info(
+                    "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
+                    word_count, confidence, text[:40],
+                )
+                await self._cancel_inflight_llm_response()
+                return
+
+            # Barge-in did not apply this call — safe to consider firing a
+            # prefetch (whether or not TTS happens to still be playing).
+            self._maybe_start_rag_prefetch(text, confidence, word_count)
         except Exception as exc:
             logger.error("[LiveKitBrowserCall] _maybe_process_interim error: %s", exc, exc_info=True)
+
+    def _maybe_start_rag_prefetch(self, text: str, confidence: float, word_count: int) -> None:
+        """
+        Fire KB-context retrieval in the background on the first qualifying
+        interim of a turn (mirrors bidirectional_stream.py's
+        `_prefetch_rag_context` trigger gating). Consumed exactly once, by
+        `ConversationOrchestrator.generate_and_stream_response` on STT final
+        — never invoked twice for the same turn (guarded below) and never
+        left to leak into a later turn (reset to None on consume or on
+        barge-in cancellation in `_cancel_inflight_llm_response`).
+        """
+        if self._rag_prefetch_task is not None:
+            return  # already fired for this turn — never fire a duplicate request
+        flow_kb_ids = (self.call_flow.knowledge_base_ids or []) if self.call_flow else []
+        if not flow_kb_ids or not self.db:
+            return  # RAG/KB not configured for this call flow — nothing to prefetch
+        if word_count < self._rag_prefetch_min_words or confidence < self._rag_prefetch_min_confidence:
+            return
+        self._rag_prefetch_source_text = text
+        self._rag_prefetch_task = asyncio.create_task(
+            self._prefetch_kb_context(text, list(flow_kb_ids))
+        )
+
+    async def _prefetch_kb_context(self, transcript: str, kb_ids: list) -> tuple[str, float]:
+        """
+        Background KB-context retrieval for RAG interim-prefetch.
+
+        `kb_retrieval_service.retrieve_kb_context_for_turn` is already fully
+        async and fails open internally (returns `("", latency_ms)` on any
+        internal error) — this wrapper adds the same
+        `RAG_KB_RETRIEVAL_TIMEOUT_SEC` bound
+        `ConversationOrchestrator`'s synchronous fallback path uses, so a
+        slow/hanging retrieval can never block the eventual LLM turn: on
+        timeout or any other exception this always returns a valid empty
+        result rather than raising, matching
+        `_prefetch_rag_context`'s fail-open contract on the Twilio path.
+        """
+        try:
+            from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+            from app.utils.redis_client import get_redis
+
+            timeout_sec = float(getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7)
+            return await asyncio.wait_for(
+                retrieve_kb_context_for_turn(
+                    transcript=transcript,
+                    kb_ids=kb_ids,
+                    redis_client=get_redis(),
+                ),
+                timeout=timeout_sec,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("[RAG prefetch] timed out for '%s…'", transcript[:20])
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.debug("[RAG prefetch] failed: %s", exc)
+        return "", 0.0
 
     async def _cancel_inflight_llm_response(self) -> None:
         task = self._llm_response_task
@@ -454,6 +563,13 @@ class LiveKitBrowserCallHandler:
                 logger.debug("[LiveKitBrowserCall] cancelled turn raised: %s", exc)
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
+        # Discard stale RAG prefetch so the next turn gets a fresh retrieval —
+        # mirrors bidirectional_stream.py's _cancel_inflight_llm_response.
+        prefetch = self._rag_prefetch_task
+        if prefetch and not prefetch.done():
+            prefetch.cancel()
+        self._rag_prefetch_task = None
+        self._rag_prefetch_source_text = ""
         # LiveKit protocol: cancelling our TTS task locally only stops *us*
         # from pushing more frames — it does not stop frames already pushed
         # into rtc.AudioSource's own internal playout queue (up to 1000ms of

@@ -121,6 +121,36 @@ def should_send_quick_ack(user_text: str, config: QuickAckConfig) -> bool:
     return True
 
 
+def rag_prefetch_matches_final(prefetch_source_text: str, final_text: str) -> bool:
+    """
+    Decide whether a RAG/KB prefetch fired on an STT *interim* is still safe
+    to reuse for the STT *final* of the same turn.
+
+    The Twilio path (bidirectional_stream.py's `_prefetch_rag_context`) fires
+    on the first qualifying interim and always reuses whatever result that
+    produced, with no divergence check — it accepts that a slight interim/
+    final wording difference is fine for retrieval purposes. The browser path
+    adds this lightweight safety check on top of that same pattern: if the
+    final utterance diverges *materially* from the interim that triggered the
+    prefetch (e.g. the STT correction changed the meaning, not just a couple
+    of trailing words), the prefetch result is discarded and a fresh
+    retrieval is used instead — never a behavior change to Twilio, since this
+    helper is only consumed by the browser call path.
+    """
+    source = (prefetch_source_text or "").strip().lower()
+    final = (final_text or "").strip().lower()
+    if not source or not final:
+        return False
+    if final.startswith(source) or source.startswith(final):
+        return True
+    source_words = set(source.split())
+    final_words = set(final.split())
+    if not source_words or not final_words:
+        return False
+    overlap = len(source_words & final_words) / max(len(source_words), len(final_words))
+    return overlap >= 0.6
+
+
 @dataclass
 class ConversationActions:
     """
@@ -501,25 +531,81 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # KB context injection: runs when flow.knowledge_base_ids is non-empty.
             # Injected AFTER the system prompt and BEFORE conversation history.
+            #
+            # RAG retrieval: reuse the interim-fired prefetch when available
+            # (fired in LiveKitBrowserCallHandler._maybe_start_rag_prefetch on
+            # STT interim, overlapping STT endpointing) instead of always
+            # blocking here on a fresh retrieval — mirrors
+            # bidirectional_stream.py's prefetch-consume-once pattern, adapted
+            # to this transport's kb_retrieval_service call. Falls back to the
+            # exact same synchronous retrieval this code path always used
+            # when no prefetch fired (e.g. a very short first utterance) or
+            # when the final utterance diverged materially from the interim
+            # that triggered the prefetch.
             kb_context_block = ""
             flow = getattr(self._h, "call_flow", None)
             flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
             if flow_kb_ids and self._h.db:
-                try:
-                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
-                    from app.utils.redis_client import get_redis
+                _kb_timeout_sec = float(
+                    getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
+                )
 
-                    _kb_timeout_sec = float(
-                        getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
-                    )
-                    kb_context_block, kb_latency_ms = await asyncio.wait_for(
-                        retrieve_kb_context_for_turn(
-                            transcript=user_text,
-                            kb_ids=flow_kb_ids,
-                            redis_client=get_redis(),
-                        ),
-                        timeout=_kb_timeout_sec,  # fail open if exceeded — see settings.RAG_KB_RETRIEVAL_TIMEOUT_SEC
-                    )
+                # Consume the prefetch slot exactly once per turn, immediately —
+                # so it can never be read/reused by a later, unrelated turn.
+                # isinstance-checked (not just `is not None`) so a handler
+                # that never initialised this attribute at all (e.g. a bare
+                # test double) is treated the same as "no prefetch fired",
+                # rather than accidentally treating an unrelated truthy value
+                # as a real in-flight prefetch task.
+                _prefetch = getattr(self._h, "_rag_prefetch_task", None)
+                if not isinstance(_prefetch, asyncio.Task):
+                    _prefetch = None
+                self._h._rag_prefetch_task = None
+                _prefetch_source_text = getattr(self._h, "_rag_prefetch_source_text", "")
+                if not isinstance(_prefetch_source_text, str):
+                    _prefetch_source_text = ""
+                self._h._rag_prefetch_source_text = ""
+
+                if _prefetch is not None and not rag_prefetch_matches_final(
+                    _prefetch_source_text, user_text
+                ):
+                    # Final utterance materially diverged from the interim that
+                    # triggered this prefetch — don't reuse a possibly-wrong
+                    # result. Cancel it (if still running) and fall through to
+                    # a fresh retrieval below, same as the "no prefetch" branch.
+                    if not _prefetch.done():
+                        _prefetch.cancel()
+                    _prefetch = None
+
+                try:
+                    if _prefetch is not None:
+                        if _prefetch.done():
+                            # Already finished — zero-cost read.
+                            kb_context_block, kb_latency_ms = _prefetch.result()
+                            logger.debug("[RAG prefetch] used prefetch result (done)")
+                        else:
+                            # Still running — await the SAME in-flight task
+                            # (never start a second parallel retrieval).
+                            # asyncio.shield so a local timeout here doesn't
+                            # cancel a retrieval that may still be useful to
+                            # warm the KB cache for a future turn.
+                            kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                                asyncio.shield(_prefetch),
+                                timeout=_kb_timeout_sec,
+                            )
+                            logger.debug("[RAG prefetch] awaited in-flight prefetch")
+                    else:
+                        from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                        from app.utils.redis_client import get_redis
+
+                        kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                            retrieve_kb_context_for_turn(
+                                transcript=user_text,
+                                kb_ids=flow_kb_ids,
+                                redis_client=get_redis(),
+                            ),
+                            timeout=_kb_timeout_sec,  # fail open if exceeded — see settings.RAG_KB_RETRIEVAL_TIMEOUT_SEC
+                        )
                     logger.info(
                         "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
                         kb_latency_ms,
@@ -531,6 +617,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         "kb_retrieval timed out after %.0fms; proceeding without KB context",
                         _kb_timeout_sec * 1000,
                     )
+                except asyncio.CancelledError:
+                    # This turn itself was cancelled (e.g. barge-in) while
+                    # awaiting the prefetch — propagate rather than swallow.
+                    # The shielded prefetch task (if any) keeps running
+                    # independently and is not affected by this.
+                    raise
                 except Exception as exc:
                     logger.error("kb_retrieval failed; proceeding without context: %s", exc)
 

@@ -15,14 +15,29 @@ import time
 # etc. are untouched — this only applies to the "gpt-5" prefix.
 _REASONING_MODEL_PREFIX = "gpt-5"
 
-# `max_completion_tokens` on gpt-5.x is a SHARED budget covering invisible
-# reasoning tokens + the visible completion. Voice agents default to a small
-# conversational max_tokens (e.g. 100, see agent_runtime.resolve_llm_runtime's
-# default) which is fine for gpt-4.x but on gpt-5.x can be entirely consumed
-# by reasoning, yielding content="" + finish_reason="length" with no
-# exception raised (silent dead air on a live call). Floor the budget so a
-# low conversational setting can never starve the reasoning family. Applies
-# ONLY to gpt-5* — every other model's max_tokens is passed through unchanged.
+# `max_completion_tokens` on gpt-5.x (o1/o3-style reasoning models exposed
+# via Chat Completions) is a SHARED budget covering BOTH invisible reasoning
+# tokens AND the visible completion — this is documented OpenAI reasoning-
+# model behavior, not a misreading: a model can spend its entire budget
+# "thinking" and return content="" + finish_reason="length" with no
+# exception raised (confirmed by OpenAI community bug reports of exactly this
+# failure mode). On a live voice call that means silent dead air, since none
+# of the existing streaming error handling (try_stream / conversation
+# orchestrator) fires for a non-exceptional empty response.
+#
+# Voice agents default to a small conversational max_tokens (e.g. 100 — see
+# agent_runtime.resolve_llm_runtime's default) which is fine for gpt-4.x but
+# would starve gpt-5.x's reasoning budget. 1500 is a conservative floor:
+# a few hundred reasoning tokens is typical for a simple conversational
+# prompt, leaving ample headroom for the (short) visible reply on top,
+# without being large enough to meaningfully change worst-case per-turn
+# latency/cost for a voice agent. Deliberately biased toward safety
+# (avoiding dead air) over shaving a few hundred tokens off the ceiling.
+# Uniform across the whole gpt-5 family (gpt-5, gpt-5-mini, gpt-5.1, gpt-5.2,
+# gpt-5.4) — no evidence of a per-model difference in this shared-budget
+# behavior, so a single floor is used rather than per-model tuning.
+# Applies ONLY to gpt-5* — every other model's max_tokens is passed through
+# unchanged (see _is_reasoning_model below).
 _REASONING_MODEL_MIN_COMPLETION_TOKENS = 1500
 
 
