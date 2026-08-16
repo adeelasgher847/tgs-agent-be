@@ -181,6 +181,14 @@ class VoiceOrchestrator:
         # there is no TtsPipeline task to cancel (see _on_gemini_live_interrupted).
         self._gemini_live_cancel: asyncio.Event = asyncio.Event()
         self._gemini_live_first_audio_marked: bool = False
+        # Coalescing guard for _refresh_gemini_live_kb_context: a chatty
+        # back-and-forth call could otherwise fire several overlapping KB
+        # retrievals + un-ordered session.send_text(...) calls in quick
+        # succession. At most one refresh runs at a time per call; a finished
+        # transcript arriving while one is still in flight is skipped rather
+        # than queued, since it will be superseded by whatever the caller
+        # says next anyway.
+        self._gemini_live_kb_refresh_in_flight: bool = False
 
         logger.info(
             "[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready, gemini_live=%s",
@@ -632,7 +640,7 @@ class VoiceOrchestrator:
         circular import (bidirectional_stream.py already imports
         VoiceOrchestrator at module level).
         """
-        from app.services.gemini_live_service import GeminiLiveSession
+        from app.services.gemini_live_service import GeminiLiveSession, resolve_voice_name
         from app.services.vertex_gemini_service import VertexLlmError
 
         agent = getattr(h, "agent", None)
@@ -662,19 +670,43 @@ class VoiceOrchestrator:
             agent_name = getattr(agent, "name", None) or "AI Assistant"
             system_instruction = f"You are {agent_name}, a helpful phone assistant."
 
+        # Calendly tool-calling (Phase 2): only meaningful on Twilio
+        # (BookingMixin/_execute_calendly_tool_call/_calendly_enabled only
+        # exist on BidirectionalStreamHandler — hasattr naturally gates the
+        # browser transport out, which has no Calendly wiring at all).
+        gemini_tools = None
+        on_tool_call = None
+        if hasattr(h, "_calendly_enabled") and h._calendly_enabled():
+            from app.services.vertex_gemini_service import _build_calendly_tool
+
+            gemini_tools = [_build_calendly_tool()]
+            on_tool_call = self._on_gemini_live_tool_call
+
+        # Per-agent native voice (Phase 2): reuses the agent's EXISTING
+        # tts_voice_external_id / tts_language fields rather than adding new
+        # schema — an agent switched to a native-audio model doesn't lose its
+        # voice identity outright, though the ID space is different (Gemini's
+        # 30 prebuilt voice names vs. ElevenLabs/Rime/Google voice IDs), so
+        # resolve_voice_name() falls back to DEFAULT_VOICE_NAME for anything
+        # that isn't a real Gemini Live voice name (the common case, since
+        # most agents' configured voice ID predates being switched to a
+        # native-audio model).
+        voice_name = resolve_voice_name(getattr(agent, "tts_voice_external_id", None))
+        language_code = (getattr(agent, "tts_language", None) or "").strip() or None
+
         session = GeminiLiveSession(model_name)
         try:
             await session.start(
                 system_instruction=system_instruction,
+                voice_name=voice_name,
+                language_code=language_code,
                 on_audio_chunk=self._on_gemini_live_audio_chunk,
                 on_interrupted=self._on_gemini_live_interrupted,
                 on_input_transcript=self._on_gemini_live_input_transcript,
                 on_output_transcript=self._on_gemini_live_output_transcript,
-                # Phase 1: Calendly/tool-calling is explicitly deferred (see
-                # integration plan §6) — no tools, no on_tool_call callback.
-                on_tool_call=None,
+                on_tool_call=on_tool_call,
                 on_error=self._on_gemini_live_error,
-                tools=None,
+                tools=gemini_tools,
             )
         except VertexLlmError as exc:
             logger.error(
@@ -814,12 +846,77 @@ class VoiceOrchestrator:
         STT-final (not interim) transcript-write precedent."""
         if not finished or not (text or "").strip():
             return
+        transcript = text.strip()
         try:
-            await self._h._add_to_transcript("client", text.strip(), "speech")
+            await self._h._add_to_transcript("client", transcript, "speech")
         except Exception as exc:
             logger.error(
                 "[VoiceOrchestrator] gemini live input transcript write failed: %s", exc, exc_info=True
             )
+
+        # Mid-call RAG refresh (Phase 2, plan §6): a finished input transcript
+        # is the closest thing this session has to a per-turn boundary (no
+        # STT-interim prefetch signal exists here). Fire-and-forget — must
+        # never block the receive loop or delay the caller's live audio
+        # response; tracked in the same set _full_shutdown already drains so
+        # a call ending mid-refresh doesn't leak the task. Coalesced via
+        # _gemini_live_kb_refresh_in_flight: skip rather than queue a new
+        # refresh while one is still running, so a chatty back-and-forth
+        # can't fire several overlapping retrievals + unordered
+        # session.send_text(...) calls racing each other.
+        if not self._gemini_live_kb_refresh_in_flight:
+            t = asyncio.create_task(self._refresh_gemini_live_kb_context(transcript))
+            self._pending_final_tasks.add(t)
+            t.add_done_callback(lambda done_t, s=self: s._pending_final_tasks.discard(done_t))
+
+    async def _refresh_gemini_live_kb_context(self, transcript: str) -> None:
+        """
+        Re-query the call flow's attached knowledge bases against the
+        caller's latest finished utterance and, if anything comes back, feed
+        it to the live session as a non-blocking text turn — so a native-
+        audio call's RAG grounding can adapt as the topic shifts, instead of
+        staying frozen at whatever was known at session start (see
+        _start_gemini_live_session's system_instruction, built once with an
+        empty user_text). Fails open on any error, same as every other RAG
+        call site in this codebase — KB context is a grounding aid, never a
+        call-blocking dependency.
+        """
+        session = self._gemini_live_session
+        if session is None or not transcript:
+            return
+        flow = getattr(self._h, "call_flow", None)
+        kb_ids = (flow.knowledge_base_ids or []) if flow else []
+        if not kb_ids:
+            return
+        self._gemini_live_kb_refresh_in_flight = True
+        try:
+            from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+            from app.utils.redis_client import get_redis
+
+            kb_context, latency_ms = await retrieve_kb_context_for_turn(
+                transcript=transcript, kb_ids=kb_ids, redis_client=get_redis()
+            )
+            if not kb_context:
+                return
+            # turn_complete=False verified live (2026-08-17, against
+            # gemini-live-2.5-flash-native-audio): a context-only turn left
+            # open like this is correctly picked up by the model's next real
+            # turn without needing an explicit closing call — the caller's
+            # own ongoing audio (a separate send_realtime_input channel,
+            # VAD-driven turn-taking) is what actually closes/advances turns
+            # in production, not this side-channel text injection.
+            await session.send_text(
+                "[KNOWLEDGE BASE CONTEXT UPDATE — authoritative, use if relevant to the "
+                f"caller's most recent question]\n{kb_context}",
+                turn_complete=False,
+            )
+            logger.debug(
+                "[GeminiLive] kb_refresh latency_ms=%.1f chars=%d", latency_ms, len(kb_context)
+            )
+        except Exception as exc:
+            logger.debug("[GeminiLive] mid-call KB refresh failed (non-fatal): %s", exc)
+        finally:
+            self._gemini_live_kb_refresh_in_flight = False
 
     async def _on_gemini_live_output_transcript(self, text: str, finished: bool) -> None:
         """Agent-side transcript from Gemini's own output_transcription. Only
@@ -833,6 +930,60 @@ class VoiceOrchestrator:
             logger.error(
                 "[VoiceOrchestrator] gemini live output transcript write failed: %s", exc, exc_info=True
             )
+
+    async def _on_gemini_live_tool_call(self, function_calls) -> None:
+        """
+        Calendly tool-calling for a Gemini Live session (Phase 2). Only ever
+        registered when the handler is Twilio's BidirectionalStreamHandler
+        AND the call flow has Calendly enabled (see _start_gemini_live_session)
+        — BookingMixin/_execute_calendly_tool_call don't exist on the browser
+        handler, so this method is simply never reached on that transport.
+
+        Unlike the existing non-live generate_with_tools() request/response
+        tool-calling (one function_call, one response, done), the Live API's
+        tool-calling is async-within-session: function_calls can arrive at
+        any point mid-conversation, potentially more than one per message,
+        and the caller audio stream keeps flowing while we resolve them —
+        there is no "pause the turn" concept to lean on. Each call is
+        resolved independently and its response sent back via
+        send_tool_response(); _execute_calendly_tool_call already never
+        raises (always returns a JSON-serializable dict, {"error": ...} on
+        failure), so a single bad tool call can't crash the session or block
+        the others.
+        """
+        from google.genai import types
+
+        session = self._gemini_live_session
+        if session is None:
+            return
+
+        function_responses = []
+        for fc in function_calls:
+            name = getattr(fc, "name", None) or ""
+            args = dict(getattr(fc, "args", None) or {})
+            call_id = getattr(fc, "id", None)
+            try:
+                result = await self._h._execute_calendly_tool_call(name, args)
+            except Exception as exc:
+                logger.error(
+                    "[GeminiLive] Calendly tool call %s failed unexpectedly: %s",
+                    name, exc, exc_info=True,
+                )
+                result = {"error": "internal error executing tool call"}
+            from app.core.pii_redactor import redact_pii
+
+            logger.info("[GeminiLive] tool_call name=%s args=%s", name, redact_pii(args))
+            function_responses.append(
+                types.FunctionResponse(id=call_id, name=name, response=result)
+            )
+
+        if function_responses:
+            try:
+                await session.send_tool_response(function_responses=function_responses)
+            except Exception as exc:
+                logger.error(
+                    "[GeminiLive] send_tool_response failed: %s", exc, exc_info=True
+                )
 
     async def _on_gemini_live_error(self, err) -> None:
         """
