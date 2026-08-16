@@ -481,3 +481,388 @@ class TestGreetingBypassesExternalTtsForNativeAudio:
         asyncio.run(h.generate_and_stream_response("", 1.0, is_greeting=True))
 
         h._tts_pipeline.queue_tts.assert_awaited_once()
+
+
+def _fc(*, id: str, name: str, args: dict) -> MagicMock:
+    """Fake google.genai.types.FunctionCall — MagicMock(name=...) sets the
+    mock's own repr name, not a gettable `.name` attribute, so it must be
+    assigned after construction."""
+    fc = MagicMock(id=id, args=args)
+    fc.name = name
+    return fc
+
+
+class TestCalendlyToolCallWiring:
+    """
+    Phase 2: Calendly tool-calling wired into the Live session's async
+    on_tool_call/send_tool_response exchange, reusing
+    BookingMixin._execute_calendly_tool_call (Twilio-only — the browser
+    handler has no BookingMixin at all, so this is naturally never wired on
+    that transport; see the browser fork test file for the mirror-image
+    "tools stay None" assertion).
+    """
+
+    def _handler_with_calendly(self, *, enabled: bool) -> Handler:
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        h._calendly_enabled = MagicMock(return_value=enabled)
+        h._execute_calendly_tool_call = AsyncMock(return_value={"slots": []})
+        return h
+
+    def test_session_start_passes_calendly_tool_when_enabled(self):
+        h = self._handler_with_calendly(enabled=True)
+        orch = VoiceOrchestrator(h)
+
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.routers.bidirectional_stream.BidirectionalStreamHandler.build_system_prompt",
+            new=AsyncMock(return_value="system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        kwargs = fake_session.start.call_args.kwargs
+        assert kwargs["tools"] is not None
+        assert len(kwargs["tools"]) == 1
+        assert kwargs["on_tool_call"] == orch._on_gemini_live_tool_call
+
+    def test_session_start_passes_no_tools_when_calendly_disabled(self):
+        h = self._handler_with_calendly(enabled=False)
+        orch = VoiceOrchestrator(h)
+
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.routers.bidirectional_stream.BidirectionalStreamHandler.build_system_prompt",
+            new=AsyncMock(return_value="system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        kwargs = fake_session.start.call_args.kwargs
+        assert kwargs["tools"] is None
+        assert kwargs["on_tool_call"] is None
+
+    # Note: a handler genuinely lacking `_calendly_enabled` altogether (the
+    # real browser-transport shape, since LiveKitBrowserCallHandler has no
+    # BookingMixin) can't be constructed from `Handler`/BidirectionalStream-
+    # Handler fakes here — BookingMixin's `_calendly_enabled` is a class-level
+    # method present on every instance regardless of state. That exact case
+    # (hasattr is False) is covered instead in
+    # tests/voice/test_gemini_live_browser_fork.py against a real
+    # LiveKitBrowserCallHandler instance.
+
+    def test_on_tool_call_resolves_each_call_and_sends_responses(self):
+        # google.genai is stubbed as a plain MagicMock in tests/conftest.py —
+        # types.FunctionResponse(...) doesn't behave like a real dataclass
+        # (calling it returns the same fixed .return_value regardless of
+        # kwargs), so assert on the *constructor* call args instead of
+        # attributes on the returned object.
+        from google.genai import types as genai_types
+
+        h = self._handler_with_calendly(enabled=True)
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_tool_response = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        fc1 = _fc(id="call-1", name="check_availability", args={"date": "tomorrow"})
+        fc2 = _fc(
+            id="call-2",
+            name="book_appointment",
+            args={"slot": "x", "attendee_email": "a@b.com"},
+        )
+        h._execute_calendly_tool_call = AsyncMock(
+            side_effect=[{"slots": ["09:00"]}, {"booked": True}]
+        )
+        genai_types.FunctionResponse.reset_mock()
+
+        asyncio.run(orch._on_gemini_live_tool_call([fc1, fc2]))
+
+        assert h._execute_calendly_tool_call.await_count == 2
+        h._execute_calendly_tool_call.assert_any_await("check_availability", {"date": "tomorrow"})
+        h._execute_calendly_tool_call.assert_any_await(
+            "book_appointment", {"slot": "x", "attendee_email": "a@b.com"}
+        )
+        fake_session.send_tool_response.assert_awaited_once()
+        sent = fake_session.send_tool_response.call_args.kwargs["function_responses"]
+        assert len(sent) == 2
+
+        constructor_calls = genai_types.FunctionResponse.call_args_list
+        assert constructor_calls[0].kwargs == {
+            "id": "call-1", "name": "check_availability", "response": {"slots": ["09:00"]},
+        }
+        assert constructor_calls[1].kwargs == {
+            "id": "call-2", "name": "book_appointment", "response": {"booked": True},
+        }
+
+    def test_on_tool_call_noop_when_session_not_set(self):
+        h = self._handler_with_calendly(enabled=True)
+        orch = VoiceOrchestrator(h)
+        orch._gemini_live_session = None
+
+        # Must not raise even though there's nowhere to send a response.
+        asyncio.run(orch._on_gemini_live_tool_call(
+            [_fc(id="c1", name="check_availability", args={})]
+        ))
+        h._execute_calendly_tool_call.assert_not_awaited()
+
+    def test_on_tool_call_survives_execute_exception(self):
+        from google.genai import types as genai_types
+
+        h = self._handler_with_calendly(enabled=True)
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_tool_response = AsyncMock()
+        orch._gemini_live_session = fake_session
+        h._execute_calendly_tool_call = AsyncMock(side_effect=RuntimeError("boom"))
+        genai_types.FunctionResponse.reset_mock()
+
+        asyncio.run(orch._on_gemini_live_tool_call(
+            [_fc(id="c1", name="check_availability", args={})]
+        ))
+
+        fake_session.send_tool_response.assert_awaited_once()
+        constructor_calls = genai_types.FunctionResponse.call_args_list
+        assert constructor_calls[0].kwargs["response"] == {
+            "error": "internal error executing tool call"
+        }
+
+
+class TestMidCallRagRefresh:
+    """
+    Phase 2: mid-call KB context refresh (VoiceOrchestrator.
+    _refresh_gemini_live_kb_context), triggered fire-and-forget from a
+    finished input transcript since there's no per-turn STT-interim signal
+    in a live session to key a prefetch off.
+    """
+
+    def _handler_with_flow(self, *, kb_ids):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        h.call_flow = MagicMock()
+        h.call_flow.knowledge_base_ids = kb_ids
+        return h
+
+    def test_refresh_noop_when_no_session(self):
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        orch._gemini_live_session = None
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ) as mock_retrieve:
+            asyncio.run(orch._refresh_gemini_live_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_not_awaited()
+
+    def test_refresh_noop_when_no_kb_ids(self):
+        h = self._handler_with_flow(kb_ids=[])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ) as mock_retrieve:
+            asyncio.run(orch._refresh_gemini_live_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_not_awaited()
+        fake_session.send_text.assert_not_awaited()
+
+    def test_refresh_sends_context_as_non_blocking_text_turn(self):
+        kb_id = uuid.uuid4()
+        h = self._handler_with_flow(kb_ids=[kb_id])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("Refunds within 30 days.", 42.0)),
+        ) as mock_retrieve, patch("app.utils.redis_client.get_redis", return_value=None):
+            asyncio.run(orch._refresh_gemini_live_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_awaited_once()
+        call_kwargs = mock_retrieve.call_args.kwargs
+        assert call_kwargs["transcript"] == "what's your refund policy"
+        assert call_kwargs["kb_ids"] == [kb_id]
+
+        fake_session.send_text.assert_awaited_once()
+        sent_text, sent_kwargs = fake_session.send_text.call_args.args, fake_session.send_text.call_args.kwargs
+        assert "Refunds within 30 days." in sent_text[0]
+        assert sent_kwargs["turn_complete"] is False
+
+    def test_refresh_sends_nothing_when_kb_returns_empty(self):
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("", 3.0)),
+        ):
+            asyncio.run(orch._refresh_gemini_live_kb_context("unrelated small talk"))
+
+        fake_session.send_text.assert_not_awaited()
+
+    def test_refresh_fails_open_on_retrieval_exception(self):
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(side_effect=RuntimeError("kb backend down")),
+        ):
+            # Must not raise.
+            asyncio.run(orch._refresh_gemini_live_kb_context("what's your refund policy"))
+
+        fake_session.send_text.assert_not_awaited()
+
+    def test_input_transcript_callback_schedules_refresh_task(self):
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+
+        async def _run():
+            with patch.object(
+                orch, "_refresh_gemini_live_kb_context", new=AsyncMock()
+            ) as mock_refresh:
+                await orch._on_gemini_live_input_transcript("hello there", True)
+                # The refresh runs as a tracked background task, not inline —
+                # await the same task set _full_shutdown drains, within this
+                # same event loop (a task is bound to the loop it was created
+                # on — a second, separate asyncio.run() call cannot resume it).
+                pending = list(orch._pending_final_tasks)
+                if pending:
+                    await asyncio.gather(*pending)
+                mock_refresh.assert_called_once_with("hello there")
+
+        asyncio.run(_run())
+
+
+class TestPerAgentVoiceWiring:
+    """Phase 2: agent.tts_voice_external_id / agent.tts_language are reused
+    (no new schema) to pick the Gemini Live session's native voice."""
+
+    def test_valid_agent_voice_passed_through(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        h.agent.tts_voice_external_id = "charon"
+        h.agent.tts_language = "en-AU"
+        orch = VoiceOrchestrator(h)
+
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.routers.bidirectional_stream.BidirectionalStreamHandler.build_system_prompt",
+            new=AsyncMock(return_value="system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        kwargs = fake_session.start.call_args.kwargs
+        assert kwargs["voice_name"] == "Charon"
+        assert kwargs["language_code"] == "en-AU"
+
+    def test_unset_or_invalid_agent_voice_falls_back_to_default(self):
+        from app.services.gemini_live_service import DEFAULT_VOICE_NAME
+
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        h.agent.tts_voice_external_id = "21m00Tcm4TlvDq8ikWAM"  # leftover ElevenLabs ID
+        h.agent.tts_language = None
+        orch = VoiceOrchestrator(h)
+
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.routers.bidirectional_stream.BidirectionalStreamHandler.build_system_prompt",
+            new=AsyncMock(return_value="system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        kwargs = fake_session.start.call_args.kwargs
+        assert kwargs["voice_name"] == DEFAULT_VOICE_NAME
+        assert kwargs["language_code"] is None
+
+
+class TestMidCallRagRefreshCoalescing:
+    def test_second_trigger_skipped_while_refresh_in_flight(self):
+        h = TestMidCallRagRefresh()._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        orch._gemini_live_kb_refresh_in_flight = True
+
+        with patch.object(
+            orch, "_refresh_gemini_live_kb_context", new=AsyncMock()
+        ) as mock_refresh:
+            asyncio.run(orch._on_gemini_live_input_transcript("are you still there", True))
+
+        mock_refresh.assert_not_called()
+
+    def test_flag_cleared_after_refresh_completes(self):
+        kb_id = uuid.uuid4()
+        h = TestMidCallRagRefresh()._handler_with_flow(kb_ids=[kb_id])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._gemini_live_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ), patch("app.utils.redis_client.get_redis", return_value=None):
+            asyncio.run(orch._refresh_gemini_live_kb_context("hello"))
+
+        assert orch._gemini_live_kb_refresh_in_flight is False
+
+    def test_flag_cleared_even_on_exception(self):
+        h = TestMidCallRagRefresh()._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        orch._gemini_live_session = MagicMock()
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(side_effect=RuntimeError("boom")),
+        ):
+            asyncio.run(orch._refresh_gemini_live_kb_context("hello"))
+
+        assert orch._gemini_live_kb_refresh_in_flight is False
+
+
+class TestToolCallLoggingRedactsPii:
+    def test_attendee_email_redacted_in_log(self, caplog):
+        import logging
+
+        h = TestCalendlyToolCallWiring()._handler_with_calendly(enabled=True)
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_tool_response = AsyncMock()
+        orch._gemini_live_session = fake_session
+        h._execute_calendly_tool_call = AsyncMock(return_value={"booked": True})
+
+        fc = _fc(
+            id="c1",
+            name="book_appointment",
+            args={"slot": "x", "attendee_email": "realuser@example.com"},
+        )
+
+        with caplog.at_level(logging.INFO):
+            asyncio.run(orch._on_gemini_live_tool_call([fc]))
+
+        logged = "\n".join(r.message for r in caplog.records)
+        assert "realuser@example.com" not in logged

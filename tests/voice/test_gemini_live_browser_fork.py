@@ -371,6 +371,34 @@ class TestGeminiLiveSessionUsesConversationOrchestratorPromptAssembly:
         )
         assert orch._gemini_live_session is fake_session
 
+    def test_no_calendly_tool_calling_on_browser_transport(self):
+        """
+        LiveKitBrowserCallHandler has no BookingMixin at all (Calendly is
+        Twilio-only, per booking_mixin.py's own docstring) — confirms
+        _start_gemini_live_session's hasattr(h, "_calendly_enabled") guard
+        correctly passes tools=None / on_tool_call=None on this transport,
+        the mirror-image of
+        tests/voice/test_gemini_live_twilio_fork.py::TestCalendlyToolCallWiring.
+        """
+        h = _base_handler(NATIVE_AUDIO_MODEL)
+        assert not hasattr(h, "_calendly_enabled")
+
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.voice.conversation_orchestrator.ConversationOrchestrator.build_system_prompt",
+            new=AsyncMock(return_value="browser system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        kwargs = fake_session.start.call_args.kwargs
+        assert kwargs["tools"] is None
+        assert kwargs["on_tool_call"] is None
+
 
 # ─────────────────────────────────────────────────────────────────────────
 # run_livekit_browser_call — full-lifecycle fork wiring

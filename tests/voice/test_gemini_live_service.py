@@ -20,8 +20,11 @@ import pytest
 
 from app.core.llm_models import GEMINI_LIVE_MODELS
 from app.services.gemini_live_service import (
+    DEFAULT_VOICE_NAME,
+    VALID_VOICE_NAMES,
     GeminiLiveSession,
     _ensure_api_key_client,
+    resolve_voice_name,
 )
 from app.services.vertex_gemini_service import VertexLlmError, VertexLlmErrorType
 
@@ -457,3 +460,31 @@ class TestClose:
             await gls.close()  # must not raise/propagate task's exception
 
         asyncio.run(_setup_and_close())
+
+
+class TestResolveVoiceName:
+    def test_none_falls_back_to_default(self):
+        assert resolve_voice_name(None) == DEFAULT_VOICE_NAME
+
+    def test_empty_string_falls_back_to_default(self):
+        assert resolve_voice_name("") == DEFAULT_VOICE_NAME
+
+    def test_valid_voice_name_passthrough(self):
+        assert resolve_voice_name("Charon") == "Charon"
+
+    def test_case_insensitive_match_normalized_to_canonical_casing(self):
+        assert resolve_voice_name("charon") == "Charon"
+        assert resolve_voice_name("CHARON") == "Charon"
+
+    def test_whitespace_stripped(self):
+        assert resolve_voice_name("  Kore  ") == "Kore"
+
+    def test_unknown_voice_falls_back_to_default(self):
+        # A leftover ElevenLabs/Rime/Google TTS voice ID — must never be
+        # passed through raw to PrebuiltVoiceConfig.
+        assert resolve_voice_name("21m00Tcm4TlvDq8ikWAM") == DEFAULT_VOICE_NAME
+
+    def test_all_thirty_voices_are_valid_and_distinct(self):
+        assert len(VALID_VOICE_NAMES) == 30
+        for name in VALID_VOICE_NAMES:
+            assert resolve_voice_name(name) == name

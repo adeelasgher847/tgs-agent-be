@@ -38,6 +38,47 @@ from app.services.vertex_gemini_service import (
 
 DEFAULT_VOICE_NAME = "Puck"
 
+# All 30 Gemini Live prebuilt native-audio voices, confirmed against Google's
+# published voice list (Zephyr, Kore, Orus, ... Sulafat). PrebuiltVoiceConfig
+# rejects anything outside this set, so validate here rather than letting a
+# bad agent.tts_voice_external_id value 400 the whole session at start().
+VALID_VOICE_NAMES: frozenset[str] = frozenset(
+    {
+        "Zephyr", "Kore", "Orus", "Autonoe", "Umbriel", "Erinome", "Laomedeia",
+        "Schedar", "Achird", "Sadachbia", "Puck", "Fenrir", "Aoede", "Enceladus",
+        "Algieba", "Algenib", "Achernar", "Gacrux", "Zubenelgenubi", "Sadaltager",
+        "Charon", "Leda", "Callirrhoe", "Iapetus", "Despina", "Rasalgethi",
+        "Alnilam", "Pulcherrima", "Vindemiatrix", "Sulafat",
+    }
+)
+
+
+def resolve_voice_name(requested: str | None) -> str:
+    """
+    Map an agent's configured voice to a valid Gemini Live prebuilt voice
+    name, falling back to DEFAULT_VOICE_NAME when unset or not a real Gemini
+    Live voice (e.g. an ElevenLabs/Rime/Google TTS voice ID left over from
+    before the agent was switched to a native-audio model — those IDs mean
+    nothing here and must never be passed through raw).
+    """
+    if not requested:
+        return DEFAULT_VOICE_NAME
+    for valid in VALID_VOICE_NAMES:
+        if valid.lower() == requested.strip().lower():
+            return valid
+    # Distinguish "no voice configured" (silent, above) from "configured
+    # voice doesn't resolve" (logged) — the latter usually means a leftover
+    # ElevenLabs/Rime/Google TTS voice ID from before the agent was switched
+    # to a native-audio model, but could also be a real typo/misconfiguration
+    # worth a support/eng follow-up, so it shouldn't be indistinguishable
+    # from the benign case in production logs.
+    logger.info(
+        "[GeminiLive] agent voice '%s' is not a valid Gemini Live voice name — "
+        "falling back to %s",
+        requested, DEFAULT_VOICE_NAME,
+    )
+    return DEFAULT_VOICE_NAME
+
 _api_key_client_lock = threading.Lock()
 _api_key_client: Any = None
 
