@@ -865,7 +865,7 @@ class Settings(BaseSettings):
     # Similarity floor (0-1, higher = more similar) shared by both the Twilio path
     # (rag_context.py) and the LiveKit path (kb_retrieval_service._query_single_kb,
     # which returns 1 - cosine_distance as `score` — same direction/semantics).
-    RAG_SCORE_THRESHOLD: float = 0.4
+    RAG_SCORE_THRESHOLD: float = 0.2
     # Hard cap for the size of the rendered context block injected into prompts.
     # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
     RAG_MAX_CONTEXT_CHARS: int = 6000
