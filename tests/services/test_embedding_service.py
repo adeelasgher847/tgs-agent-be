@@ -17,7 +17,7 @@ startup hook.
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -101,12 +101,13 @@ def test_warm_embedding_client_swallows_errors_and_never_raises():
     """warm_embedding_client is scheduled as a fire-and-forget background task
     from app startup — it must never raise, even if the embedding call fails,
     so a startup-time exception can never crash the worker process."""
+    mock_async_client = MagicMock()
+    mock_async_client.embeddings.create = AsyncMock(side_effect=RuntimeError("boom"))
+    mock_openai_service = MagicMock()
+    mock_openai_service.get_async_client.return_value = mock_async_client
     with (
         patch("app.services.embedding_service.settings") as mock_settings,
-        patch(
-            "app.services.embedding_service.embed_text_for_rag",
-            side_effect=RuntimeError("boom"),
-        ),
+        patch("app.services.openai_service.openai_service", mock_openai_service),
     ):
         mock_settings.OPENAI_API_KEY = "test-key"
         asyncio.run(warm_embedding_client())  # must not raise
@@ -116,25 +117,37 @@ def test_warm_embedding_client_noop_without_openai_key():
     """No OPENAI_API_KEY configured (e.g. Gemini-only or on-prem deployment
     without RAG) → warm-up is a no-op rather than raising or performing an
     unnecessary call."""
+    mock_openai_service = MagicMock()
     with (
         patch("app.services.embedding_service.settings") as mock_settings,
-        patch("app.services.embedding_service.embed_text_for_rag") as mock_embed,
+        patch("app.services.openai_service.openai_service", mock_openai_service),
     ):
         mock_settings.OPENAI_API_KEY = ""
         asyncio.run(warm_embedding_client())
 
-    mock_embed.assert_not_called()
+    mock_openai_service.get_async_client.assert_not_called()
 
 
 def test_warm_embedding_client_calls_embed_with_openai_key():
+    """warm_embedding_client uses the async OpenAI client directly (not the
+    sync client via a thread-pool executor) — the sync client's underlying
+    httpx.Client is not thread-safe for concurrent use."""
+    mock_async_client = MagicMock()
+    mock_async_client.embeddings.create = AsyncMock()
+    mock_openai_service = MagicMock()
+    mock_openai_service.get_async_client.return_value = mock_async_client
     with (
         patch("app.services.embedding_service.settings") as mock_settings,
-        patch("app.services.embedding_service.embed_text_for_rag") as mock_embed,
+        patch("app.services.openai_service.openai_service", mock_openai_service),
     ):
         mock_settings.OPENAI_API_KEY = "test-key"
+        mock_settings.RAG_EMBEDDING_MODEL = "text-embedding-ada-002"
         asyncio.run(warm_embedding_client())
 
-    mock_embed.assert_called_once()
+    mock_openai_service.get_async_client.assert_called_once()
+    mock_async_client.embeddings.create.assert_called_once_with(
+        model="text-embedding-ada-002", input="warmup"
+    )
 
 
 def test_gemini_used_only_when_openai_not_configured_at_all():

@@ -145,8 +145,6 @@ def rag_prefetch_matches_final(prefetch_source_text: str, final_text: str) -> bo
         return True
     source_words = set(source.split())
     final_words = set(final.split())
-    if not source_words or not final_words:
-        return False
     overlap = len(source_words & final_words) / max(len(source_words), len(final_words))
     return overlap >= 0.6
 
@@ -580,9 +578,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 try:
                     if _prefetch is not None:
                         if _prefetch.done():
-                            # Already finished — zero-cost read.
-                            kb_context_block, kb_latency_ms = _prefetch.result()
-                            logger.debug("[RAG prefetch] used prefetch result (done)")
+                            # Already finished — zero-cost read. Check for a stored
+                            # exception explicitly rather than relying on
+                            # _prefetch_kb_context's current "always returns
+                            # ('', 0.0), never raises" contract — that contract is
+                            # easy to break in a future edit, and an unguarded
+                            # .result() would then raise here and be silently
+                            # swallowed by the outer except Exception below.
+                            _prefetch_exc = _prefetch.exception()
+                            if _prefetch_exc is not None:
+                                logger.debug(
+                                    "[RAG prefetch] stored exception: %s", _prefetch_exc
+                                )
+                                kb_context_block, kb_latency_ms = "", 0.0
+                            else:
+                                kb_context_block, kb_latency_ms = _prefetch.result()
+                                logger.debug("[RAG prefetch] used prefetch result (done)")
                         else:
                             # Still running — await the SAME in-flight task
                             # (never start a second parallel retrieval).
