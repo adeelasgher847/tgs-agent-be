@@ -28,6 +28,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.voice.llm_prompt_builder import (
+    build_history_text,
+    build_kb_context_for_vertex,
+    build_vertex_contents,
+    prune_history_to_turns,
+)
+
 
 @contextlib.contextmanager
 def _real_google_genai():
@@ -54,13 +61,6 @@ def _real_google_genai():
 # ─────────────────────────────────────────────────────────────────────────────
 # llm_prompt_builder — pure functions
 # ─────────────────────────────────────────────────────────────────────────────
-
-from app.voice.llm_prompt_builder import (
-    build_history_text,
-    build_kb_context_for_vertex,
-    build_vertex_contents,
-    prune_history_to_turns,
-)
 
 
 class TestPruneHistoryToTurns:
@@ -212,7 +212,233 @@ from app.services.vertex_gemini_service import (  # noqa: E402
     VertexLlmError,
     VertexLlmErrorType,
     _classify_vertex_error,
+    _ensure_vertex_client,
+    _location_for_model,
+    _vertex_clients,
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _location_for_model — pure routing function
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLocationForModel:
+    @pytest.mark.parametrize(
+        "model_name", ["gemini-3-flash-preview", "gemini-3.1-flash-lite"]
+    )
+    def test_global_only_models_route_to_global(self, model_name):
+        assert _location_for_model(model_name) == "global"
+
+    @pytest.mark.parametrize(
+        "model_name",
+        ["gemini-2.5-flash", "gemini-2.0-flash", "some-future-model-id"],
+    )
+    def test_other_models_route_to_configured_location(self, model_name, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.VERTEX_AI_LOCATION",
+            "us-central1",
+        )
+        assert _location_for_model(model_name) == "us-central1"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _ensure_vertex_client — per-location caching
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestEnsureVertexClientCaching:
+    """
+    ``_ensure_vertex_client`` does ``from google import genai`` then
+    ``genai.Client(...)``. Because tests/conftest.py stubs
+    ``sys.modules["google"]`` as a bare ``MagicMock()`` (not a real package),
+    ``from google import genai`` resolves via attribute access on that mock
+    object (``sys.modules["google"].genai``), NOT via ``sys.modules["google.genai"]``
+    — those are two distinct mock objects. So the patch target here has to be
+    the attribute actually consulted at call time: ``sys.modules["google"].genai``.
+    ``unittest.mock.patch("google.genai.Client", ...)`` looks unintuitive but
+    would silently patch the wrong object and never observe a call.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_client_cache(self):
+        """_vertex_clients is a module-level cache — clear before/after each
+        test so tests don't leak state into each other."""
+        _vertex_clients.clear()
+        yield
+        _vertex_clients.clear()
+
+    def _patch_genai_client(self, monkeypatch, mock_client_cls):
+        fake_genai = SimpleNamespace(Client=mock_client_cls)
+        monkeypatch.setattr(sys.modules["google"], "genai", fake_genai, raising=False)
+
+    def test_same_location_returns_cached_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.GOOGLE_CLOUD_PROJECT_ID",
+            "test-project",
+        )
+        mock_client_cls = MagicMock(side_effect=lambda **_kwargs: MagicMock())
+        self._patch_genai_client(monkeypatch, mock_client_cls)
+
+        client1 = _ensure_vertex_client("us-central1")
+        client2 = _ensure_vertex_client("us-central1")
+
+        assert client1 is client2
+        mock_client_cls.assert_called_once()
+
+    def test_different_locations_each_get_own_client(self, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.GOOGLE_CLOUD_PROJECT_ID",
+            "test-project",
+        )
+        mock_client_cls = MagicMock(side_effect=lambda **_kwargs: MagicMock())
+        self._patch_genai_client(monkeypatch, mock_client_cls)
+
+        global_client = _ensure_vertex_client("global")
+        regional_client = _ensure_vertex_client("us-central1")
+        # Requesting each location again should hit the cache, not
+        # construct a new client.
+        global_client_again = _ensure_vertex_client("global")
+        regional_client_again = _ensure_vertex_client("us-central1")
+
+        assert global_client is not regional_client
+        assert global_client is global_client_again
+        assert regional_client is regional_client_again
+        assert mock_client_cls.call_count == 2
+        call_locations = {c.kwargs["location"] for c in mock_client_cls.call_args_list}
+        assert call_locations == {"global", "us-central1"}
+
+    def test_no_project_configured_raises_runtime_error_for_any_location(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.GOOGLE_CLOUD_PROJECT_ID", None
+        )
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.GCP_PROJECT_ID", None
+        )
+        with pytest.raises(RuntimeError, match="Vertex AI requires"):
+            _ensure_vertex_client("global")
+        with pytest.raises(RuntimeError, match="Vertex AI requires"):
+            _ensure_vertex_client("us-central1")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# End-to-end: model_name → location routing through the public API
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestModelToLocationRoutingEndToEnd:
+    """Confirms stream_text/generate_text/generate_with_tools call
+    _ensure_vertex_client with the correct location for a given model_name,
+    by patching _ensure_vertex_client itself and inspecting the location it
+    was invoked with (rather than going through the real genai.Client)."""
+
+    @pytest.mark.parametrize(
+        "model_name,expected_location",
+        [
+            ("gemini-3-flash-preview", "global"),
+            ("gemini-3.1-flash-lite", "global"),
+            ("gemini-2.5-flash", "us-central1"),
+        ],
+    )
+    def test_stream_text_routes_location(self, model_name, expected_location, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.VERTEX_AI_LOCATION",
+            "us-central1",
+        )
+        mock_stream = AsyncMock(return_value=_async_fake_response_iter(["ok"]))
+        client = _make_mock_genai_client(stream=mock_stream)
+        mock_ensure = MagicMock(return_value=client)
+
+        async def _run():
+            with (
+                patch(
+                    "app.services.vertex_gemini_service._ensure_vertex_client",
+                    mock_ensure,
+                ),
+                patch(
+                    "app.services.vertex_gemini_service.build_vertex_contents",
+                    return_value=[],
+                ),
+            ):
+                svc = VertexGeminiService()
+                async for _ in svc.stream_text(prompt="hi", model_name=model_name):
+                    pass
+
+        asyncio.run(_run())
+        mock_ensure.assert_called_once_with(expected_location)
+
+    @pytest.mark.parametrize(
+        "model_name,expected_location",
+        [
+            ("gemini-3-flash-preview", "global"),
+            ("gemini-3.1-flash-lite", "global"),
+            ("gemini-2.5-flash", "us-central1"),
+        ],
+    )
+    def test_generate_text_routes_location(self, model_name, expected_location, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.VERTEX_AI_LOCATION",
+            "us-central1",
+        )
+        mock_response = SimpleNamespace(text="Hello")
+        mock_generate = MagicMock(return_value=mock_response)
+        client = _make_mock_genai_client(generate=mock_generate)
+        mock_ensure = MagicMock(return_value=client)
+
+        with (
+            patch(
+                "app.services.vertex_gemini_service._ensure_vertex_client",
+                mock_ensure,
+            ),
+            patch(
+                "app.services.vertex_gemini_service.build_vertex_contents",
+                return_value=[],
+            ),
+        ):
+            svc = VertexGeminiService()
+            svc.generate_text(prompt="hi", model_name=model_name)
+
+        mock_ensure.assert_called_once_with(expected_location)
+
+    @pytest.mark.parametrize(
+        "model_name,expected_location",
+        [
+            ("gemini-3-flash-preview", "global"),
+            ("gemini-3.1-flash-lite", "global"),
+            ("gemini-2.5-flash", "us-central1"),
+        ],
+    )
+    def test_generate_with_tools_routes_location(self, model_name, expected_location, monkeypatch):
+        monkeypatch.setattr(
+            "app.services.vertex_gemini_service.settings.VERTEX_AI_LOCATION",
+            "us-central1",
+        )
+        response = SimpleNamespace(text="Hi there", candidates=[])
+        async_generate = AsyncMock(return_value=response)
+        client = _make_mock_genai_client(async_generate=async_generate)
+        mock_ensure = MagicMock(return_value=client)
+        tool_executor = AsyncMock()
+
+        async def _run():
+            with (
+                patch(
+                    "app.services.vertex_gemini_service._ensure_vertex_client",
+                    mock_ensure,
+                ),
+                patch(
+                    "app.services.vertex_gemini_service.build_vertex_contents",
+                    return_value=[],
+                ),
+            ):
+                svc = VertexGeminiService()
+                return await svc.generate_with_tools(
+                    prompt="hi", model_name=model_name, tool_executor=tool_executor
+                )
+
+        asyncio.run(_run())
+        mock_ensure.assert_called_once_with(expected_location)
 
 
 def _fake_response_iter(texts: list[str]):
@@ -513,7 +739,7 @@ class TestGenerateWithTools:
         follow-up generate_content call's contents include a
         types.Content(role="user", parts=[Part.from_function_response(...)]) turn —
         this is the regression guard for the role="function" → role="user" bug fix."""
-        fake_types = _install_fake_genai_types(monkeypatch)
+        _install_fake_genai_types(monkeypatch)
 
         fc_part = _make_fc_part("check_availability", {"date": "2026-08-17"})
         candidate_content = SimpleNamespace(parts=[fc_part])

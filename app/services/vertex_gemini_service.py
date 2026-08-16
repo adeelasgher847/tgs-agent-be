@@ -23,31 +23,56 @@ from app.voice.llm_prompt_builder import build_vertex_contents
 
 # Lazily imported so tests can patch before import resolution.
 _vertex_client_lock = threading.Lock()
-_vertex_client = None
+_vertex_clients: dict[str, Any] = {}
+
+# As of 2026-08, Google only serves Gemini 3-family models from Vertex AI's
+# ``global`` endpoint — regional endpoints (including our configured
+# settings.VERTEX_AI_LOCATION, e.g. "us-central1") return 404 for these
+# specific model IDs. This is expected to change as Google rolls out regional
+# availability for Gemini 3, so keep this as an easily-editable allowlist
+# rather than scattering region special-cases through the call sites.
+_GLOBAL_ONLY_MODELS: set[str] = {
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
+}
 
 
-def _ensure_vertex_client():
+def _location_for_model(model_name: str) -> str:
     """
-    Lazily build (once) and return the shared google.genai Client, configured
-    for Vertex AI + ADC. Thread-safe double-checked locking, mirroring the old
-    _ensure_vertex_init() singleton pattern.
+    Return the Vertex AI location to use for a given model ID: "global" for
+    models in _GLOBAL_ONLY_MODELS, otherwise settings.VERTEX_AI_LOCATION.
+    Exact-match on model_name (these are exact model IDs, not prefixes).
     """
-    global _vertex_client
-    if _vertex_client is not None:
-        return _vertex_client
+    if model_name in _GLOBAL_ONLY_MODELS:
+        return "global"
+    return settings.VERTEX_AI_LOCATION
+
+
+def _ensure_vertex_client(location: str):
+    """
+    Lazily build (once per location) and return a shared google.genai Client,
+    configured for Vertex AI + ADC. Thread-safe double-checked locking,
+    mirroring the old _ensure_vertex_init() singleton pattern, but keyed by
+    location so global-only models (see _GLOBAL_ONLY_MODELS) can use the
+    "global" endpoint while other models keep using settings.VERTEX_AI_LOCATION.
+    """
+    existing = _vertex_clients.get(location)
+    if existing is not None:
+        return existing
     with _vertex_client_lock:
-        if _vertex_client is not None:
-            return _vertex_client
+        existing = _vertex_clients.get(location)
+        if existing is not None:
+            return existing
         from google import genai
 
         project = settings.GOOGLE_CLOUD_PROJECT_ID or settings.GCP_PROJECT_ID
-        location = settings.VERTEX_AI_LOCATION
         if not project:
             raise RuntimeError(
                 "Vertex AI requires GOOGLE_CLOUD_PROJECT_ID or GCP_PROJECT_ID in config."
             )
-        _vertex_client = genai.Client(vertexai=True, project=project, location=location)
-        return _vertex_client
+        client = genai.Client(vertexai=True, project=project, location=location)
+        _vertex_clients[location] = client
+        return client
 
 
 class VertexLlmErrorType(str, enum.Enum):
@@ -184,7 +209,7 @@ class VertexGeminiService:
         Raises VertexLlmError on quota/timeout/filter failures (caller maps to fallback).
         """
         try:
-            client = _ensure_vertex_client()
+            client = _ensure_vertex_client(_location_for_model(model_name))
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
@@ -259,7 +284,7 @@ class VertexGeminiService:
         raw function-call JSON blob).
         """
         try:
-            client = _ensure_vertex_client()
+            client = _ensure_vertex_client(_location_for_model(model_name))
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
@@ -344,7 +369,7 @@ class VertexGeminiService:
         del api_key  # Vertex uses ADC only
         start_time = time.time()
         try:
-            client = _ensure_vertex_client()
+            client = _ensure_vertex_client(_location_for_model(model_name))
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
