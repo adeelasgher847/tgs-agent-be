@@ -688,6 +688,41 @@ class TtsStreamMixin:
         except Exception as e:
             logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
 
+    async def _stream_live_audio_chunk(self, mulaw_bytes: bytes) -> None:
+        """
+        Minimal outbound-audio primitive for the Gemini Live (native-audio
+        speech-to-speech) path — bypasses TtsPipeline/_stream_tts_chunk
+        entirely (there is no synthesized-text chunk here, just raw MULAW
+        bytes already converted from Gemini's PCM16/24kHz output by
+        VoiceOrchestrator._on_gemini_live_audio_chunk). Reuses the same
+        low-level paced-frame-send primitive
+        (``stream_mulaw_bytes_over_twilio``) the existing TTS send loops use,
+        so Twilio's 20ms/160-byte MULAW framing/message format is not
+        reimplemented here.
+
+        Cancellation is gated on ``self._voice_orchestrator._gemini_live_cancel``
+        — this path's own minimal barge-in flag (see
+        VoiceOrchestrator._on_gemini_live_interrupted) — never on
+        ``self._tts_cancel``, since no TtsPipeline task exists for this call.
+        """
+        if not mulaw_bytes or not self.stream_sid:
+            return
+        cancel = getattr(self._voice_orchestrator, "_gemini_live_cancel", None)
+        if cancel is not None and cancel.is_set():
+            return
+        try:
+            await stream_mulaw_bytes_over_twilio(
+                websocket=self.websocket,
+                stream_sid=self.stream_sid,
+                audio_bytes=mulaw_bytes,
+                pace_20ms=True,
+                cancel=cancel,
+                prime_frames=0,
+                mirror_mulaw=self._livekit_recording_mirror(),
+            )
+        except Exception as exc:
+            logger.error("[GeminiLive] _stream_live_audio_chunk failed: %s", exc, exc_info=True)
+
     async def _prefetch_tts_audio(self, task: Dict[str, Any]) -> bytes | None:
         """
         Generate TTS audio bytes in the background WITHOUT acquiring _tts_lock

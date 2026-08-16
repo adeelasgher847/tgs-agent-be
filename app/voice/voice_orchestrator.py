@@ -23,17 +23,28 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Set
+from typing import TYPE_CHECKING, Any, Set
 
 from app.core.config import settings
+from app.core.llm_models import is_gemini_live_native_audio_model
 from app.core.logger import logger
 from app.utils.audio_utils import ulaw_to_linear_sample
+from app.voice.gemini_live_audio_bridge import mulaw8k_to_pcm16_16k, pcm16_24k_to_mulaw8k
 from app.voice.stt_pipeline import SttPipeline
 from app.voice.tts_pipeline import TtsPipeline
 from app.voice.stt_events import SttEventBus
 
 if TYPE_CHECKING:
     from app.core.agent_runtime import ResolvedSttRuntime
+
+# Text model used to keep a native-audio call alive when GeminiLiveSession.start()
+# fails BEFORE the session ever became usable (pre-session failure — see
+# _start_gemini_live_session / _fallback_to_legacy_pipeline). Native-audio model
+# IDs (e.g. "gemini-live-2.5-flash-native-audio") have no meaning to
+# vertex_gemini_service.py's text-generation methods, so the in-memory
+# `agent.llm_model` is swapped to this allow-listed text model for the
+# remainder of THIS call object only (never persisted to the DB).
+_GEMINI_LIVE_FALLBACK_TEXT_MODEL = "gemini-2.5-flash"
 
 
 def _resolve_initial_endpointing_ms() -> int:
@@ -147,7 +158,34 @@ class VoiceOrchestrator:
         # on full LLM+TTS work (parallel with continued STT ingestion).
         self._pending_final_tasks: Set[asyncio.Task] = set()
 
-        logger.info("[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready")
+        # ── Gemini Live (native-audio speech-to-speech) state ─────────────────
+        # Resolved once here (not per-chunk) — handler.agent is already loaded
+        # by BidirectionalStreamHandler._load_session_data(), which always runs
+        # synchronously in __init__ before VoiceOrchestrator is constructed.
+        # When True, on_audio_chunk() never creates SttPipeline for this call;
+        # audio instead flows to a lazily-created GeminiLiveSession (see
+        # _feed_gemini_live_audio / _start_gemini_live_session). NOTE:
+        # TtsPipeline above is still constructed unconditionally (see class
+        # docstring / task write-up) — it is cheap (no I/O, no provider calls
+        # in __init__) and is simply never fed for a native-audio call, so no
+        # external TTS provider is ever invoked.
+        _agent = getattr(handler, "agent", None)
+        self._is_gemini_live: bool = is_gemini_live_native_audio_model(
+            getattr(_agent, "llm_model", None) if _agent else None
+        )
+        self._gemini_live_session: Any = None
+        self._gemini_live_setup_lock: asyncio.Lock = asyncio.Lock()
+        self._gemini_live_setup_failed: bool = False
+        # Barge-in cancel flag scoped to Gemini Live's own outbound audio send
+        # loop — the equivalent of handler._tts_cancel for this path, since
+        # there is no TtsPipeline task to cancel (see _on_gemini_live_interrupted).
+        self._gemini_live_cancel: asyncio.Event = asyncio.Event()
+        self._gemini_live_first_audio_marked: bool = False
+
+        logger.info(
+            "[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready, gemini_live=%s",
+            self._is_gemini_live,
+        )
 
     # ── Public interface ──────────────────────────────────────────────────────
 
@@ -268,6 +306,17 @@ class VoiceOrchestrator:
 
             # ── 3. Active guard ───────────────────────────────────────────────
             if not self._stt_active:
+                return
+
+            # ── 3b. Native-audio (Gemini Live) fork ─────────────────────────────
+            # Bypasses SttPipeline/TtsPipeline entirely for this call: caller
+            # audio goes straight to a GeminiLiveSession, and Gemini's own
+            # native audio response is streamed straight back (see
+            # _feed_gemini_live_audio / _on_gemini_live_audio_chunk). The
+            # pickup-detection/grace-period gating above is audio-format
+            # agnostic (RMS over MULAW) and stays unchanged for both paths.
+            if self._is_gemini_live:
+                await self._feed_gemini_live_audio(h, audio_data)
                 return
 
             # ── 4. STT feed ───────────────────────────────────────────────────
@@ -456,6 +505,15 @@ class VoiceOrchestrator:
         except Exception as exc:
             logger.debug("[VoiceOrchestrator] STT pipeline close failed: %s", exc)
 
+        # Close Gemini Live session (native-audio calls only — no-op otherwise)
+        try:
+            if self._gemini_live_session is not None:
+                self._gemini_live_cancel.set()
+                await self._gemini_live_session.close()
+                self._gemini_live_session = None
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] Gemini Live session close failed: %s", exc)
+
         logger.info("[VoiceOrchestrator] Shutdown complete")
 
     # ── Private STT callbacks ─────────────────────────────────────────────────
@@ -515,6 +573,287 @@ class VoiceOrchestrator:
             logger.error(
                 "[VoiceOrchestrator] _on_final callback error: %s", exc, exc_info=True
             )
+
+    # ── Gemini Live (native-audio speech-to-speech) ────────────────────────────
+
+    async def _feed_gemini_live_audio(self, h, audio_data: bytes) -> None:
+        """
+        Route one MULAW/8kHz caller-audio frame to the (lazily created)
+        GeminiLiveSession for this call, converting to PCM16/16kHz first.
+        Called instead of the SttPipeline feed for native-audio agents.
+        """
+        if self._gemini_live_setup_failed:
+            # Pre-session failure already handled (see _fallback_to_legacy_pipeline) —
+            # self._is_gemini_live has been flipped to False, so this branch
+            # should no longer be reached on the NEXT chunk, but guard anyway
+            # in case a chunk was already in flight when the flip happened.
+            return
+
+        session = self._gemini_live_session
+        if session is None:
+            async with self._gemini_live_setup_lock:
+                # Re-check inside the lock — a concurrent chunk may have
+                # already started (or finished) setup while we awaited it.
+                if self._gemini_live_session is None and not self._gemini_live_setup_failed:
+                    await self._start_gemini_live_session(h)
+            session = self._gemini_live_session
+
+        if session is None:
+            return  # setup failed and fallback (or shutdown) already handled it
+
+        try:
+            pcm16_16k = mulaw8k_to_pcm16_16k(audio_data)
+            if pcm16_16k:
+                await session.send_audio(pcm16_16k)
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] GeminiLiveSession.send_audio failed: %s", exc, exc_info=True
+            )
+
+    async def _start_gemini_live_session(self, h) -> None:
+        """
+        Lazily open the GeminiLiveSession for this call (once). Builds the
+        initial system_instruction via each transport's own prompt-assembly
+        method (reused, not duplicated) since there is no user utterance yet
+        at session-start. On pre-session failure, falls back to the legacy
+        STT/LLM/TTS pipeline for the remainder of the call (see
+        _fallback_to_legacy_pipeline) rather than leaving the call silent.
+
+        Transport-aware: the two call transports have deliberately separate,
+        unshared prompt-assembly implementations (see CLAUDE.md's "Voice
+        pipeline" section) —
+        `BidirectionalStreamHandler.build_system_prompt` (Twilio, this
+        handler's own method — includes booking_memory_block,
+        inbound_kb_docs_context_block, recruitment-screening block,
+        A/B prompt testing override, current-date/time + user-signals block,
+        etc.) vs `ConversationOrchestrator.build_system_prompt` (LiveKit
+        browser demo calls — a separate, simpler implementation).
+        Duck-typed via `hasattr` rather than `isinstance` to avoid a
+        circular import (bidirectional_stream.py already imports
+        VoiceOrchestrator at module level).
+        """
+        from app.services.gemini_live_service import GeminiLiveSession
+        from app.services.vertex_gemini_service import VertexLlmError
+
+        agent = getattr(h, "agent", None)
+        model_name = getattr(agent, "llm_model", None) if agent else None
+
+        try:
+            if hasattr(h, "build_system_prompt"):
+                # Twilio (BidirectionalStreamHandler) — its own real
+                # prompt-assembly method, not ConversationOrchestrator's.
+                system_instruction = await h.build_system_prompt(
+                    user_text="", confidence=1.0
+                )
+            else:
+                # LiveKit browser demo calls (LiveKitBrowserCallHandler) —
+                # genuinely uses ConversationOrchestrator.
+                from app.voice.conversation_orchestrator import ConversationOrchestrator
+
+                conv = ConversationOrchestrator(h)
+                system_instruction = await conv.build_system_prompt(
+                    user_text="", confidence=1.0
+                )
+        except Exception as exc:
+            logger.error(
+                "[GeminiLive] build_system_prompt failed for session start; using minimal "
+                "fallback instruction: %s", exc, exc_info=True,
+            )
+            agent_name = getattr(agent, "name", None) or "AI Assistant"
+            system_instruction = f"You are {agent_name}, a helpful phone assistant."
+
+        session = GeminiLiveSession(model_name)
+        try:
+            await session.start(
+                system_instruction=system_instruction,
+                on_audio_chunk=self._on_gemini_live_audio_chunk,
+                on_interrupted=self._on_gemini_live_interrupted,
+                on_input_transcript=self._on_gemini_live_input_transcript,
+                on_output_transcript=self._on_gemini_live_output_transcript,
+                # Phase 1: Calendly/tool-calling is explicitly deferred (see
+                # integration plan §6) — no tools, no on_tool_call callback.
+                on_tool_call=None,
+                on_error=self._on_gemini_live_error,
+                tools=None,
+            )
+        except VertexLlmError as exc:
+            logger.error(
+                "[GeminiLive] pre-session start failed model=%s call_session_id=%s: %s",
+                model_name, getattr(h, "call_session_id", None), exc,
+            )
+            await self._fallback_to_legacy_pipeline(h, reason=str(exc))
+            return
+        except Exception as exc:
+            logger.error(
+                "[GeminiLive] unexpected pre-session start failure model=%s call_session_id=%s: %s",
+                model_name, getattr(h, "call_session_id", None), exc, exc_info=True,
+            )
+            await self._fallback_to_legacy_pipeline(h, reason=str(exc))
+            return
+
+        self._gemini_live_session = session
+        logger.info(
+            "[GeminiLive] session started model=%s call_session_id=%s",
+            model_name, getattr(h, "call_session_id", None),
+        )
+
+    async def _fallback_to_legacy_pipeline(self, h, reason: str) -> None:
+        """
+        Pre-session GeminiLiveSession.start() failure fallback (see plan §7):
+        swap this call's in-memory `agent.llm_model` to a default text model
+        (native-audio model IDs have no meaning to vertex_gemini_service.py's
+        text methods — never persisted to the DB, only mutates the Agent ORM
+        instance already loaded for THIS call) and flip routing back to the
+        existing STT/LLM/TTS pipeline. SttPipeline is already lazily created
+        by on_audio_chunk's normal step 4 — nothing further to construct
+        here; the next audio chunk takes that path automatically.
+
+        Never called for a mid-call drop (session started successfully, then
+        errored later) — see _on_gemini_live_error, which ends the call
+        gracefully instead per the plan's mid-call-failure guidance.
+        """
+        self._gemini_live_setup_failed = True
+        self._is_gemini_live = False
+
+        agent = getattr(h, "agent", None)
+        if agent is not None:
+            logger.warning(
+                "[GeminiLive] falling back to legacy pipeline for call_session_id=%s: "
+                "%s -> %s (reason: %s)",
+                getattr(h, "call_session_id", None),
+                getattr(agent, "llm_model", None),
+                _GEMINI_LIVE_FALLBACK_TEXT_MODEL,
+                reason,
+            )
+            agent.llm_model = _GEMINI_LIVE_FALLBACK_TEXT_MODEL
+        else:
+            logger.error(
+                "[GeminiLive] pre-session failure with no agent loaded for call_session_id=%s "
+                "(reason: %s) — cannot fall back to a text pipeline; ending call.",
+                getattr(h, "call_session_id", None), reason,
+            )
+            asyncio.create_task(h._full_shutdown())
+
+    async def _on_gemini_live_audio_chunk(self, pcm16_24k_bytes: bytes) -> None:
+        """
+        GeminiLiveSession.on_audio_chunk callback. Gates on
+        self._gemini_live_cancel (this path's barge-in flag — see
+        _on_gemini_live_interrupted) exactly like the existing TTS send
+        loops gate on handler._tts_cancel.
+
+        Transport-aware (duck-typed via hasattr, same pattern as
+        _start_gemini_live_session's system_instruction branch):
+          - Twilio (BidirectionalStreamHandler, has `_stream_live_audio_chunk`):
+            convert Gemini's raw PCM16/24kHz output to MULAW/8kHz and stream
+            it to the Twilio WebSocket via that low-level frame-send
+            primitive.
+          - LiveKit browser (LiveKitBrowserCallHandler, no
+            `_stream_live_audio_chunk` method): publish Gemini's raw
+            PCM16/24kHz output directly into the room — that handler's
+            `_agent_publisher` is opened at 24kHz for a native-audio call,
+            so no mu-law conversion or resampling happens on this path at
+            all (see LiveKitBrowserCallHandler._publish_gemini_live_audio_chunk).
+        """
+        if self._gemini_live_cancel.is_set():
+            return
+        try:
+            if not self._gemini_live_first_audio_marked:
+                self._gemini_live_first_audio_marked = True
+                _vm = getattr(self._h, "_voice_metrics", None)
+                if _vm:
+                    _vm.mark_live_first_audio()
+
+            if hasattr(self._h, "_stream_live_audio_chunk"):
+                mulaw_bytes = pcm16_24k_to_mulaw8k(pcm16_24k_bytes)
+                if not mulaw_bytes:
+                    return
+                await self._h._stream_live_audio_chunk(mulaw_bytes)
+            else:
+                await self._h._publish_gemini_live_audio_chunk(
+                    pcm16_24k_bytes, self._gemini_live_cancel
+                )
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] gemini live audio chunk send failed: %s", exc, exc_info=True
+            )
+
+    async def _on_gemini_live_interrupted(self) -> None:
+        """
+        Barge-in for the Gemini Live path: stop our own outbound send loop
+        (self._gemini_live_cancel) AND tell the transport to flush anything
+        it has already buffered — mirrors the existing two-part TTS
+        barge-in, scoped to this path's own minimal cancel flag rather than
+        the TtsPipeline/_tts_cancel machinery (nothing to cancel there — no
+        TtsPipeline task exists for this call).
+
+        Transport-aware (duck-typed via hasattr, mirrors
+        _on_gemini_live_audio_chunk's branch): Twilio flushes via
+        `_send_twilio_clear_event`; the LiveKit browser handler has no such
+        method and instead clears its own LiveKit AudioSource's internal
+        playout queue directly (see
+        LiveKitBrowserCallHandler._clear_gemini_live_playout_queue).
+        """
+        try:
+            self._gemini_live_cancel.set()
+            if hasattr(self._h, "_send_twilio_clear_event"):
+                await self._h._send_twilio_clear_event()
+            else:
+                await self._h._clear_gemini_live_playout_queue()
+            # Reset for the next turn's outbound audio (mirrors _tts_cancel.clear()
+            # in ConversationOrchestrator.generate_and_stream_response).
+            self._gemini_live_cancel.clear()
+            self._gemini_live_first_audio_marked = False
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] gemini live interrupted handling failed: %s", exc, exc_info=True
+            )
+
+    async def _on_gemini_live_input_transcript(self, text: str, finished: bool) -> None:
+        """Caller-side transcript from Gemini's own input_transcription. Only
+        written to call_transcript on finished chunks — mirrors the existing
+        STT-final (not interim) transcript-write precedent."""
+        if not finished or not (text or "").strip():
+            return
+        try:
+            await self._h._add_to_transcript("client", text.strip(), "speech")
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] gemini live input transcript write failed: %s", exc, exc_info=True
+            )
+
+    async def _on_gemini_live_output_transcript(self, text: str, finished: bool) -> None:
+        """Agent-side transcript from Gemini's own output_transcription. Only
+        written on finished chunks so call_transcript gets one clean line per
+        agent turn, matching the existing agent_response convention."""
+        if not finished or not (text or "").strip():
+            return
+        try:
+            await self._h._add_to_transcript("agent", text.strip(), "agent_response")
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] gemini live output transcript write failed: %s", exc, exc_info=True
+            )
+
+    async def _on_gemini_live_error(self, err) -> None:
+        """
+        Mid-call GeminiLiveSession failure (session had already started —
+        pre-session failures are handled by _start_gemini_live_session's own
+        try/except, never reach here). Per the plan: do NOT attempt to
+        reconstruct STT/TTS mid-call (too much state/latency risk) — end the
+        call gracefully via the existing _full_shutdown() path.
+
+        # TODO(gemini-live-fallback): a static pre-recorded "sorry, goodbye"
+        # audio clip played before hangup would be a friendlier mid-call
+        # failure UX than a silent drop. Deferred per the integration plan
+        # (Phase 1 accepts a graceful-but-abrupt hangup here, clearly logged).
+        """
+        logger.error(
+            "[GeminiLive] mid-call session error call_session_id=%s error_type=%s: %s",
+            getattr(self._h, "call_session_id", None),
+            getattr(err, "error_type", None),
+            err,
+        )
+        asyncio.create_task(self._h._full_shutdown())
 
     # ── Audio helpers ─────────────────────────────────────────────────────────
 

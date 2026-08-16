@@ -100,7 +100,8 @@ from sqlalchemy.orm import Session
 import json
 import base64
 import asyncio
-from typing import List
+import dataclasses
+from typing import Any, List
 import time
 from datetime import datetime, date
 import uuid
@@ -211,6 +212,30 @@ _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
     r"\bspell\b.*\b(?:e-?mail|email)|\b(?:e-?mail|email)\b.*\bspell\b"
     r")",
 )
+
+
+@dataclasses.dataclass
+class _SystemPromptBuildResult:
+    """
+    Everything build_system_prompt()'s internals compute that
+    generate_and_stream_response() also needs after the call returns.
+
+    Returned directly rather than stashed as self._sp_* instance attributes:
+    a stash-on-self would be a latent cross-turn data-corruption bug waiting
+    to happen the moment any await is introduced between the
+    build_system_prompt() call and the read-back (two STT-finals on the same
+    handler CAN run concurrently — see VoiceOrchestrator._on_final spawning
+    each as its own asyncio.Task). A returned value has no such window.
+    """
+
+    system_prompt: str
+    turn_context: Any
+    booking_intent_turn: bool
+    follow_up_active: bool
+    low_latency_fastpath: bool
+    vertex_kb_context: str | None
+    llm_runtime: Any
+    rag_trace: Any
 
 
 class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
@@ -1368,6 +1393,529 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             agent_id=rag_agent_scope,
         )
 
+    async def build_system_prompt(self, user_text: str, confidence: float) -> str:
+        """Public string-returning entry point — see _build_system_prompt_full
+        for the full result (used internally by generate_and_stream_response,
+        which also needs the auxiliary values computed along the way).
+        Called directly by VoiceOrchestrator._start_gemini_live_session for
+        the Gemini Live native-audio session's system_instruction."""
+        return (await self._build_system_prompt_full(user_text, confidence)).system_prompt
+
+    async def _build_system_prompt_full(
+        self, user_text: str, confidence: float
+    ) -> "_SystemPromptBuildResult":
+        """
+        Assemble the full system prompt for a turn: booking/follow-up intent
+        detection, LLM-runtime resolution, latency-fastpath decision, quick-ack
+        dispatch, RAG/KB context retrieval, conversation history windowing,
+        base/agent-override/model-override prompt branching, Vertex KB
+        attachment, A/B prompt override, call-policy block, and the current
+        date/time + user-signals prepend.
+
+        Behavior-preserving extraction from ``generate_and_stream_response``
+        (which used to build this prompt inline) — reused as-is by that
+        method's streaming-text path AND by the Gemini Live native-audio
+        session's ``system_instruction`` at session start (see
+        ``VoiceOrchestrator._start_gemini_live_session``, which calls this
+        directly on a ``BidirectionalStreamHandler`` instance for Twilio
+        calls — never ``ConversationOrchestrator.build_system_prompt``, which
+        is a separate, LiveKit-browser-only implementation with materially
+        different content).
+
+        Deliberately does NOT handle the ``is_greeting`` early-return branch —
+        that happens earlier in ``generate_and_stream_response``, before this
+        method would ever be reached, so an empty ``user_text`` here (as used
+        for the Gemini Live session-start call) is treated as an ordinary,
+        non-greeting turn.
+
+        A handful of locals computed here are also needed by the LLM
+        dispatch / Calendly logic that runs after this returns in
+        ``generate_and_stream_response`` (``turn_context``,
+        ``booking_intent_turn``, ``follow_up_active``,
+        ``low_latency_fastpath``, ``_vertex_kb_context``, ``_llm_runtime``).
+        Recomputing them there would re-run side-effecting/expensive work
+        (the quick-ack fire-and-forget task, the RAG prefetch-consume-once
+        read) a second time, so instead they are stashed on ``self`` here and
+        read back by the caller immediately after the call — see the
+        ``_sp_*`` attributes below.
+        """
+        import json
+        from datetime import datetime, timezone
+
+        self._voice_metrics.start_generation()
+        self._metric_gen_start_ts = time.perf_counter()
+        _stt_to_gen_ms = (self._metric_gen_start_ts - self._metric_stt_final_ts) * 1000
+        if self._metric_stt_final_ts > 0:
+            logger.info("[Metrics] stt_final_to_gen_start=%.0f ms", _stt_to_gen_ms)
+        slowpath_started_at = time.perf_counter()
+
+        def _remaining_slowpath_budget(default_timeout: float) -> float:
+            budget = float(getattr(settings, "VOICE_SLOWPATH_BUDGET_SEC", 0.55) or 0.55)
+            budget = max(0.12, min(3.0, budget))
+            elapsed = time.perf_counter() - slowpath_started_at
+            remaining = max(0.05, budget - elapsed)
+            return min(max(0.05, default_timeout), remaining)
+
+        booking_intent_turn = self._is_booking_intent_turn(user_text)
+        follow_up_active = bool(
+            self.call_session
+            and self.call_session.call_metadata
+            and self.call_session.call_metadata.get("appointment_id")
+        )
+        _llm_runtime = resolve_llm_runtime(self.agent)
+        _use_vertex_llm = (_llm_runtime.provider_slug or "").lower() == "gemini"
+        _vertex_kb_context = ""
+        low_latency_fastpath = self._should_use_latency_fastpath(
+            user_text, booking_intent_turn
+        )
+
+        # Fire quick-ack immediately (fire-and-forget) so the user hears audio
+        # while the LLM+RAG+KB pipeline runs.  Only on the slow path (fastpath
+        # queries have sub-500ms LLM TTFT so a quick-ack would finish before the
+        # LLM chunk is ready, creating a silence gap rather than masking latency).
+        # In V2 TtsPipeline, synthesis is parallel: the LLM's first chunk starts
+        # synthesising in the background while quick-ack is still playing, so by
+        # the time quick-ack ends the real audio is typically already ready.
+        if user_text and not low_latency_fastpath:
+            asyncio.create_task(self._send_quick_acknowledgement(user_text))
+
+        turn_context = build_turn_context(
+            user_text,
+            confidence,
+            booking_context_active=self._is_booking_context_active(user_text),
+            is_final=True,
+        )
+
+        # ------- RAG: build knowledge base context in voice layer -------
+        tenant_uuid = self.call_session.tenant_id if self.call_session else None
+        agent_uuid = self.agent.id if self.agent else None
+        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+
+        # RAG retrieval: use prefetched result when available (fired on interim
+        # so it overlaps Deepgram endpointing), otherwise run synchronously.
+        rag_context_block = ""
+        rag_trace: dict = {}
+        _prefetch = self._rag_prefetch_task
+        self._rag_prefetch_task = None  # Consume once per turn
+        if low_latency_fastpath:
+            rag_trace = {"status": "skipped_fastpath"}
+            if _prefetch and not _prefetch.done():
+                _prefetch.cancel()
+        else:
+            try:
+                if _prefetch is not None:
+                    if _prefetch.done():
+                        # Already finished — zero-cost read
+                        rag_context_block, rag_trace = _prefetch.result()
+                        logger.debug("[RAG] used prefetch result (done)")
+                    else:
+                        # Still running — wait with reduced timeout (most work already done)
+                        prefetch_wait_cap = float(
+                            getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18) or 0.18
+                        )
+                        rag_context_block, rag_trace = await asyncio.wait_for(
+                            asyncio.shield(_prefetch),
+                            timeout=_remaining_slowpath_budget(
+                                min(max(0.05, prefetch_wait_cap), settings.RAG_RETRIEVAL_TIMEOUT_SEC)
+                            ),
+                        )
+                        logger.debug("[RAG] awaited in-flight prefetch")
+                else:
+                    # No prefetch fired (e.g., very short utterance, final-only path)
+                    loop = asyncio.get_running_loop()
+
+                    def _build_rag():
+                        return build_rag_context_block_with_trace(
+                            user_text=user_text,
+                            tenant_id=tenant_uuid,
+                            agent_id=rag_agent_scope,
+                        )
+
+                    rag_context_block, rag_trace = await asyncio.wait_for(
+                        loop.run_in_executor(None, _build_rag),
+                        timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
+                    )
+            except asyncio.TimeoutError:
+                rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                    user_text="",
+                    tenant_id=tenant_uuid,
+                    agent_id=rag_agent_scope,
+                )
+                rag_trace["status"] = "timeout"
+                rag_trace["timeout"] = True
+            except Exception as e:
+                logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
+                rag_context_block, rag_trace = build_rag_context_block_with_trace(
+                    user_text="",
+                    tenant_id=tenant_uuid,
+                    agent_id=rag_agent_scope,
+                )
+                rag_trace["status"] = "failure"
+                rag_trace["error"] = str(e)
+
+        # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
+        # These are agent/tenant-level and don't change during the call, so serving
+        # them from cache costs 0ms versus the previous 50-200ms parallel executor fetch.
+        # Fall back to live fetch only if the cache background task hasn't finished yet
+        # (race on the very first turn of an extremely fast caller — rare in practice).
+        inbound_kb_docs_context_block = ""
+        if not low_latency_fastpath:
+            if self._kb_cache_ready:
+                inbound_kb_docs_context_block = self._cached_inbound_kb_block
+            else:
+                skip_live_kb = bool(
+                    getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
+                )
+                if skip_live_kb:
+                    logger.debug("[KB] cache cold; skipping live fetch for latency budget")
+                else:
+                    # Cache not ready yet — live fetch as fallback.
+                    _loop = asyncio.get_running_loop()
+
+                    async def _fetch_inbound_kb_live() -> str:
+                        if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                            return ""
+                        try:
+                            return await _loop.run_in_executor(
+                                None,
+                                lambda: agent_service.build_inbound_kb_documents_context_block(
+                                    db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                                ),
+                            )
+                        except Exception as exc:
+                            logger.warning("KB live-fetch (inbound) failed: %s", exc)
+                            return ""
+
+                    try:
+                        inbound_kb_docs_context_block = await asyncio.wait_for(
+                            _fetch_inbound_kb_live(),
+                            timeout=_remaining_slowpath_budget(0.25),
+                        )
+                    except asyncio.TimeoutError:
+                        logger.debug("[KB] live fetch timeout; continuing without live KB blocks")
+                    except Exception as exc:
+                        logger.debug("[KB] live fetch failed; continuing without live KB blocks: %s", exc)
+
+        # One-line RAG summary (safe: no chunk text, no secrets)
+        try:
+            logger.info(
+                "RAG trace summary: status=%s timeout=%s initial=%s filtered=%s retrieve_error=%s",
+                rag_trace.get("status"),
+                rag_trace.get("timeout"),
+                rag_trace.get("initial_retrieved_count"),
+                rag_trace.get("filtered_count"),
+                rag_trace.get("retrieve_error"),
+            )
+        except Exception:  # noqa: S110 - logging must never break voice calls
+            pass
+        
+        # Build history text from in-memory cache (avoids re-parsing the growing
+        # call_transcript JSON on every turn — O(n) JSON parse that gets slower
+        # as the call continues).  _conversation_history_cache is appended to
+        # directly by _add_to_transcript so it's always up-to-date.
+        # Fallback: if cache is empty but DB has a transcript, seed from DB once.
+        if not self._conversation_history_cache and self.call_session and self.call_session.call_transcript:
+            try:
+                raw = self.call_session.call_transcript
+                parsed = json.loads(raw) if isinstance(raw, str) else raw
+                for msg in (parsed or []):
+                    if isinstance(msg, dict):
+                        role = msg.get("role", "")
+                        content = msg.get("content") or msg.get("message", "")
+                        mtype = msg.get("message_type", "")
+                        if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
+                            self._conversation_history_cache.append((role, content))
+            except Exception as exc:
+                logger.debug("Failed to seed conversation history cache from DB transcript: %s", exc)
+
+        history_text = ""
+        if self._conversation_history_cache:
+            try:
+                filtered = self._conversation_history_cache
+
+                # Booking flows use a slightly wider window to keep service/date/slot
+                # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
+                # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
+                max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 50)
+                if low_latency_fastpath:
+                    # Keep at least 12 on fast path — intake flows span 6+ phases and
+                    # cutting to 6 drops early context (name, issue, location already given),
+                    # causing the agent to re-ask questions the caller already answered.
+                    max_msgs = min(max_msgs, 60)
+                if self._is_booking_context_active(user_text):
+                    max_msgs = min(max(max_msgs, 60), 60)
+                if len(filtered) > max_msgs:
+                    filtered = filtered[-max_msgs:]
+
+                history_text = "\n".join(
+                    f"{role.capitalize()}: {content}" for role, content in filtered
+                )
+            except Exception:
+                history_text = ""
+
+        if _use_vertex_llm:
+            history_text = (
+                "(Prior conversation turns are provided separately — "
+                "maintain continuity; do not re-ask answered questions.)"
+            )
+        
+        booking_memory_block = self._build_booking_memory_block()
+
+        # Build system prompt with agent personality + history
+        agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
+        agent_language = self.agent.language if self.agent and self.agent.language else "en"
+        v_add = ""
+        if self.call_session and self.call_session.call_metadata:
+            voice_ctx = self.call_session.call_metadata.get("voice_dynamic_context")
+            if isinstance(voice_ctx, dict):
+                v_add = (voice_ctx.get("system_prompt_addendum") or "").strip()
+        v_block = (
+            f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n"
+            if v_add
+            else ""
+        )
+        tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
+        tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
+        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+        if elevenlabs_audio_tags_enabled:
+            output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
+                get_elevenlabs_voice_prompt_rule_lines()
+            )
+        else:
+            output_plain_text_rule = (
+                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+                "Prosody is handled by the system."
+            )
+            no_ssml_rule_base = (
+                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+            )
+            no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+        # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
+        # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
+        # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+        no_bracket_tags_line = (
+            ""
+            if elevenlabs_audio_tags_enabled
+            else (
+                "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+                "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+                "will be read aloud literally."
+            )
+        )
+
+        # Inbound: opening may play once via TTS at pickup — do not instruct LLM to repeat verbatim on every "hi".
+        _inbound_call = (
+            self.call_session is not None
+            and (self.call_session.call_type or "").lower() == "inbound"
+        )
+        _has_opening_cfg = bool(self.agent) and (
+            (getattr(self.agent, "greeting_message", None) or "").strip()
+            or (getattr(self.agent, "first_message", None) or "").strip()
+        )
+        greeting_instruction_block = (
+            "\n- GREETING: A short opening may play once automatically at call start (inbound). "
+            "If the caller says hi, hello, or similar later, acknowledge in one brief phrase only — "
+            "do not repeat the full opening greeting verbatim.\n"
+            if (_inbound_call and _has_opening_cfg)
+            else ""
+        )
+
+        _recruitment_screening_block = ""
+        if self._jd_recruitment_screening_active():
+            _recruitment_screening_block = """
+# RECRUITMENT OUTBOUND SCREENING (THIS CALL — OVERRIDES CONFLICTING GENERIC RULES)
+- If the user says not interested, wrong number, wrong person, wrong call, not available, stop calling, or cannot do this now (clear no) — reply with ONE short polite sentence and end with [END_CALL] only. No follow-up questions. No persuasion.
+- Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
+- On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
+- If an intro already played at call start, do not repeat the same full intro; continue the flow.
+"""
+
+        # No business facts source remains; always inject the "do not invent" guard
+        # so the LLM never fabricates business details.
+        _bk_block = (
+            "# AUTHORITATIVE BUSINESS FACTS\n"
+            "No verified business facts are loaded for this call.\n"
+            "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
+            "email, services, prices, hours, or any other specifics).\n"
+            "If the caller asks about the business, say that specific information is not "
+            "available to you right now and offer to help in another way."
+        )
+
+        if _use_vertex_llm:
+            from app.voice.llm_prompt_builder import build_kb_context_for_vertex
+
+            _vertex_kb_context = build_kb_context_for_vertex(
+                inbound_kb_docs_context_block,
+                "",
+                empty_guard=_bk_block,
+            )
+            inbound_kb_docs_context_block = ""
+            _bk_block = (
+                "# AUTHORITATIVE BUSINESS FACTS\n"
+                "Business facts and inbound documents are attached as knowledge context "
+                "with each user message — apply grounding rules using that context.\n"
+            )
+
+        # Base prompt for phone conversations (voice-first, plain text only, no SSML)
+        base_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call with a human.
+{v_block}
+# STYLE & TONE
+- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- CONCISE: Max 20 words per response unless explaining something complex.
+- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
+{output_plain_text_rule}
+{no_bracket_tags_line}
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+{booking_memory_block}
+{rag_context_block}
+{inbound_kb_docs_context_block}
+{_recruitment_screening_block}
+# CRITICAL RULES
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
+3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
+4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT; both are authoritative sources for this call regardless of where each appears in this prompt. Never say you don't know if the answer is there. Never invent details that are not written in either.
+6. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
+7. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+{no_ssml_rule_base}
+
+{elevenlabs_audio_tag_block}
+
+{_bk_block}
+# GOAL
+Continue the conversation based on the history above. Be {agent_name}."""
+
+        # A/B prompt testing: variant + resolved prompt text are locked onto
+        # call_metadata at dispatch time (see ab_testing_service) and never
+        # re-resolved mid-call, so the same variant is used for the whole call.
+        ab_prompt_override = None
+        if self.call_session and self.call_session.call_metadata:
+            ab_prompt_override = self.call_session.call_metadata.get("ab_prompt_text")
+
+        # Use agent's custom system prompt if available, otherwise use base prompt
+        if self.agent and self.agent.system_prompt:
+            # Agent has custom system prompt - grounding rules placed BEFORE custom
+            # instructions so factual constraints cannot be overridden by agent config.
+            effective_custom_prompt = ab_prompt_override or self.agent.system_prompt
+            system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
+These rules override any conflicting custom instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
+
+# CUSTOM INSTRUCTIONS
+{effective_custom_prompt}
+{v_block}
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+{output_plain_text_rule}
+{no_bracket_tags_line}
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+{booking_memory_block}
+{rag_context_block}
+{inbound_kb_docs_context_block}
+{_recruitment_screening_block}
+# CRITICAL RULES
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
+
+# GOAL
+Follow your custom instructions. Continue from the history above. Be {agent_name}."""
+        elif self.agent and self.agent.model and self.agent.model.system_prompt:
+            # Model has system prompt - grounding rules placed BEFORE model instructions.
+            effective_model_prompt = ab_prompt_override or self.agent.model.system_prompt
+            system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
+These rules override any conflicting model instructions below. Never deviate from them.
+1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+{_bk_block}
+
+# MODEL INSTRUCTIONS
+{effective_model_prompt}
+{v_block}
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+{output_plain_text_rule}
+{no_bracket_tags_line}{greeting_instruction_block}
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+{booking_memory_block}
+{rag_context_block}
+{inbound_kb_docs_context_block}
+# CRITICAL RULES
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
+3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
+
+# GOAL
+Follow the model instructions. Continue from the history above. Be {agent_name}."""
+        else:
+            # Use base prompt
+            system_prompt = base_prompt
+
+        call_policy_block = agent_service.build_call_policy_block(
+            transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
+        )
+        if call_policy_block:
+            system_prompt = call_policy_block + "\n" + system_prompt
+
+        # Prepend current date/time so the agent knows what "today", "tomorrow",
+        # and "past slots" mean. Also injected into appointment booking flow.
+        _now_local = datetime.now(timezone.utc)
+        _now_str = _now_local.strftime("%A, %B %d, %Y at %I:%M %p UTC")
+        _user_signals = build_user_signals_block(turn_context)
+        system_prompt = (
+            f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
+            f"{_user_signals}\n\n"
+            + system_prompt
+        )
+
+        return _SystemPromptBuildResult(
+            system_prompt=system_prompt,
+            turn_context=turn_context,
+            booking_intent_turn=booking_intent_turn,
+            follow_up_active=follow_up_active,
+            low_latency_fastpath=low_latency_fastpath,
+            vertex_kb_context=_vertex_kb_context,
+            llm_runtime=_llm_runtime,
+            rag_trace=rag_trace,
+        )
+
     async def generate_and_stream_response(
         self,
         user_text: str,
@@ -1385,9 +1933,6 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             is_greeting: If True, plays inbound one-time opening (greeting_message / first_message) without LLM
         """
         try:
-            from datetime import datetime, timezone
-            import json
-
             # Ambient per-turn context for TtsPipeline's humanization decision
             # (app.voice.humanization_engine) — read via getattr, never required,
             # so any change here can't break TTS. Confidence is threaded through
@@ -1454,6 +1999,32 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
 
+                # Gemini Live native-audio calls must never invoke the external
+                # TTS provider (see CLAUDE.md / the approved plan) — route the
+                # greeting through the live session's own send_text so Gemini
+                # speaks it in its native voice, instead of queue_tts below.
+                # If the session isn't up yet (still starting, or fell back to
+                # the legacy pipeline), skip the scripted greeting entirely —
+                # the caller simply gets no opener and the conversation starts
+                # on their first utterance. This must never fall through to
+                # queue_tts()/TtsPipeline for a native-audio agent.
+                _vo = getattr(self, "_voice_orchestrator", None)
+                if _vo is not None and getattr(_vo, "_is_gemini_live", False):
+                    session = _vo._gemini_live_session
+                    if session is not None:
+                        try:
+                            await session.send_text(greeting_text, turn_complete=True)
+                        except Exception as exc:
+                            logger.warning(
+                                "[GeminiLive] failed to send greeting via live session: %s", exc
+                            )
+                    else:
+                        logger.debug(
+                            "[GeminiLive] skipping scripted greeting — live session not ready yet"
+                        )
+                    self._twilio_buffer_primed = False
+                    return
+
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._tts_pipeline:
                     return
@@ -1476,468 +2047,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             self._is_tts_playing = False        # Audio not yet streaming for this turn
             self._tts_play_start_ts = 0.0     # Clear dead-zone anchor from previous utterance
 
-            self._voice_metrics.start_generation()
-            self._metric_gen_start_ts = time.perf_counter()
-            _stt_to_gen_ms = (self._metric_gen_start_ts - self._metric_stt_final_ts) * 1000
-            if self._metric_stt_final_ts > 0:
-                logger.info("[Metrics] stt_final_to_gen_start=%.0f ms", _stt_to_gen_ms)
-            slowpath_started_at = time.perf_counter()
-
-            def _remaining_slowpath_budget(default_timeout: float) -> float:
-                budget = float(getattr(settings, "VOICE_SLOWPATH_BUDGET_SEC", 0.55) or 0.55)
-                budget = max(0.12, min(3.0, budget))
-                elapsed = time.perf_counter() - slowpath_started_at
-                remaining = max(0.05, budget - elapsed)
-                return min(max(0.05, default_timeout), remaining)
-
-            booking_intent_turn = self._is_booking_intent_turn(user_text)
-            follow_up_active = bool(
-                self.call_session
-                and self.call_session.call_metadata
-                and self.call_session.call_metadata.get("appointment_id")
-            )
-            _llm_runtime = resolve_llm_runtime(self.agent)
-            _use_vertex_llm = (_llm_runtime.provider_slug or "").lower() == "gemini"
-            _vertex_kb_context = ""
-            low_latency_fastpath = self._should_use_latency_fastpath(
-                user_text, booking_intent_turn
-            )
-
-            # Fire quick-ack immediately (fire-and-forget) so the user hears audio
-            # while the LLM+RAG+KB pipeline runs.  Only on the slow path (fastpath
-            # queries have sub-500ms LLM TTFT so a quick-ack would finish before the
-            # LLM chunk is ready, creating a silence gap rather than masking latency).
-            # In V2 TtsPipeline, synthesis is parallel: the LLM's first chunk starts
-            # synthesising in the background while quick-ack is still playing, so by
-            # the time quick-ack ends the real audio is typically already ready.
-            if user_text and not low_latency_fastpath:
-                asyncio.create_task(self._send_quick_acknowledgement(user_text))
-
-            turn_context = build_turn_context(
-                user_text,
-                confidence,
-                booking_context_active=self._is_booking_context_active(user_text),
-                is_final=True,
-            )
-
-            # ------- RAG: build knowledge base context in voice layer -------
-            tenant_uuid = self.call_session.tenant_id if self.call_session else None
-            agent_uuid = self.agent.id if self.agent else None
-            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
-
-            # RAG retrieval: use prefetched result when available (fired on interim
-            # so it overlaps Deepgram endpointing), otherwise run synchronously.
-            rag_context_block = ""
-            rag_trace: dict = {}
-            _prefetch = self._rag_prefetch_task
-            self._rag_prefetch_task = None  # Consume once per turn
-            if low_latency_fastpath:
-                rag_trace = {"status": "skipped_fastpath"}
-                if _prefetch and not _prefetch.done():
-                    _prefetch.cancel()
-            else:
-                try:
-                    if _prefetch is not None:
-                        if _prefetch.done():
-                            # Already finished — zero-cost read
-                            rag_context_block, rag_trace = _prefetch.result()
-                            logger.debug("[RAG] used prefetch result (done)")
-                        else:
-                            # Still running — wait with reduced timeout (most work already done)
-                            prefetch_wait_cap = float(
-                                getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18) or 0.18
-                            )
-                            rag_context_block, rag_trace = await asyncio.wait_for(
-                                asyncio.shield(_prefetch),
-                                timeout=_remaining_slowpath_budget(
-                                    min(max(0.05, prefetch_wait_cap), settings.RAG_RETRIEVAL_TIMEOUT_SEC)
-                                ),
-                            )
-                            logger.debug("[RAG] awaited in-flight prefetch")
-                    else:
-                        # No prefetch fired (e.g., very short utterance, final-only path)
-                        loop = asyncio.get_running_loop()
-
-                        def _build_rag():
-                            return build_rag_context_block_with_trace(
-                                user_text=user_text,
-                                tenant_id=tenant_uuid,
-                                agent_id=rag_agent_scope,
-                            )
-
-                        rag_context_block, rag_trace = await asyncio.wait_for(
-                            loop.run_in_executor(None, _build_rag),
-                            timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
-                        )
-                except asyncio.TimeoutError:
-                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                        user_text="",
-                        tenant_id=tenant_uuid,
-                        agent_id=rag_agent_scope,
-                    )
-                    rag_trace["status"] = "timeout"
-                    rag_trace["timeout"] = True
-                except Exception as e:
-                    logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
-                    rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                        user_text="",
-                        tenant_id=tenant_uuid,
-                        agent_id=rag_agent_scope,
-                    )
-                    rag_trace["status"] = "failure"
-                    rag_trace["error"] = str(e)
-
-            # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
-            # These are agent/tenant-level and don't change during the call, so serving
-            # them from cache costs 0ms versus the previous 50-200ms parallel executor fetch.
-            # Fall back to live fetch only if the cache background task hasn't finished yet
-            # (race on the very first turn of an extremely fast caller — rare in practice).
-            inbound_kb_docs_context_block = ""
-            if not low_latency_fastpath:
-                if self._kb_cache_ready:
-                    inbound_kb_docs_context_block = self._cached_inbound_kb_block
-                else:
-                    skip_live_kb = bool(
-                        getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
-                    )
-                    if skip_live_kb:
-                        logger.debug("[KB] cache cold; skipping live fetch for latency budget")
-                    else:
-                        # Cache not ready yet — live fetch as fallback.
-                        _loop = asyncio.get_running_loop()
-
-                        async def _fetch_inbound_kb_live() -> str:
-                            if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
-                                return ""
-                            try:
-                                return await _loop.run_in_executor(
-                                    None,
-                                    lambda: agent_service.build_inbound_kb_documents_context_block(
-                                        db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
-                                    ),
-                                )
-                            except Exception as exc:
-                                logger.warning("KB live-fetch (inbound) failed: %s", exc)
-                                return ""
-
-                        try:
-                            inbound_kb_docs_context_block = await asyncio.wait_for(
-                                _fetch_inbound_kb_live(),
-                                timeout=_remaining_slowpath_budget(0.25),
-                            )
-                        except asyncio.TimeoutError:
-                            logger.debug("[KB] live fetch timeout; continuing without live KB blocks")
-                        except Exception as exc:
-                            logger.debug("[KB] live fetch failed; continuing without live KB blocks: %s", exc)
-
-            # One-line RAG summary (safe: no chunk text, no secrets)
-            try:
-                logger.info(
-                    "RAG trace summary: status=%s timeout=%s initial=%s filtered=%s retrieve_error=%s",
-                    rag_trace.get("status"),
-                    rag_trace.get("timeout"),
-                    rag_trace.get("initial_retrieved_count"),
-                    rag_trace.get("filtered_count"),
-                    rag_trace.get("retrieve_error"),
-                )
-            except Exception:  # noqa: S110 - logging must never break voice calls
-                pass
-            
-            # Build history text from in-memory cache (avoids re-parsing the growing
-            # call_transcript JSON on every turn — O(n) JSON parse that gets slower
-            # as the call continues).  _conversation_history_cache is appended to
-            # directly by _add_to_transcript so it's always up-to-date.
-            # Fallback: if cache is empty but DB has a transcript, seed from DB once.
-            if not self._conversation_history_cache and self.call_session and self.call_session.call_transcript:
-                try:
-                    raw = self.call_session.call_transcript
-                    parsed = json.loads(raw) if isinstance(raw, str) else raw
-                    for msg in (parsed or []):
-                        if isinstance(msg, dict):
-                            role = msg.get("role", "")
-                            content = msg.get("content") or msg.get("message", "")
-                            mtype = msg.get("message_type", "")
-                            if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
-                                self._conversation_history_cache.append((role, content))
-                except Exception as exc:
-                    logger.debug("Failed to seed conversation history cache from DB transcript: %s", exc)
-
-            history_text = ""
-            if self._conversation_history_cache:
-                try:
-                    filtered = self._conversation_history_cache
-
-                    # Booking flows use a slightly wider window to keep service/date/slot
-                    # in context, but capped at 20 to avoid prompt bloat that inflates LLM TTFT.
-                    # (Previous default of 39 was adding ~1000 tokens to the prompt on long calls.)
-                    max_msgs = getattr(self, "HISTORY_MAX_MESSAGES", 50)
-                    if low_latency_fastpath:
-                        # Keep at least 12 on fast path — intake flows span 6+ phases and
-                        # cutting to 6 drops early context (name, issue, location already given),
-                        # causing the agent to re-ask questions the caller already answered.
-                        max_msgs = min(max_msgs, 60)
-                    if self._is_booking_context_active(user_text):
-                        max_msgs = min(max(max_msgs, 60), 60)
-                    if len(filtered) > max_msgs:
-                        filtered = filtered[-max_msgs:]
-
-                    history_text = "\n".join(
-                        f"{role.capitalize()}: {content}" for role, content in filtered
-                    )
-                except Exception:
-                    history_text = ""
-
-            if _use_vertex_llm:
-                history_text = (
-                    "(Prior conversation turns are provided separately — "
-                    "maintain continuity; do not re-ask answered questions.)"
-                )
-            
-            booking_memory_block = self._build_booking_memory_block()
-
-            # Build system prompt with agent personality + history
-            agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
-            agent_language = self.agent.language if self.agent and self.agent.language else "en"
-            v_add = ""
-            if self.call_session and self.call_session.call_metadata:
-                voice_ctx = self.call_session.call_metadata.get("voice_dynamic_context")
-                if isinstance(voice_ctx, dict):
-                    v_add = (voice_ctx.get("system_prompt_addendum") or "").strip()
-            v_block = (
-                f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n"
-                if v_add
-                else ""
-            )
-            tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
-            tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
-            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
-            if elevenlabs_audio_tags_enabled:
-                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
-                    get_elevenlabs_voice_prompt_rule_lines()
-                )
-            else:
-                output_plain_text_rule = (
-                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
-                    "Prosody is handled by the system."
-                )
-                no_ssml_rule_base = (
-                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-                )
-                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
-            # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
-            # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
-            # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
-            no_bracket_tags_line = (
-                ""
-                if elevenlabs_audio_tags_enabled
-                else (
-                    "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
-                    "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
-                    "will be read aloud literally."
-                )
-            )
-
-            # Inbound: opening may play once via TTS at pickup — do not instruct LLM to repeat verbatim on every "hi".
-            _inbound_call = (
-                self.call_session is not None
-                and (self.call_session.call_type or "").lower() == "inbound"
-            )
-            _has_opening_cfg = bool(self.agent) and (
-                (getattr(self.agent, "greeting_message", None) or "").strip()
-                or (getattr(self.agent, "first_message", None) or "").strip()
-            )
-            greeting_instruction_block = (
-                "\n- GREETING: A short opening may play once automatically at call start (inbound). "
-                "If the caller says hi, hello, or similar later, acknowledge in one brief phrase only — "
-                "do not repeat the full opening greeting verbatim.\n"
-                if (_inbound_call and _has_opening_cfg)
-                else ""
-            )
-
-            _recruitment_screening_block = ""
-            if self._jd_recruitment_screening_active():
-                _recruitment_screening_block = """
-# RECRUITMENT OUTBOUND SCREENING (THIS CALL — OVERRIDES CONFLICTING GENERIC RULES)
-- If the user says not interested, wrong number, wrong person, wrong call, not available, stop calling, or cannot do this now (clear no) — reply with ONE short polite sentence and end with [END_CALL] only. No follow-up questions. No persuasion.
-- Never ask a question that is already answered in "Previous conversation" above; move to the next step in YOUR ROLE block.
-- On successful completion of the full screening per YOUR ROLE block, your last reply must include [SCREENING_QUALIFIED] immediately before [END_CALL] as instructed there.
-- If an intro already played at call start, do not repeat the same full intro; continue the flow.
-"""
-
-            # No business facts source remains; always inject the "do not invent" guard
-            # so the LLM never fabricates business details.
-            _bk_block = (
-                "# AUTHORITATIVE BUSINESS FACTS\n"
-                "No verified business facts are loaded for this call.\n"
-                "CRITICAL: Do NOT invent or assume ANY business details (name, address, phone, "
-                "email, services, prices, hours, or any other specifics).\n"
-                "If the caller asks about the business, say that specific information is not "
-                "available to you right now and offer to help in another way."
-            )
-
-            if _use_vertex_llm:
-                from app.voice.llm_prompt_builder import build_kb_context_for_vertex
-
-                _vertex_kb_context = build_kb_context_for_vertex(
-                    inbound_kb_docs_context_block,
-                    "",
-                    empty_guard=_bk_block,
-                )
-                inbound_kb_docs_context_block = ""
-                _bk_block = (
-                    "# AUTHORITATIVE BUSINESS FACTS\n"
-                    "Business facts and inbound documents are attached as knowledge context "
-                    "with each user message — apply grounding rules using that context.\n"
-                )
-
-            # Base prompt for phone conversations (voice-first, plain text only, no SSML)
-            base_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call with a human.
-{v_block}
-# STYLE & TONE
-- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- CONCISE: Max 20 words per response unless explaining something complex.
-- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-{output_plain_text_rule}
-{no_bracket_tags_line}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-{booking_memory_block}
-{rag_context_block}
-{inbound_kb_docs_context_block}
-{_recruitment_screening_block}
-# CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
-2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
-3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
-4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-5. BUSINESS FACTS: For any question about the business name, address, phone, email, website, services, or pricing — answer using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT; both are authoritative sources for this call regardless of where each appears in this prompt. Never say you don't know if the answer is there. Never invent details that are not written in either.
-6. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" inside AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If the caller asks for something we don't offer, politely decline and pivot to what we actually do.
-7. SERVICE AREA: If Service Areas are listed and restricted and the caller is outside them, apologize, briefly name the areas we cover, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
-{no_ssml_rule_base}
-
-{elevenlabs_audio_tag_block}
-
-{_bk_block}
-# GOAL
-Continue the conversation based on the history above. Be {agent_name}."""
-
-            # A/B prompt testing: variant + resolved prompt text are locked onto
-            # call_metadata at dispatch time (see ab_testing_service) and never
-            # re-resolved mid-call, so the same variant is used for the whole call.
-            ab_prompt_override = None
-            if self.call_session and self.call_session.call_metadata:
-                ab_prompt_override = self.call_session.call_metadata.get("ab_prompt_text")
-
-            # Use agent's custom system prompt if available, otherwise use base prompt
-            if self.agent and self.agent.system_prompt:
-                # Agent has custom system prompt - grounding rules placed BEFORE custom
-                # instructions so factual constraints cannot be overridden by agent config.
-                effective_custom_prompt = ab_prompt_override or self.agent.system_prompt
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
-These rules override any conflicting custom instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
-2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
-3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
-4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-
-{_bk_block}
-
-# CUSTOM INSTRUCTIONS
-{effective_custom_prompt}
-{v_block}
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-{output_plain_text_rule}
-{no_bracket_tags_line}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-{booking_memory_block}
-{rag_context_block}
-{inbound_kb_docs_context_block}
-{_recruitment_screening_block}
-# CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
-2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
-3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-{no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
-
-# GOAL
-Follow your custom instructions. Continue from the history above. Be {agent_name}."""
-            elif self.agent and self.agent.model and self.agent.model.system_prompt:
-                # Model has system prompt - grounding rules placed BEFORE model instructions.
-                effective_model_prompt = ab_prompt_override or self.agent.model.system_prompt
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
-These rules override any conflicting model instructions below. Never deviate from them.
-1. BUSINESS FACTS: Answer questions about business name, address, phone, email, website, services, or pricing using AUTHORITATIVE BUSINESS FACTS and, when present in this prompt, KNOWLEDGE BASE CONTEXT — both are authoritative sources for this call regardless of where each appears in this prompt. Never invent or assume any detail not explicitly written in either. If a fact is absent from both, say it is not available.
-2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
-3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
-4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-
-{_bk_block}
-
-# MODEL INSTRUCTIONS
-{effective_model_prompt}
-{v_block}
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}
-{no_bracket_tags_line}{greeting_instruction_block}
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-{booking_memory_block}
-{rag_context_block}
-{inbound_kb_docs_context_block}
-# CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
-2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
-3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-{no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
-
-# GOAL
-Follow the model instructions. Continue from the history above. Be {agent_name}."""
-            else:
-                # Use base prompt
-                system_prompt = base_prompt
-
-            call_policy_block = agent_service.build_call_policy_block(
-                transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
-            )
-            if call_policy_block:
-                system_prompt = call_policy_block + "\n" + system_prompt
-
-            # Prepend current date/time so the agent knows what "today", "tomorrow",
-            # and "past slots" mean. Also injected into appointment booking flow.
-            _now_local = datetime.now(timezone.utc)
-            _now_str = _now_local.strftime("%A, %B %d, %Y at %I:%M %p UTC")
-            _user_signals = build_user_signals_block(turn_context)
-            system_prompt = (
-                f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
-                f"{_user_signals}\n\n"
-                + system_prompt
-            )
+            _sp_result = await self._build_system_prompt_full(user_text, confidence)
+            system_prompt = _sp_result.system_prompt
+            turn_context = _sp_result.turn_context
+            booking_intent_turn = _sp_result.booking_intent_turn
+            follow_up_active = _sp_result.follow_up_active
+            low_latency_fastpath = _sp_result.low_latency_fastpath
+            _vertex_kb_context = _sp_result.vertex_kb_context
+            _llm_runtime = _sp_result.llm_runtime
+            rag_trace = _sp_result.rag_trace
 
             # Model/provider/temperature resolved early for Vertex prompt shaping.
             model_name = _llm_runtime.model_name
