@@ -375,29 +375,12 @@ class TestTokenEncryption:
             decrypt_calendly_token("not-a-valid-ciphertext", MagicMock())
 
 
-# ── Gemini function-calling: function-response Content wrapping ────────────────
-# Regression test: appending a bare Part (instead of a Content(role="function", ...))
-# to `contents` crashes the Vertex SDK's content-conversion step the moment any
-# other Content object is present in the list.
-
-
-class TestGenerateWithToolsContentWrapping:
-    def test_function_response_is_wrapped_in_content_not_bare_part(self):
-        pytest.importorskip("vertexai")
-        from vertexai.generative_models import Content, Part
-        from vertexai.generative_models._generative_models import _content_types_to_gapic_contents
-
-        user_content = Content(role="user", parts=[Part.from_text("hi")])
-        model_content = Content(role="model", parts=[Part.from_text("calling tool")])
-        function_response_content = Content(
-            role="function",
-            parts=[Part.from_function_response(name="check_availability", response={"ok": True})],
-        )
-
-        # This is exactly the shape generate_with_tools() must build. A bare
-        # Part in this list (instead of wrapping it in Content) raises
-        # AttributeError here.
-        result = _content_types_to_gapic_contents(
-            [user_content, model_content, function_response_content]
-        )
-        assert len(result) == 3
+# Note: function-response Content-wrapping coverage for
+# VertexGeminiService.generate_with_tools() (the google-genai SDK path this
+# service actually uses) lives in tests/voice/test_vertex_llm.py — see
+# TestGenerateWithTools there. This file previously had a regression test
+# here (TestGenerateWithToolsContentWrapping) that exercised the OLD
+# `vertexai.generative_models` SDK directly via
+# `pytest.importorskip("vertexai")`, but vertex_gemini_service.py no longer
+# imports that SDK at all (migrated to google.genai) — it was testing dead
+# code and was removed rather than left as false confidence.

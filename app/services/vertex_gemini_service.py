@@ -1,8 +1,12 @@
 """
 Vertex AI Gemini LLM service for real-time voice calls.
 
-Uses google-cloud-aiplatform SDK + Application Default Credentials (ADC).
+Uses the google-genai SDK (vertexai=True) + Application Default Credentials (ADC).
 Never requires a per-model api_key — auth is via GOOGLE_APPLICATION_CREDENTIALS.
+
+Migrated off ``vertexai.generative_models`` (deprecated 2025-06-24, removal date
+already passed as of this writing) to ``google.genai`` per Google's official
+migration guide.
 """
 
 from __future__ import annotations
@@ -18,18 +22,23 @@ from app.core.logger import logger
 from app.voice.llm_prompt_builder import build_vertex_contents
 
 # Lazily imported so tests can patch before import resolution.
-_vertex_init_lock = threading.Lock()
-_vertexai_initialized = False
+_vertex_client_lock = threading.Lock()
+_vertex_client = None
 
 
-def _ensure_vertex_init() -> None:
-    global _vertexai_initialized
-    if _vertexai_initialized:
-        return
-    with _vertex_init_lock:
-        if _vertexai_initialized:
-            return
-        import vertexai
+def _ensure_vertex_client():
+    """
+    Lazily build (once) and return the shared google.genai Client, configured
+    for Vertex AI + ADC. Thread-safe double-checked locking, mirroring the old
+    _ensure_vertex_init() singleton pattern.
+    """
+    global _vertex_client
+    if _vertex_client is not None:
+        return _vertex_client
+    with _vertex_client_lock:
+        if _vertex_client is not None:
+            return _vertex_client
+        from google import genai
 
         project = settings.GOOGLE_CLOUD_PROJECT_ID or settings.GCP_PROJECT_ID
         location = settings.VERTEX_AI_LOCATION
@@ -37,8 +46,8 @@ def _ensure_vertex_init() -> None:
             raise RuntimeError(
                 "Vertex AI requires GOOGLE_CLOUD_PROJECT_ID or GCP_PROJECT_ID in config."
             )
-        vertexai.init(project=project, location=location)
-        _vertexai_initialized = True
+        _vertex_client = genai.Client(vertexai=True, project=project, location=location)
+        return _vertex_client
 
 
 class VertexLlmErrorType(str, enum.Enum):
@@ -58,17 +67,18 @@ def _classify_vertex_error(exc: Exception) -> VertexLlmError:
     name = type(exc).__name__
     msg = str(exc)
 
-    # Match against google.api_core exception types when the package is available.
-    # Catch TypeError as a defensive measure: google.api_core's custom metaclass
-    # (_GoogleAPICallErrorMeta) can raise TypeError on isinstance() in some
-    # Python/test-runner environments when the class identity is ambiguous.
+    # Match against google.genai.errors.APIError (base for ClientError/ServerError)
+    # when the package is available — mirrors the old google.api_core matching.
     try:
-        from google.api_core.exceptions import DeadlineExceeded, ResourceExhausted
+        from google.genai import errors as genai_errors
 
-        if isinstance(exc, ResourceExhausted):
-            return VertexLlmError(f"Vertex quota exceeded: {msg}", VertexLlmErrorType.QUOTA)
-        if isinstance(exc, DeadlineExceeded):
-            return VertexLlmError(f"Vertex deadline exceeded: {msg}", VertexLlmErrorType.TIMEOUT)
+        if isinstance(exc, genai_errors.APIError):
+            code = getattr(exc, "code", None)
+            status = (getattr(exc, "status", None) or "").upper()
+            if code == 429 or status == "RESOURCE_EXHAUSTED":
+                return VertexLlmError(f"Vertex quota exceeded: {msg}", VertexLlmErrorType.QUOTA)
+            if code in (504, 408) or status == "DEADLINE_EXCEEDED":
+                return VertexLlmError(f"Vertex deadline exceeded: {msg}", VertexLlmErrorType.TIMEOUT)
     except (ImportError, TypeError):
         pass
 
@@ -87,12 +97,12 @@ def _build_calendly_tool():
     Gemini FunctionDeclarations for the Calendly booking flow:
       - check_availability(date): list bookable slots
       - book_appointment(slot, attendee_email): schedule on Calendly
-    Lazily imported so environments without google-cloud-aiplatform installed
+    Lazily imported so environments without google-genai installed
     can still import this module (matches the rest of this file's pattern).
     """
-    from vertexai.generative_models import FunctionDeclaration, Tool
+    from google.genai import types
 
-    check_availability = FunctionDeclaration(
+    check_availability = types.FunctionDeclaration(
         name="check_availability",
         description=(
             "Check available appointment slots on the connected Calendly calendar. "
@@ -110,7 +120,7 @@ def _build_calendly_tool():
             "required": ["date"],
         },
     )
-    book_appointment = FunctionDeclaration(
+    book_appointment = types.FunctionDeclaration(
         name="book_appointment",
         description="Schedule an appointment on Calendly for a previously offered slot.",
         parameters={
@@ -128,12 +138,28 @@ def _build_calendly_tool():
             "required": ["slot", "attendee_email"],
         },
     )
-    return Tool(function_declarations=[check_availability, book_appointment])
+    return types.Tool(function_declarations=[check_availability, book_appointment])
+
+
+def _extract_finish_reason_error(response) -> VertexLlmError | None:
+    """Inspect candidate finish_reason for content-filter blocks. Returns None if clean."""
+    try:
+        candidates = getattr(response, "candidates", None) or []
+        if candidates:
+            finish = getattr(candidates[0], "finish_reason", None)
+            if finish and str(finish) not in ("STOP", "MAX_TOKENS", "1", "2"):
+                return VertexLlmError(
+                    f"Vertex content blocked: finish_reason={finish}",
+                    VertexLlmErrorType.CONTENT_FILTER,
+                )
+    except Exception as exc:
+        logger.debug("[VertexGemini] finish_reason inspection failed: %s", exc)
+    return None
 
 
 class VertexGeminiService:
     """
-    Singleton service that streams Gemini 2.5 Flash responses via Vertex AI.
+    Singleton service that streams Gemini responses via Vertex AI (google-genai SDK).
 
     Auth: Application Default Credentials — never reads model.api_key.
     """
@@ -158,47 +184,36 @@ class VertexGeminiService:
         Raises VertexLlmError on quota/timeout/filter failures (caller maps to fallback).
         """
         try:
-            _ensure_vertex_init()
+            client = _ensure_vertex_client()
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
         try:
-            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            from google.genai import types
         except ImportError as exc:
             raise VertexLlmError(
-                "google-cloud-aiplatform is not installed. Add it to requirements.txt.",
+                "google-genai is not installed. Add it to requirements.txt.",
                 VertexLlmErrorType.UNKNOWN,
             ) from exc
-
-        # Build model with system_instruction (never log full prompt).
-        model_kwargs: dict = {}
-        if system_prompt:
-            model_kwargs["system_instruction"] = system_prompt
-
-        model = GenerativeModel(
-            model_name=model_name,
-            **model_kwargs,
-        )
 
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
         contents = build_vertex_contents(
             conversation_history, prompt, kb_context, max_turns=max_turns
         )
 
-        generation_config = GenerationConfig(
-            temperature=float(temperature),
-            max_output_tokens=int(max_tokens),
-        )
+        config_kwargs: dict = {
+            "temperature": float(temperature),
+            "max_output_tokens": int(max_tokens),
+        }
+        if system_prompt:
+            config_kwargs["system_instruction"] = system_prompt
+        generation_config = types.GenerateContentConfig(**config_kwargs)
 
-        # Use the async SDK method so chunks are yielded as they arrive without
-        # blocking the event loop.  The sync generate_content() path runs its
-        # entire HTTP round-trip inside asyncio.to_thread and only returns after
-        # ALL tokens are buffered — effectively disabling streaming.
         try:
-            response_stream = await model.generate_content_async(
-                contents,
-                generation_config=generation_config,
-                stream=True,
+            response_stream = await client.aio.models.generate_content_stream(
+                model=model_name,
+                contents=contents,
+                config=generation_config,
             )
             async for response in response_stream:
                 # Honour barge-in / interruption cancel
@@ -210,19 +225,9 @@ class VertexGeminiService:
                     text = response.text
                 except Exception:
                     # Candidate may be blocked or empty (content filter)
-                    try:
-                        candidates = getattr(response, "candidates", [])
-                        if candidates:
-                            finish = getattr(candidates[0], "finish_reason", None)
-                            if finish and str(finish) not in ("STOP", "MAX_TOKENS", "1", "2"):
-                                raise VertexLlmError(
-                                    f"Vertex content blocked: finish_reason={finish}",
-                                    VertexLlmErrorType.CONTENT_FILTER,
-                                )
-                    except VertexLlmError:
-                        raise
-                    except Exception as exc:
-                        logger.debug("[VertexGemini] finish_reason inspection failed: %s", exc)
+                    filter_err = _extract_finish_reason_error(response)
+                    if filter_err is not None:
+                        raise filter_err
                     continue
 
                 if text:
@@ -249,38 +254,40 @@ class VertexGeminiService:
 
         If the model returns a function_call part, ``tool_executor(name, args)``
         is awaited to resolve it, the result is fed back as a
-        ``Part.from_function_response``, and generation resumes so the model
+        ``types.Part.from_function_response``, and generation resumes so the model
         can produce the final spoken reply. Returns the final text (never a
         raw function-call JSON blob).
         """
         try:
-            _ensure_vertex_init()
+            client = _ensure_vertex_client()
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
         try:
-            from vertexai.generative_models import GenerativeModel, GenerationConfig, Content, Part
+            from google.genai import types
         except ImportError as exc:
             raise VertexLlmError(
-                "google-cloud-aiplatform is not installed. Add it to requirements.txt.",
+                "google-genai is not installed. Add it to requirements.txt.",
                 VertexLlmErrorType.UNKNOWN,
             ) from exc
 
-        model_kwargs: dict = {"tools": [_build_calendly_tool()]}
+        config_kwargs: dict = {
+            "temperature": float(temperature),
+            "max_output_tokens": int(max_tokens),
+            "tools": [_build_calendly_tool()],
+        }
         if system_prompt:
-            model_kwargs["system_instruction"] = system_prompt
-
-        model = GenerativeModel(model_name=model_name, **model_kwargs)
+            config_kwargs["system_instruction"] = system_prompt
+        generation_config = types.GenerateContentConfig(**config_kwargs)
 
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
         contents = build_vertex_contents(conversation_history, prompt, None, max_turns=max_turns)
-        generation_config = GenerationConfig(
-            temperature=float(temperature), max_output_tokens=int(max_tokens)
-        )
 
         try:
-            response = await model.generate_content_async(
-                contents, generation_config=generation_config
+            response = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=generation_config,
             )
 
             candidate = response.candidates[0] if response.candidates else None
@@ -299,14 +306,19 @@ class VertexGeminiService:
 
             contents.append(candidate.content)
             contents.append(
-                Content(
-                    role="function",
-                    parts=[Part.from_function_response(name=fc_name, response=tool_result)],
+                # google.genai's own automatic-function-calling loop builds this turn
+                # with role="user" (not "function" — that was the old vertexai SDK's
+                # convention). See google.genai.models.Models._generate_content_afc.
+                types.Content(
+                    role="user",
+                    parts=[types.Part.from_function_response(name=fc_name, response=tool_result)],
                 )
             )
 
-            follow_up = await model.generate_content_async(
-                contents, generation_config=generation_config
+            follow_up = await client.aio.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=generation_config,
             )
             return (follow_up.text or "").strip()
         except VertexLlmError:
@@ -332,39 +344,36 @@ class VertexGeminiService:
         del api_key  # Vertex uses ADC only
         start_time = time.time()
         try:
-            _ensure_vertex_init()
+            client = _ensure_vertex_client()
         except Exception as exc:
             raise VertexLlmError(f"Vertex init failed: {exc}", VertexLlmErrorType.UNKNOWN) from exc
 
         try:
-            from vertexai.generative_models import GenerativeModel, GenerationConfig
+            from google.genai import types
         except ImportError as exc:
             raise VertexLlmError(
-                "google-cloud-aiplatform is not installed.",
+                "google-genai is not installed.",
                 VertexLlmErrorType.UNKNOWN,
             ) from exc
 
-        model_kwargs: dict = {}
+        config_kwargs: dict = {
+            "temperature": float(temperature),
+            "max_output_tokens": int(max_tokens),
+        }
         if system_prompt:
-            model_kwargs["system_instruction"] = system_prompt
+            config_kwargs["system_instruction"] = system_prompt
+        generation_config = types.GenerateContentConfig(**config_kwargs)
 
-        model = GenerativeModel(
-            model_name=model_name,
-            **model_kwargs,
-        )
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
         contents = build_vertex_contents(
             conversation_history, prompt, kb_context, max_turns=max_turns
         )
-        generation_config = GenerationConfig(
-            temperature=float(temperature),
-            max_output_tokens=int(max_tokens),
-        )
 
         try:
-            response = model.generate_content(
-                contents,
-                generation_config=generation_config,
+            response = client.models.generate_content(
+                model=model_name,
+                contents=contents,
+                config=generation_config,
             )
             response_text = (response.text or "").strip()
         except Exception as exc:
