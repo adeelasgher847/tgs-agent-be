@@ -157,8 +157,13 @@ class GroqService:
                 if chunk.choices[0].delta.content is not None:
                     yield chunk.choices[0].delta.content
 
-        except Exception as e:
-            raise Exception(f"Error in Groq streaming: {str(e)}")
+        except Exception:
+            # Re-raise as-is rather than wrapping in a bare Exception — SDK
+            # errors (openai.RateLimitError, AuthenticationError, etc.) carry
+            # structured data (status code, headers, retry-after) that retry
+            # logic higher in the stack may need to inspect, and wrapping
+            # would destroy that type information.
+            raise
     
     def chat_completion(self, messages: List[Dict[str, str]], 
                        system_prompt: str = None, 

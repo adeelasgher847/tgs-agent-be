@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import time
 
 from app.core.config import settings
@@ -86,8 +85,20 @@ async def warm_embedding_client() -> None:
         return
     t0 = time.perf_counter()
     try:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, embed_text_for_rag, "warmup")
+        # Use the async client directly rather than running the sync
+        # embed_text_for_rag() in a thread-pool executor: openai_service's
+        # cached sync client wraps a single httpx.Client, which is not
+        # thread-safe for concurrent use. The warm-up itself is a single
+        # one-shot call so it was benign today, but routing it through
+        # run_in_executor established a pattern that would silently become
+        # unsafe if this ever ran concurrently with other executor-thread
+        # embedding calls. The async client has no such constraint.
+        from app.services.openai_service import openai_service
+
+        client = openai_service.get_async_client()
+        await client.embeddings.create(
+            model=settings.RAG_EMBEDDING_MODEL, input="warmup"
+        )
         logger.info(
             "kb_retrieval embedding client warm-up complete in %.1fms",
             (time.perf_counter() - t0) * 1000,

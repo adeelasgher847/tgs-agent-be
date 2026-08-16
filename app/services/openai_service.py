@@ -98,7 +98,9 @@ def _is_reasoning_model(model_name: str) -> bool:
     return (model_name or "").strip().lower().startswith(_REASONING_MODEL_PREFIX)
 
 
-def _completion_params(model_name: str, temperature: float, max_tokens: int) -> Dict[str, Any]:
+def _completion_params(
+    model_name: str, temperature: float, max_tokens: int | None
+) -> Dict[str, Any]:
     """Build the model/temperature/max-tokens kwargs for a Chat Completions call.
 
     Isolated here so all OpenAI call sites in this service (streaming and
@@ -107,7 +109,10 @@ def _completion_params(model_name: str, temperature: float, max_tokens: int) -> 
     if _is_reasoning_model(model_name):
         # temperature intentionally omitted: gpt-5.x rejects/ignores non-default
         # temperature on Chat Completions.
-        floored_max_tokens = max(int(max_tokens or 0), _REASONING_MODEL_MIN_COMPLETION_TOKENS)
+        if max_tokens is not None and int(max_tokens) > 0:
+            floored_max_tokens = max(int(max_tokens), _REASONING_MODEL_MIN_COMPLETION_TOKENS)
+        else:
+            floored_max_tokens = _REASONING_MODEL_MIN_COMPLETION_TOKENS
         params: Dict[str, Any] = {
             "model": model_name,
             "max_completion_tokens": floored_max_tokens,
@@ -330,8 +335,13 @@ class OpenAIService:
                 if chunk.choices[0].delta.content is not None:
                     yield chunk.choices[0].delta.content
 
-        except Exception as e:
-            raise Exception(f"Error in OpenAI streaming: {str(e)}")
+        except Exception:
+            # Re-raise as-is rather than wrapping in a bare Exception — SDK
+            # errors (openai.RateLimitError, AuthenticationError, etc.) carry
+            # structured data (status code, headers, retry-after) that retry
+            # logic higher in the stack may need to inspect, and wrapping
+            # would destroy that type information.
+            raise
     
     def text_to_speech(self, text: str, voice: str = "alloy", 
                       model: str = "tts-1", output_format: str = "mp3",
