@@ -877,12 +877,17 @@ class Settings(BaseSettings):
     # LiveKit/browser-call path (kb_retrieval_service via ConversationOrchestrator)
     # budget — distinct from RAG_RETRIEVAL_TIMEOUT_SEC (Twilio's bidirectional_stream
     # path) so tuning one never silently changes the other's latency contract.
-    # Observed embedding+vector-search samples were 271-450ms; 450ms left ~0ms
-    # margin and caused frequent false-positive timeouts (falling back to "no KB
-    # context" even when a result was about to arrive). 700ms keeps meaningful
-    # headroom over the observed p_max while staying well under ~1s, the point at
-    # which voice-call silence becomes perceptible to callers.
-    RAG_KB_RETRIEVAL_TIMEOUT_SEC: float = 0.7
+    # Originally set to 0.7s from local/CI samples of 271-450ms. Production
+    # diagnostics on the live EC2 deployment (2026-08-16) showed this environment's
+    # actual baseline round-trip + inference time to OpenAI's /v1/embeddings
+    # endpoint is itself 270-510ms with real variance (confirmed via raw httpx
+    # calls bypassing app code entirely), leaving ~0ms margin at 0.7s and causing
+    # frequent false-positive timeouts — KB context dropped even when a result was
+    # about to arrive. Raised to 1.2s to give this real-world baseline enough
+    # headroom while staying under the ~1.5-2s range where voice-call silence
+    # becomes clearly perceptible to callers. Revisit if p95 KB latency data
+    # (once available) suggests a tighter or looser value.
+    RAG_KB_RETRIEVAL_TIMEOUT_SEC: float = 1.2
     # Slow-path budget: cap cumulative waits for RAG/KB on a turn.
     VOICE_SLOWPATH_BUDGET_SEC: float = 0.55
     # How long we wait for an in-flight RAG prefetch before failing open.
