@@ -441,6 +441,204 @@ class TestModelToLocationRoutingEndToEnd:
         mock_ensure.assert_called_once_with(expected_location)
 
 
+class TestThinkingConfigRouting:
+    """
+    _THINKING_LEVEL_BY_MODEL pins an explicit ``thinking_config`` for the
+    Gemini 3 family (latency-sensitive real-time voice). Confirms the
+    ``config`` object actually passed to the underlying
+    ``generate_content``/``generate_content_stream`` call carries the right
+    ``thinking_config.thinking_level`` for mapped models, and — the more
+    important regression guard — that unmapped models (e.g.
+    ``gemini-2.5-flash``) get no ``thinking_config`` at all, i.e.
+    ``config.thinking_config is None``.
+
+    Uses ``_real_google_genai()`` (see top of file) rather than the
+    conftest-stubbed MagicMock ``google.genai``, because a MagicMock
+    ``types.GenerateContentConfig(**kwargs)`` call wouldn't actually store
+    ``kwargs`` as inspectable attributes on its return value — only the real
+    ``GenerateContentConfig``/``ThinkingConfig`` objects let us assert on the
+    real field values the SDK will see.
+    """
+
+    @pytest.mark.parametrize(
+        "model_name,expected_level",
+        [
+            ("gemini-3-flash-preview", "MINIMAL"),
+            ("gemini-3.1-flash-lite", "MINIMAL"),
+        ],
+    )
+    def test_stream_text_sets_thinking_config_for_mapped_models(self, model_name, expected_level):
+        with _real_google_genai():
+            mock_stream = AsyncMock(return_value=_async_fake_response_iter(["ok"]))
+            client = _make_mock_genai_client(stream=mock_stream)
+
+            async def _run():
+                with (
+                    patch(
+                        "app.services.vertex_gemini_service._ensure_vertex_client",
+                        return_value=client,
+                    ),
+                    patch(
+                        "app.services.vertex_gemini_service.build_vertex_contents",
+                        return_value=[],
+                    ),
+                ):
+                    svc = VertexGeminiService()
+                    async for _ in svc.stream_text(prompt="hi", model_name=model_name):
+                        pass
+
+            asyncio.run(_run())
+
+        config = mock_stream.call_args.kwargs["config"]
+        assert config.thinking_config is not None
+        assert config.thinking_config.thinking_level == expected_level
+
+    def test_stream_text_no_thinking_config_for_unmapped_model(self):
+        """gemini-2.5-flash is not in _THINKING_LEVEL_BY_MODEL — config must
+        stay byte-for-byte unchanged (no thinking_config key at all)."""
+        with _real_google_genai():
+            mock_stream = AsyncMock(return_value=_async_fake_response_iter(["ok"]))
+            client = _make_mock_genai_client(stream=mock_stream)
+
+            async def _run():
+                with (
+                    patch(
+                        "app.services.vertex_gemini_service._ensure_vertex_client",
+                        return_value=client,
+                    ),
+                    patch(
+                        "app.services.vertex_gemini_service.build_vertex_contents",
+                        return_value=[],
+                    ),
+                ):
+                    svc = VertexGeminiService()
+                    async for _ in svc.stream_text(prompt="hi", model_name="gemini-2.5-flash"):
+                        pass
+
+            asyncio.run(_run())
+
+        config = mock_stream.call_args.kwargs["config"]
+        assert config.thinking_config is None
+
+    @pytest.mark.parametrize(
+        "model_name,expected_level",
+        [
+            ("gemini-3-flash-preview", "MINIMAL"),
+            ("gemini-3.1-flash-lite", "MINIMAL"),
+        ],
+    )
+    def test_generate_text_sets_thinking_config_for_mapped_models(self, model_name, expected_level):
+        with _real_google_genai():
+            mock_response = SimpleNamespace(text="Hello")
+            mock_generate = MagicMock(return_value=mock_response)
+            client = _make_mock_genai_client(generate=mock_generate)
+
+            with (
+                patch(
+                    "app.services.vertex_gemini_service._ensure_vertex_client",
+                    return_value=client,
+                ),
+                patch(
+                    "app.services.vertex_gemini_service.build_vertex_contents",
+                    return_value=[],
+                ),
+            ):
+                svc = VertexGeminiService()
+                svc.generate_text(prompt="hi", model_name=model_name)
+
+        config = mock_generate.call_args.kwargs["config"]
+        assert config.thinking_config is not None
+        assert config.thinking_config.thinking_level == expected_level
+
+    def test_generate_text_no_thinking_config_for_unmapped_model(self):
+        with _real_google_genai():
+            mock_response = SimpleNamespace(text="Hello")
+            mock_generate = MagicMock(return_value=mock_response)
+            client = _make_mock_genai_client(generate=mock_generate)
+
+            with (
+                patch(
+                    "app.services.vertex_gemini_service._ensure_vertex_client",
+                    return_value=client,
+                ),
+                patch(
+                    "app.services.vertex_gemini_service.build_vertex_contents",
+                    return_value=[],
+                ),
+            ):
+                svc = VertexGeminiService()
+                svc.generate_text(prompt="hi", model_name="gemini-2.5-flash")
+
+        config = mock_generate.call_args.kwargs["config"]
+        assert config.thinking_config is None
+
+    @pytest.mark.parametrize(
+        "model_name,expected_level",
+        [
+            ("gemini-3-flash-preview", "MINIMAL"),
+            ("gemini-3.1-flash-lite", "MINIMAL"),
+        ],
+    )
+    def test_generate_with_tools_sets_thinking_config_for_mapped_models(
+        self, model_name, expected_level
+    ):
+        with _real_google_genai():
+            response = SimpleNamespace(text="Hi there", candidates=[])
+            async_generate = AsyncMock(return_value=response)
+            client = _make_mock_genai_client(async_generate=async_generate)
+            tool_executor = AsyncMock()
+
+            async def _run():
+                with (
+                    patch(
+                        "app.services.vertex_gemini_service._ensure_vertex_client",
+                        return_value=client,
+                    ),
+                    patch(
+                        "app.services.vertex_gemini_service.build_vertex_contents",
+                        return_value=[],
+                    ),
+                ):
+                    svc = VertexGeminiService()
+                    return await svc.generate_with_tools(
+                        prompt="hi", model_name=model_name, tool_executor=tool_executor
+                    )
+
+            asyncio.run(_run())
+
+        config = async_generate.call_args.kwargs["config"]
+        assert config.thinking_config is not None
+        assert config.thinking_config.thinking_level == expected_level
+
+    def test_generate_with_tools_no_thinking_config_for_unmapped_model(self):
+        with _real_google_genai():
+            response = SimpleNamespace(text="Hi there", candidates=[])
+            async_generate = AsyncMock(return_value=response)
+            client = _make_mock_genai_client(async_generate=async_generate)
+            tool_executor = AsyncMock()
+
+            async def _run():
+                with (
+                    patch(
+                        "app.services.vertex_gemini_service._ensure_vertex_client",
+                        return_value=client,
+                    ),
+                    patch(
+                        "app.services.vertex_gemini_service.build_vertex_contents",
+                        return_value=[],
+                    ),
+                ):
+                    svc = VertexGeminiService()
+                    return await svc.generate_with_tools(
+                        prompt="hi", model_name="gemini-2.5-flash", tool_executor=tool_executor
+                    )
+
+            asyncio.run(_run())
+
+        config = async_generate.call_args.kwargs["config"]
+        assert config.thinking_config is None
+
+
 def _fake_response_iter(texts: list[str]):
     """Return sync iterator of fake Vertex response chunks."""
     class _FakeChunk:

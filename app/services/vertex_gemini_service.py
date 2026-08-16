@@ -36,6 +36,31 @@ _GLOBAL_ONLY_MODELS: set[str] = {
     "gemini-3.1-flash-lite",
 }
 
+# Gemini 3-family "thinking" budget, capped for real-time voice latency.
+# ``gemini-3-flash-preview`` defaults to thinking_level="high" when unset per
+# Google's docs — too slow for a live phone call (extra round-trip before the
+# first spoken word). MUST be "minimal", not "low": thinking tokens are
+# deducted from max_output_tokens on this model, and this service's callers
+# use small voice-turn budgets (max_tokens=100 for stream_text/generate_text,
+# 200 for generate_with_tools). Verified against the live API: at "low",
+# max_tokens=60 produced 57 thinking tokens and ZERO visible text
+# (finish_reason=MAX_TOKENS, empty response — the caller would go silent
+# mid-call); even max_tokens=100 left only 4 tokens for actual output. At
+# "minimal", thinking is negligible (thoughts_token_count=None) and the full
+# answer is reliably produced well within a 60-100 token budget. Do not
+# change this to "low"/"medium"/"high" without also verifying against the
+# live API that it still fits this service's max_tokens defaults.
+# ``gemini-3.1-flash-lite`` already defaults to "minimal", but is pinned
+# explicitly here for the same reason this repo already pins
+# ``reasoning_effort`` for GPT-5 models (see _REASONING_EFFORT_BY_MODEL in
+# openai_service.py) rather than relying on an implicit provider default that
+# could change. Models not listed here (e.g. gemini-2.5-flash) get no
+# thinking_config at all — unconfigured, unchanged.
+_THINKING_LEVEL_BY_MODEL: dict[str, str] = {
+    "gemini-3-flash-preview": "MINIMAL",
+    "gemini-3.1-flash-lite": "MINIMAL",
+}
+
 
 def _location_for_model(model_name: str) -> str:
     """
@@ -232,6 +257,9 @@ class VertexGeminiService:
         }
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt
+        thinking_level = _THINKING_LEVEL_BY_MODEL.get(model_name)
+        if thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
         generation_config = types.GenerateContentConfig(**config_kwargs)
 
         try:
@@ -303,6 +331,9 @@ class VertexGeminiService:
         }
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt
+        thinking_level = _THINKING_LEVEL_BY_MODEL.get(model_name)
+        if thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
         generation_config = types.GenerateContentConfig(**config_kwargs)
 
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
@@ -387,6 +418,9 @@ class VertexGeminiService:
         }
         if system_prompt:
             config_kwargs["system_instruction"] = system_prompt
+        thinking_level = _THINKING_LEVEL_BY_MODEL.get(model_name)
+        if thinking_level:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=thinking_level)
         generation_config = types.GenerateContentConfig(**config_kwargs)
 
         max_turns = getattr(settings, "VOICE_LLM_HISTORY_MAX_TURNS", 20)
