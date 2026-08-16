@@ -40,6 +40,59 @@ _REASONING_MODEL_PREFIX = "gpt-5"
 # unchanged (see _is_reasoning_model below).
 _REASONING_MODEL_MIN_COMPLETION_TOKENS = 1500
 
+# Explicit `reasoning_effort` per exact gpt-5-family model name.
+#
+# WHY THIS EXISTS (evidence, not a name-based assumption): until this change,
+# no code path in this repo ever set `reasoning_effort`, so every gpt-5.x
+# call ran on OpenAI's *implicit* server-side default. The OpenAI Python SDK
+# installed in this repo's venv (openai==2.36.0) ships the following as the
+# generated docstring for `reasoning_effort` on
+# `openai.types.chat.completion_create_params.CompletionCreateParamsBase`
+# (i.e. this is OpenAI's own documentation, not a guess):
+#
+#   "Currently supported values are `none`, `minimal`, `low`, `medium`,
+#    `high`, and `xhigh`. ... `gpt-5.1` defaults to `none`, which does not
+#    perform reasoning. The supported reasoning values for `gpt-5.1` are
+#    `none`, `low`, `medium`, and `high`. ... All models before `gpt-5.1`
+#    default to `medium` reasoning effort, and do not support `none`."
+#
+# That means `gpt-5` and `gpt-5-mini` (both "before gpt-5.1") have been
+# silently running real `medium`-effort reasoning on every single voice-agent
+# turn — a real, mechanistic explanation for BOTH the reported latency
+# ("gpt-5 shows noticeably higher latency") and the reported KB-grounding
+# unreliability (a model given room to reason at length before answering can
+# paraphrase/generalize/synthesize away from literal injected KB text rather
+# than directly grounding to it, instead of the fast, direct instruction-
+# following a short conversational voice turn needs). `gpt-5.1`/`gpt-5.2`/
+# `gpt-5.4` already default to `none` (no reasoning) when the param is
+# omitted per the same evidence plus their individual model-docs pages
+# (developers.openai.com/api/docs/models/<id>) — so making that `none`
+# explicit here does not change their current behavior, only removes
+# reliance on an implicit default that OpenAI could change later.
+#
+# Values chosen for gpt-5 / gpt-5-mini: `low`, not the more aggressive
+# `minimal` — deliberately conservative. Both `minimal` and `low` are
+# confirmed-valid per the SDK docstring above, and `minimal` would shave
+# more latency, but this agent also relies on gpt-5.x for strict
+# instruction-following beyond KB lookup (call-flow logic, transfer/booking/
+# end-call control tokens) that was never live-tested here (no working
+# OpenAI API credits were available in this environment — see final report).
+# `low` meaningfully reduces reasoning depth from the problematic `medium`
+# default (addressing both latency and the drift hypothesis) while keeping
+# more headroom for that other instruction-following than `minimal` would,
+# to avoid risking an untested regression elsewhere for an untested gain.
+#
+# A gpt-5-family model name not present here (e.g. a future release) simply
+# gets no explicit `reasoning_effort` and falls back to server default —
+# the same behavior as before this change, never a crash or invalid value.
+_REASONING_EFFORT_BY_MODEL: Dict[str, str] = {
+    "gpt-5": "low",
+    "gpt-5-mini": "low",
+    "gpt-5.1": "none",
+    "gpt-5.2": "none",
+    "gpt-5.4": "none",
+}
+
 
 def _is_reasoning_model(model_name: str) -> bool:
     return (model_name or "").strip().lower().startswith(_REASONING_MODEL_PREFIX)
@@ -55,7 +108,14 @@ def _completion_params(model_name: str, temperature: float, max_tokens: int) -> 
         # temperature intentionally omitted: gpt-5.x rejects/ignores non-default
         # temperature on Chat Completions.
         floored_max_tokens = max(int(max_tokens or 0), _REASONING_MODEL_MIN_COMPLETION_TOKENS)
-        return {"model": model_name, "max_completion_tokens": floored_max_tokens}
+        params: Dict[str, Any] = {
+            "model": model_name,
+            "max_completion_tokens": floored_max_tokens,
+        }
+        effort = _REASONING_EFFORT_BY_MODEL.get((model_name or "").strip().lower())
+        if effort:
+            params["reasoning_effort"] = effort
+        return params
     return {"model": model_name, "temperature": temperature, "max_tokens": max_tokens}
 
 

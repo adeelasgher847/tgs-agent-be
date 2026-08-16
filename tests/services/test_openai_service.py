@@ -26,7 +26,14 @@ from app.services.openai_service import (
     OpenAIService,
     _completion_params,
     _is_reasoning_model,
+    _REASONING_EFFORT_BY_MODEL,
 )
+
+# The 8 OpenAI models this repo currently distinguishes for reasoning-effort
+# purposes: 3 non-reasoning + 5 gpt-5-family reasoning models.
+_NON_REASONING_MODELS = ["gpt-4o-mini", "gpt-4.1", "gpt-4.1-mini"]
+_REASONING_MODELS = ["gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"]
+_ALL_8_MODELS = _NON_REASONING_MODELS + _REASONING_MODELS
 
 
 # ─────────────────────────────────── _is_reasoning_model / _completion_params ──
@@ -53,9 +60,65 @@ def test_is_reasoning_model_false_for_existing_models(model_name):
 def test_completion_params_reasoning_model_omits_temperature(model_name):
     # max_tokens above the reasoning-model floor passes through unchanged.
     params = _completion_params(model_name, temperature=0.7, max_tokens=2500)
-    assert params == {"model": model_name, "max_completion_tokens": 2500}
+    assert params["model"] == model_name
+    assert params["max_completion_tokens"] == 2500
     assert "temperature" not in params
     assert "max_tokens" not in params
+
+
+# ─────────────────────────────── reasoning_effort (per exact gpt-5-family model) ──
+#
+# Values sourced from openai.types.chat.completion_create_params's own
+# generated docstring (openai==2.36.0, installed in this repo's venv):
+# "All models before gpt-5.1 default to `medium` reasoning effort, and do
+# not support `none`" -> gpt-5 / gpt-5-mini get an explicit "low" (never
+# "none" — confirmed unsupported for these two). gpt-5.1/5.2/5.4 already
+# default to "none" when omitted, made explicit here for the same set of
+# models per their individual docs pages.
+
+class TestReasoningEffortByModel:
+    @pytest.mark.parametrize("model_name", ["gpt-5", "gpt-5-mini"])
+    def test_pre_5_1_models_get_low_never_none(self, model_name):
+        """`none` is confirmed NOT a supported value for gpt-5 / gpt-5-mini
+        (SDK docstring: "do not support `none`") — must never be sent."""
+        params = _completion_params(model_name, temperature=0.7, max_tokens=2500)
+        assert params["reasoning_effort"] == "low"
+        assert params["reasoning_effort"] != "none"
+
+    @pytest.mark.parametrize("model_name", ["gpt-5.1", "gpt-5.2", "gpt-5.4"])
+    def test_5_1_and_later_models_get_explicit_none(self, model_name):
+        params = _completion_params(model_name, temperature=0.7, max_tokens=2500)
+        assert params["reasoning_effort"] == "none"
+
+    @pytest.mark.parametrize("model_name", _REASONING_MODELS)
+    def test_every_reasoning_model_gets_a_confirmed_valid_value(self, model_name):
+        """Never send a value outside the SDK-confirmed enum
+        {none, minimal, low, medium, high, xhigh}, and specifically never an
+        unsupported combination (e.g. `none` on pre-5.1 models)."""
+        params = _completion_params(model_name, temperature=0.7, max_tokens=2500)
+        confirmed_valid_values = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        assert params["reasoning_effort"] in confirmed_valid_values
+        if model_name in ("gpt-5", "gpt-5-mini"):
+            assert params["reasoning_effort"] != "none"
+
+    @pytest.mark.parametrize("model_name", _NON_REASONING_MODELS + ["gpt-4o", "gpt-4-turbo"])
+    def test_non_reasoning_models_never_get_reasoning_effort(self, model_name):
+        params = _completion_params(model_name, temperature=0.7, max_tokens=100)
+        assert "reasoning_effort" not in params
+
+    def test_unlisted_future_gpt5_model_gets_no_reasoning_effort_falls_back_to_default(self):
+        """A gpt-5-family model name not in the per-model table (e.g. a
+        hypothetical future release) must never crash or guess a value —
+        falls back to omitting the param entirely (server-side default)."""
+        params = _completion_params("gpt-5.9-hypothetical", temperature=0.7, max_tokens=2500)
+        assert "reasoning_effort" not in params
+        assert params["max_completion_tokens"] == 2500  # still gets reasoning-model handling
+
+    def test_reasoning_effort_table_only_contains_confirmed_valid_values(self):
+        confirmed_valid_values = {"none", "minimal", "low", "medium", "high", "xhigh"}
+        assert set(_REASONING_EFFORT_BY_MODEL.values()) <= confirmed_valid_values
+        assert _REASONING_EFFORT_BY_MODEL["gpt-5"] != "none"
+        assert _REASONING_EFFORT_BY_MODEL["gpt-5-mini"] != "none"
 
 
 @pytest.mark.parametrize(
@@ -221,6 +284,45 @@ async def test_stream_text_yields_chunks_in_order():
         chunks = [c async for c in service.stream_text("hi", model_name="gpt-4o-mini")]
 
     assert chunks == ["Hel", "lo ", "world"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model_name", _ALL_8_MODELS)
+async def test_stream_text_resolves_and_streams_correctly_for_all_8_models(model_name):
+    """Every currently-supported OpenAI model (3 non-reasoning + 5 gpt-5
+    family) must stream correctly and receive a well-formed, model-
+    appropriate kwargs set — no crash, no unsupported param sent."""
+    service = OpenAIService()
+    mock_async_client = MagicMock()
+    mock_async_client.chat.completions.create = AsyncMock(
+        return_value=_FakeAsyncStreamChunks(["hello"], delay=0)
+    )
+
+    with patch.object(service, "get_async_client", return_value=mock_async_client):
+        chunks = [
+            c async for c in service.stream_text("hi", model_name=model_name, max_tokens=100)
+        ]
+
+    assert chunks == ["hello"]
+    _, kwargs = mock_async_client.chat.completions.create.call_args
+    assert kwargs["model"] == model_name
+    assert kwargs["stream"] is True
+
+    confirmed_valid_values = {"none", "minimal", "low", "medium", "high", "xhigh"}
+    if model_name in _REASONING_MODELS:
+        assert "max_completion_tokens" in kwargs
+        assert kwargs["max_completion_tokens"] == 1500  # floor applied (max_tokens=100 passed above)
+        assert "max_tokens" not in kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["reasoning_effort"] in confirmed_valid_values
+        if model_name in ("gpt-5", "gpt-5-mini"):
+            assert kwargs["reasoning_effort"] != "none"
+    else:
+        assert "max_tokens" in kwargs
+        assert kwargs["max_tokens"] == 100
+        assert "max_completion_tokens" not in kwargs
+        assert "reasoning_effort" not in kwargs
+        assert "temperature" in kwargs
 
 
 @pytest.mark.asyncio
