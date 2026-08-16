@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -102,6 +103,39 @@ def create_app() -> FastAPI:
                         "or add LIVEKIT_URL/LIVEKIT_API_KEY/LIVEKIT_API_SECRET to .env",
                         exc,
                     )
+
+        # Fire-and-forget warm-up of the cached RAG/KB embedding client so the
+        # *first* live-call KB retrieval on this worker doesn't pay TCP/TLS
+        # handshake + one-time import/CA-bundle/DNS cold-start cost against the
+        # RAG_KB_RETRIEVAL_TIMEOUT_SEC budget. Deliberately not awaited — must
+        # never delay startup/first-request readiness. Runs once per Uvicorn
+        # worker process (each has its own lifespan + event loop).
+        #
+        # Gated to staging/production (mirrors the LiveKit/Rime checks above)
+        # so `uvicorn --reload` in local dev and the pytest suite (ENVIRONMENT
+        # defaults to "development") never fire a real, billed OpenAI request
+        # merely from importing/starting the app — this is a latency
+        # optimization for production traffic, not something dev/test
+        # environments need or should pay for.
+        if settings.ENVIRONMENT.lower() in ("staging", "production"):
+            try:
+                from app.services.embedding_service import warm_embedding_client
+
+                # asyncio.create_task() only keeps a weak reference to the Task
+                # internally — with no strong reference held anywhere, the task
+                # is eligible for GC at its first suspension point (the `await
+                # loop.run_in_executor(...)` inside warm_embedding_client) and
+                # CPython can silently drop it before completion, with nothing
+                # awaiting/logging the loss. Hold a strong reference on
+                # app.state for the task's lifetime and discard it on
+                # completion (success or failure) so this doesn't leak.
+                if not hasattr(app.state, "_warmup_tasks"):
+                    app.state._warmup_tasks = set()
+                warmup_task = asyncio.create_task(warm_embedding_client())
+                app.state._warmup_tasks.add(warmup_task)
+                warmup_task.add_done_callback(app.state._warmup_tasks.discard)
+            except Exception as exc:
+                logger.warning("Failed to schedule RAG embedding client warm-up: %s", exc)
 
         if settings.API_DOCS_ENABLED:
             if settings.API_DOCS_USERNAME and settings.API_DOCS_PASSWORD:
