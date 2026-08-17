@@ -60,7 +60,13 @@ class _FakeAsyncSession:
         self.send_tool_response = AsyncMock()
 
     async def receive(self):
-        for m in self._messages:
+        # Mirrors the real SDK: one receive() call covers one turn's worth
+        # of messages. Once consumed, subsequent calls yield nothing (as if
+        # the connection produced no further data), so callers that loop
+        # `while True: async for m in session.receive(): ...` terminate
+        # instead of replaying the same messages forever.
+        messages, self._messages = self._messages, []
+        for m in messages:
             yield m
 
 
