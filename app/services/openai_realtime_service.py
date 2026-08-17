@@ -57,6 +57,7 @@ import enum
 import json
 from typing import Any, Awaitable, Callable
 
+from app.core.config import settings
 from app.core.llm_models import OPENAI_REALTIME_MODELS
 from app.core.logger import logger
 from app.core.openai_client import get_async_openai_client
@@ -324,7 +325,14 @@ class OpenAIRealtimeSession:
             "audio": {
                 "input": {
                     "format": _audio_format_dict(audio_format),
-                    "transcription": {"model": "gpt-4o-mini-transcribe"},
+                    # Configurable — see settings.llm.openai_realtime_transcription_model's
+                    # docstring: newer transcription models (gpt-4o-mini-transcribe
+                    # etc.) require per-project OpenAI access that isn't
+                    # guaranteed to be enabled even when the project has full
+                    # Realtime API access for the main model itself (confirmed
+                    # via a real call hitting model_not_found). whisper-1 is
+                    # the safe, universally-available default.
+                    "transcription": {"model": settings.llm.openai_realtime_transcription_model},
                     "turn_detection": {
                         "type": "server_vad",
                         "interrupt_response": True,
