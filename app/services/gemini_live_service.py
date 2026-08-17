@@ -241,12 +241,30 @@ class GeminiLiveSession:
         """Send one chunk of raw PCM16/16kHz/mono caller audio. Caller must
         have already converted to this format (e.g. via
         ``gemini_live_audio_bridge.mulaw8k_to_pcm16_16k``) — this module has
-        zero telephony-format knowledge."""
+        zero telephony-format knowledge.
+
+        Safe no-op once the session is closed/closing — the audio-forwarding
+        background task (``LiveKitAudioSubscriber`` / Twilio's media-stream
+        loop) is stopped independently of this session's teardown, so a few
+        straggler chunks arriving after ``close()`` has already fired are
+        expected, not exceptional. Without this guard those stragglers hit
+        the underlying websocket mid-close-handshake and raise
+        ``ConnectionClosedError``/``TimeoutError``, which the caller then
+        logs at ERROR level for what is actually a benign shutdown race."""
+        if not pcm16_16k_bytes or self._closed:
+            return
         from google.genai import types
 
-        await self._session.send_realtime_input(
-            audio=types.Blob(data=pcm16_16k_bytes, mime_type="audio/pcm;rate=16000")
-        )
+        try:
+            await self._session.send_realtime_input(
+                audio=types.Blob(data=pcm16_16k_bytes, mime_type="audio/pcm;rate=16000")
+            )
+        except Exception:
+            if self._closed:
+                # Lost the race: close() ran concurrently with this send.
+                # Benign — swallow rather than surface as an error.
+                return
+            raise
 
     async def send_text(self, text: str, turn_complete: bool = True) -> None:
         from google.genai import types

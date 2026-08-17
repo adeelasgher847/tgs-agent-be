@@ -299,6 +299,67 @@ class TestSendAudio:
             assert blob.data == b"\x01\x02\x03\x04"
             assert blob.mime_type == "audio/pcm;rate=16000"
 
+    def test_send_audio_empty_bytes_is_noop(self):
+        with _real_google_genai():
+            session_obj = _FakeAsyncSession()
+            gls = GeminiLiveSession("gemini-3.1-flash-live-preview")
+            gls._session = session_obj
+
+            asyncio.run(gls.send_audio(b""))
+
+            session_obj.send_realtime_input.assert_not_awaited()
+
+    def test_send_audio_noop_once_session_already_closed(self):
+        """Straggler audio chunks arriving after close() has already run
+        must never reach send_realtime_input() — mirrors
+        OpenAIRealtimeSession.send_audio's identical shutdown-race guard."""
+        with _real_google_genai():
+            session_obj = _FakeAsyncSession()
+            gls = GeminiLiveSession("gemini-3.1-flash-live-preview")
+            gls._session = session_obj
+            gls._closed = True
+
+            asyncio.run(gls.send_audio(b"\x01\x02\x03\x04"))
+
+            session_obj.send_realtime_input.assert_not_awaited()
+
+    def test_send_audio_swallows_exception_when_closed_flips_mid_await(self):
+        """Mirrors OpenAIRealtimeSession's identical test: self._closed flips
+        to True while send_realtime_input() is in-flight and then raises —
+        the exception must be swallowed, not propagated, once the flip is
+        observed."""
+        with _real_google_genai():
+            gls = GeminiLiveSession("gemini-3.1-flash-live-preview")
+
+            session_obj = MagicMock()
+
+            async def _send(**_kwargs):
+                gls._closed = True
+                raise ConnectionError("connection closed during send")
+
+            session_obj.send_realtime_input = AsyncMock(side_effect=_send)
+            gls._session = session_obj
+
+            # Must not raise.
+            asyncio.run(gls.send_audio(b"\x01\x02\x03\x04"))
+
+            session_obj.send_realtime_input.assert_awaited_once()
+
+    def test_send_audio_reraises_exception_when_not_closed(self):
+        """Sanity check for the opposite branch: a send() failure unrelated
+        to a concurrent close() must still propagate."""
+        with _real_google_genai():
+            gls = GeminiLiveSession("gemini-3.1-flash-live-preview")
+
+            session_obj = MagicMock()
+            session_obj.send_realtime_input = AsyncMock(
+                side_effect=RuntimeError("genuine send failure")
+            )
+            gls._session = session_obj
+
+            with pytest.raises(RuntimeError, match="genuine send failure"):
+                asyncio.run(gls.send_audio(b"\x01\x02\x03\x04"))
+
     def test_send_text_wraps_content_and_turn_complete(self):
         with _real_google_genai():
             session_obj = _FakeAsyncSession()
