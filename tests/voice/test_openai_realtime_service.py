@@ -307,6 +307,59 @@ class TestSendAudio:
 
         connection.send.assert_not_awaited()
 
+    def test_send_audio_noop_once_session_already_closed(self):
+        """Straggler audio chunks arriving after close() has already run
+        must never reach connection.send() — see this method's docstring
+        about the LiveKitAudioSubscriber shutdown race."""
+        connection = _FakeConnection()
+        session = OpenAIRealtimeSession("gpt-realtime")
+        session._connection = connection
+        session._closed = True
+
+        asyncio.run(session.send_audio(b"\x01\x02\x03\x04"))
+
+        connection.send.assert_not_awaited()
+
+    def test_send_audio_swallows_exception_when_closed_flips_mid_await(self):
+        """Mirrors TestClose.test_close_cancels_receive_task_while_genuinely_
+        blocked_in_recv's pattern of exercising a genuine concurrent race:
+        here, `self._closed` flips to True while `connection.send()` is
+        in-flight and then raises (simulating the underlying websocket
+        erroring out mid-close-handshake) — the exception must be swallowed,
+        not propagated, once the flip is observed."""
+        session = OpenAIRealtimeSession("gpt-realtime")
+
+        connection = MagicMock()
+
+        async def _send(_event):
+            # Simulate close() flipping the flag concurrently while this
+            # send() call is still in flight, then the underlying send
+            # erroring out as a result of the connection tearing down.
+            session._closed = True
+            raise ConnectionError("connection closed during send")
+
+        connection.send = AsyncMock(side_effect=_send)
+        session._connection = connection
+
+        # Must not raise.
+        asyncio.run(session.send_audio(b"\x01\x02\x03\x04"))
+
+        connection.send.assert_awaited_once()
+
+    def test_send_audio_reraises_exception_when_not_closed(self):
+        """Sanity check for the opposite branch: if send() fails for a
+        reason unrelated to a concurrent close(), the exception must still
+        propagate — the swallow is specifically scoped to the shutdown
+        race, not a blanket exception suppressor."""
+        session = OpenAIRealtimeSession("gpt-realtime")
+
+        connection = MagicMock()
+        connection.send = AsyncMock(side_effect=RuntimeError("genuine send failure"))
+        session._connection = connection
+
+        with pytest.raises(RuntimeError, match="genuine send failure"):
+            asyncio.run(session.send_audio(b"\x01\x02\x03\x04"))
+
 
 class TestSendText:
     def test_send_text_respond_true_sends_item_and_response_create(self):
@@ -516,6 +569,49 @@ class TestReceiveLoopDemux:
         err = on_error.call_args.args[0]
         assert isinstance(err, OpenAIRealtimeError)
         assert "rate limit exceeded" in str(err)
+
+    def test_input_transcription_failed_logs_warning_and_does_not_route_to_on_error(self, caplog):
+        import logging
+
+        evt = _evt(
+            type="conversation.item.input_audio_transcription.failed",
+            item_id="item-123",
+            error=_evt(code="transcription_error", message="audio format mismatch"),
+        )
+        on_error = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            self._run_with_events([evt], on_error=on_error)
+
+        on_error.assert_not_awaited()
+        assert any(
+            "item-123" in rec.message and "audio format mismatch" in rec.message
+            for rec in caplog.records
+        )
+
+    def test_mcp_list_tools_failed_logs_warning_and_does_not_route_to_on_error(self, caplog):
+        import logging
+
+        evt = _evt(type="mcp_list_tools.failed", item_id="item-456")
+        on_error = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            self._run_with_events([evt], on_error=on_error)
+
+        on_error.assert_not_awaited()
+        assert any("item-456" in rec.message for rec in caplog.records)
+
+    def test_response_mcp_call_failed_logs_warning_and_does_not_route_to_on_error(self, caplog):
+        import logging
+
+        evt = _evt(type="response.mcp_call.failed", item_id="item-789")
+        on_error = AsyncMock()
+
+        with caplog.at_level(logging.WARNING):
+            self._run_with_events([evt], on_error=on_error)
+
+        on_error.assert_not_awaited()
+        assert any("item-789" in rec.message for rec in caplog.records)
 
     def test_unknown_event_type_is_benign_noop(self):
         evt = _evt(type="session.created")

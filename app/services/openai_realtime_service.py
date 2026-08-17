@@ -356,13 +356,29 @@ class OpenAIRealtimeSession:
         """Send one chunk of raw caller audio, already encoded in whatever
         format this session was started with (`audio_format` — mu-law 8kHz
         for Twilio, PCM16 24kHz for LiveKit). This module has zero
-        telephony-format knowledge beyond that string."""
-        if not audio_bytes:
+        telephony-format knowledge beyond that string.
+
+        Safe no-op once the session is closed/closing — the audio-forwarding
+        background task (``LiveKitAudioSubscriber`` / Twilio's media-stream
+        loop) is stopped independently of this session's teardown, so a few
+        straggler chunks arriving after ``close()`` has already fired are
+        expected, not exceptional. Without this guard those stragglers hit
+        the underlying websocket mid-close-handshake and raise
+        ``ConnectionClosedError``/``TimeoutError``, which the caller then
+        logs at ERROR level for what is actually a benign shutdown race."""
+        if not audio_bytes or self._closed:
             return
-        await self._connection.send({
-            "type": "input_audio_buffer.append",
-            "audio": base64.b64encode(audio_bytes).decode("ascii"),
-        })
+        try:
+            await self._connection.send({
+                "type": "input_audio_buffer.append",
+                "audio": base64.b64encode(audio_bytes).decode("ascii"),
+            })
+        except Exception:
+            if self._closed:
+                # Lost the race: close() ran concurrently with this send.
+                # Benign — swallow rather than surface as an error.
+                return
+            raise
 
     async def send_text(self, text: str, respond: bool = True) -> None:
         """
@@ -467,6 +483,13 @@ class OpenAIRealtimeSession:
     async def _handle_event(self, event: Any) -> None:
         etype = getattr(event, "type", None)
 
+        # DIAGNOSTIC: temporary, event-type-only tracing to confirm which
+        # Realtime events actually arrive on a real call (added while
+        # investigating a "no transcript captured" report — no raw audio or
+        # transcript text is ever included here). Safe to strip once
+        # transcript capture is confirmed working on a real call.
+        logger.info("[OpenAIRealtimeSession] DIAGNOSTIC event type=%s", etype)
+
         if etype == "response.output_audio.delta":
             delta = getattr(event, "delta", None)
             if delta and self.on_audio_chunk is not None:
@@ -507,6 +530,43 @@ class OpenAIRealtimeSession:
             error_obj = getattr(event, "error", None)
             message = getattr(error_obj, "message", None) or str(error_obj) or "unknown Realtime API error"
             await self._report_error(OpenAIRealtimeError(message, OpenAIRealtimeErrorType.UNKNOWN))
+            return
+
+        if etype == "conversation.item.input_audio_transcription.failed":
+            # A single utterance's transcription failed server-side (e.g. an
+            # issue with the configured `gpt-4o-mini-transcribe` model or an
+            # audio-format mismatch). This is NOT the same as a session-fatal
+            # `error` event — the audio call itself is fine and OpenAI keeps
+            # talking; only this one utterance's transcript is lost. Log
+            # loudly (previously this fell through to the silent "benign
+            # chatter" branch below with zero visibility) but do not treat it
+            # as fatal / route through on_error, matching this codebase's
+            # fail-open philosophy for per-turn transcript/RAG failures.
+            error_obj = getattr(event, "error", None)
+            message = getattr(error_obj, "message", None) or str(error_obj) or "unknown transcription error"
+            code = getattr(error_obj, "code", None)
+            item_id = getattr(event, "item_id", None)
+            logger.warning(
+                "[OpenAIRealtimeSession] input audio transcription FAILED "
+                "(model=%s item_id=%s code=%s): %s",
+                self.model_name, item_id, code, message,
+            )
+            return
+
+        if etype in ("mcp_list_tools.failed", "response.mcp_call.failed"):
+            # Not currently used by this integration (no MCP tools are wired
+            # up here — only the Calendly function tools), but logged
+            # explicitly rather than silently dropped in case that changes,
+            # or in case the SDK reports one of these unexpectedly. Neither
+            # event type carries its own error payload (confirmed against
+            # the SDK's generated fields — just event_id/item_id); the
+            # underlying reason, if any, arrives separately via the generic
+            # "error" event handled above.
+            item_id = getattr(event, "item_id", None)
+            logger.warning(
+                "[OpenAIRealtimeSession] %s event (model=%s item_id=%s)",
+                etype, self.model_name, item_id,
+            )
             return
 
         # All other event types (session.created, response.created,
