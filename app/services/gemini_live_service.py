@@ -305,12 +305,16 @@ class GeminiLiveSession:
                     except Exception as exc:
                         await self._report_error(exc)
                 if turn_msg_count == 0:
-                    # receive() returned with zero messages instead of raising —
-                    # treat as a dead/closed connection rather than busy-loop
-                    # re-invoking it forever.
+                    # Defensive guard, not currently reachable against the pinned
+                    # google-genai SDK: a dead/closed connection makes receive()
+                    # raise (handled by the except below), not return an empty
+                    # generator. This only exists in case a future SDK version
+                    # ever yields zero messages instead of raising — without it,
+                    # re-invoking receive() forever in that case would busy-spin
+                    # the event loop rather than ending the call gracefully.
                     logger.warning(
                         "[GeminiLiveSession] receive() yielded no messages model=%s — "
-                        "ending receive loop (connection likely closed)",
+                        "ending receive loop",
                         self.model_name,
                     )
                     break

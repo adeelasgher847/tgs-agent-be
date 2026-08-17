@@ -51,22 +51,49 @@ def _real_google_genai():
 
 
 class _FakeAsyncSession:
-    """Stands in for google.genai.live.AsyncSession."""
+    """Stands in for google.genai.live.AsyncSession.
 
-    def __init__(self, messages=None):
-        self._messages = messages or []
+    ``messages`` may be either:
+      * a flat list of fake ``LiveServerMessage``s (backward-compatible
+        shorthand for "a single turn's worth of messages" — the historical
+        shape every pre-existing test in this file uses), or
+      * a list of turn-batches (``list[list]``) — one inner list per
+        Gemini conversation turn — to simulate multiple sequential
+        ``receive()`` calls returning distinct turns, matching the real
+        SDK semantics that ``_receive_loop()``'s outer ``while True:``
+        depends on (each ``receive()`` call covers exactly one turn; the
+        next call yields the next turn's messages).
+
+    Each ``receive()`` call pops and yields the next turn-batch. Once all
+    batches are exhausted, further calls yield nothing (never replay) —
+    this is what lets tests rely on the "zero messages" guard in
+    ``_receive_loop()`` to end the loop naturally instead of hanging.
+    """
+
+    def __init__(self, messages=None, block_forever=False):
+        turns = messages or []
+        if turns and not isinstance(turns[0], list):
+            # Flat single-turn shorthand — wrap as the one-and-only batch.
+            turns = [turns]
+        self._turns = list(turns)
+        self._block_forever = block_forever
         self.send_realtime_input = AsyncMock()
         self.send_client_content = AsyncMock()
         self.send_tool_response = AsyncMock()
 
     async def receive(self):
-        # Mirrors the real SDK: one receive() call covers one turn's worth
-        # of messages. Once consumed, subsequent calls yield nothing (as if
-        # the connection produced no further data), so callers that loop
-        # `while True: async for m in session.receive(): ...` terminate
-        # instead of replaying the same messages forever.
-        messages, self._messages = self._messages, []
-        for m in messages:
+        if self._block_forever:
+            # Simulates a receive() call genuinely suspended waiting on the
+            # network — never resolves on its own; only cancellation (via
+            # close()) can end it. Used to verify close() cancels a task
+            # actually blocked *inside* receive(), not one that already
+            # exhausted an empty/finite generator.
+            await asyncio.Event().wait()
+            return
+        if not self._turns:
+            return
+        batch = self._turns.pop(0)
+        for m in batch:
             yield m
 
 
@@ -406,6 +433,44 @@ class TestReceiveLoopDemux:
 
         on_tool_call.assert_awaited_once_with(function_calls)
 
+    def test_receive_loop_continues_processing_after_first_turn_completes(self):
+        """Regression test for the outer `while True:` around
+        `session.receive()` in `_receive_loop()`. `session.receive()` only
+        covers a single turn per the real SDK; without the outer loop the
+        receive task would exit after the first turn's `turn_complete` and
+        never see turn 2's messages at all. Fails if that loop is reverted
+        to a single `async for message in self._session.receive(): ...`."""
+        turn1_content = SimpleNamespace(
+            model_turn=None,
+            interrupted=False,
+            input_transcription=None,
+            output_transcription=None,
+            turn_complete=True,
+        )
+        turn2_transcript = SimpleNamespace(text="second turn arrived", finished=True)
+        turn2_content = SimpleNamespace(
+            model_turn=None,
+            interrupted=False,
+            input_transcription=turn2_transcript,
+            output_transcription=None,
+        )
+
+        on_turn_complete = AsyncMock()
+        on_input_transcript = AsyncMock()
+
+        gls = self._run_with_messages(
+            [
+                [_msg(server_content=turn1_content)],
+                [_msg(server_content=turn2_content)],
+            ],
+            on_turn_complete=on_turn_complete,
+            on_input_transcript=on_input_transcript,
+        )
+
+        on_turn_complete.assert_awaited_once_with()
+        on_input_transcript.assert_awaited_once_with("second turn arrived", True)
+        assert gls is not None
+
     def test_go_away_logs_and_takes_no_action(self, caplog):
         import logging
 
@@ -469,6 +534,37 @@ class TestClose:
                     on_interrupted=AsyncMock(),
                 )
             await gls.close()
+
+        asyncio.run(_run())
+        assert connect_cm.aexit_called is True
+        assert gls._receive_task is None
+
+    def test_close_cancels_receive_task_while_genuinely_blocked_in_receive(self):
+        """`messages=[]` alone lets the loop's zero-messages guard exit the
+        receive task on its own before close()'s `.cancel()` is ever
+        meaningfully exercised. Use a session whose `receive()` never
+        resolves on its own, so close() must cancel a task that is
+        genuinely suspended *inside* `receive()`, not one that already
+        finished."""
+        session_obj = _FakeAsyncSession(block_forever=True)
+        client, connect_cm = _make_fake_client(session_obj)
+        gls = GeminiLiveSession("gemini-3.1-flash-live-preview")
+
+        async def _run():
+            with patch.object(gls, "_build_client", return_value=client):
+                await gls.start(
+                    system_instruction="hi",
+                    on_audio_chunk=AsyncMock(),
+                    on_interrupted=AsyncMock(),
+                )
+            await asyncio.sleep(0)  # let the receive task actually start blocking
+            task = gls._receive_task
+            assert task is not None
+            assert not task.done()
+
+            await gls.close()
+
+            assert task.cancelled()
 
         asyncio.run(_run())
         assert connect_cm.aexit_called is True
