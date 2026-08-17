@@ -48,6 +48,15 @@ ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
     "gemini-live-2.5-flash-native-audio",
     "gemini-live-2.5-flash-preview-native-audio-09-2025",
     "gemini-3.1-flash-live-preview",
+    # OpenAI — Realtime speech-to-speech native-audio models (new). Same
+    # "NOT a text model" caveat as the Gemini Live family above: selecting
+    # one of these routes the whole call through OpenAI's Realtime API
+    # (caller audio in, OpenAI's native audio out, no external STT/TTS). See
+    # OPENAI_REALTIME_MODELS below and is_openai_realtime_model() for the
+    # routing predicate. `infer_llm_provider` already returns "openai" for
+    # any "gpt"-prefixed model — no change needed there.
+    "gpt-realtime",
+    "gpt-realtime-2",
     # Anthropic — existing
     "claude-3-5-sonnet",
     "claude-3-haiku",
@@ -107,6 +116,42 @@ def is_gemini_live_native_audio_model(model_name: str) -> bool:
     native-audio.
     """
     return (model_name or "") in GEMINI_LIVE_MODELS
+
+
+#: Per-model config for the OpenAI Realtime speech-to-speech family.
+#: Confirmed against the installed openai==2.36.0 SDK's own generated types
+#: (openai.types.realtime.call_accept_params's model Literal enum) — see
+#: app/services/openai_realtime_service.py for the session wrapper.
+#:
+#: - ``gpt-realtime``: the original flagship Realtime model (GA Aug 2025).
+#:   No `reasoning` config — the Realtime API's reasoning_effort knob is
+#:   documented as only applying to reasoning-capable Realtime models.
+#: - ``gpt-realtime-2``: newer reasoning-capable generation. Capped to a low
+#:   reasoning effort by default (see openai_realtime_service.py's
+#:   _REASONING_EFFORT_BY_MODEL) for the same voice-turn-latency reason
+#:   gpt-5/gpt-5-mini's Chat Completions reasoning_effort is capped in
+#:   app/services/openai_service.py — an uncapped reasoning budget on a
+#:   live voice turn risks noticeable dead air before the model starts
+#:   speaking.
+#:
+#: Both models use plain API-key auth (settings.OPENAI_API_KEY via
+#: app.core.openai_client.get_async_openai_client) — no ephemeral-token
+#: dance, since this backend always proxies rather than handing a token to
+#: a browser/mobile client directly.
+OPENAI_REALTIME_MODELS: Final[tuple[str, ...]] = ("gpt-realtime", "gpt-realtime-2")
+
+
+def is_openai_realtime_model(model_name: str) -> bool:
+    """
+    Return True if ``model_name`` is one of the OpenAI Realtime
+    speech-to-speech native-audio models (:data:`OPENAI_REALTIME_MODELS`).
+
+    Exact-match check, mirroring is_gemini_live_native_audio_model()'s
+    reasoning — these models require a completely different call pipeline
+    (caller audio in, OpenAI's own native audio out, no external STT/TTS),
+    not just another text-generation ``gpt-*`` model.
+    """
+    return (model_name or "") in OPENAI_REALTIME_MODELS
 
 
 def infer_llm_provider(model_name: str) -> str:
