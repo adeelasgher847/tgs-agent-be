@@ -233,6 +233,140 @@ class TestTranscriptCallbacksWriteDirectly:
         asyncio.run(_run())
 
 
+class TestMidCallRagRefresh:
+    """
+    Mid-call KB context refresh (VoiceOrchestrator.
+    _refresh_openai_realtime_kb_context), triggered fire-and-forget from
+    _on_openai_realtime_input_transcript. Mirrors
+    test_gemini_live_twilio_fork.py's TestMidCallRagRefresh, adapted for
+    this provider's send_text(text, respond=False) signature (vs Gemini's
+    send_text(text, turn_complete=False)) and its DIAGNOSTIC skip-reason
+    logging / upgraded warning-with-exc_info on retrieval failure.
+    """
+
+    def _handler_with_flow(self, *, kb_ids):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        h.call_flow = MagicMock()
+        h.call_flow.knowledge_base_ids = kb_ids
+        return h
+
+    def test_refresh_noop_when_no_session(self, caplog):
+        import logging
+
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        orch._openai_realtime_session = None
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ) as mock_retrieve, caplog.at_level(logging.INFO):
+            asyncio.run(orch._refresh_openai_realtime_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_not_awaited()
+        assert any("no_session" in rec.message for rec in caplog.records)
+
+    def test_refresh_noop_when_empty_transcript(self, caplog):
+        import logging
+
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._openai_realtime_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ) as mock_retrieve, caplog.at_level(logging.INFO):
+            asyncio.run(orch._refresh_openai_realtime_kb_context(""))
+
+        mock_retrieve.assert_not_awaited()
+        fake_session.send_text.assert_not_awaited()
+        assert any("empty_transcript" in rec.message for rec in caplog.records)
+
+    def test_refresh_noop_when_no_kb_ids(self, caplog):
+        import logging
+
+        h = self._handler_with_flow(kb_ids=[])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._openai_realtime_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("some context", 5.0)),
+        ) as mock_retrieve, caplog.at_level(logging.INFO):
+            asyncio.run(orch._refresh_openai_realtime_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_not_awaited()
+        fake_session.send_text.assert_not_awaited()
+        assert any("no_kb_ids_configured" in rec.message for rec in caplog.records)
+
+    def test_refresh_sends_context_as_non_blocking_text_turn(self):
+        kb_id = uuid.uuid4()
+        h = self._handler_with_flow(kb_ids=[kb_id])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._openai_realtime_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("Refunds within 30 days.", 42.0)),
+        ) as mock_retrieve, patch("app.utils.redis_client.get_redis", return_value=None):
+            asyncio.run(orch._refresh_openai_realtime_kb_context("what's your refund policy"))
+
+        mock_retrieve.assert_awaited_once()
+        call_kwargs = mock_retrieve.call_args.kwargs
+        assert call_kwargs["transcript"] == "what's your refund policy"
+        assert call_kwargs["kb_ids"] == [kb_id]
+
+        fake_session.send_text.assert_awaited_once()
+        sent_args, sent_kwargs = fake_session.send_text.call_args.args, fake_session.send_text.call_args.kwargs
+        assert "Refunds within 30 days." in sent_args[0]
+        assert sent_kwargs["respond"] is False
+
+    def test_refresh_sends_nothing_when_kb_returns_empty(self):
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._openai_realtime_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(return_value=("", 3.0)),
+        ):
+            asyncio.run(orch._refresh_openai_realtime_kb_context("unrelated small talk"))
+
+        fake_session.send_text.assert_not_awaited()
+
+    def test_refresh_fails_open_and_logs_warning_with_exc_info_on_retrieval_exception(self, caplog):
+        """Regression guard for the debug->warning upgrade: a silently
+        debug-logged exception here would look identical in production logs
+        to 'KB refresh never fired at all', so this must be logged at
+        WARNING with exc_info=True, not swallowed at DEBUG."""
+        h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
+        orch = VoiceOrchestrator(h)
+        fake_session = MagicMock()
+        fake_session.send_text = AsyncMock()
+        orch._openai_realtime_session = fake_session
+
+        with patch(
+            "app.services.kb_retrieval_service.retrieve_kb_context_for_turn",
+            new=AsyncMock(side_effect=RuntimeError("kb backend down")),
+        ), patch("app.voice.voice_orchestrator.logger") as mock_logger:
+            # Must not raise.
+            asyncio.run(orch._refresh_openai_realtime_kb_context("what's your refund policy"))
+
+        fake_session.send_text.assert_not_awaited()
+        mock_logger.warning.assert_called_once()
+        assert mock_logger.warning.call_args.kwargs.get("exc_info") is True
+        mock_logger.debug.assert_not_called()
+
+
 class TestPreSessionFallback:
     def test_start_failure_falls_back_to_openai_text_model(self):
         from app.services.openai_realtime_service import OpenAIRealtimeError, OpenAIRealtimeErrorType

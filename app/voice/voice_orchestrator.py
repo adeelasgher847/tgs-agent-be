@@ -1409,12 +1409,26 @@ class VoiceOrchestrator:
         OpenAIRealtimeSession.send_text's docstring). Fails open on any
         error, same as every other RAG call site in this codebase.
         """
+        # DIAGNOSTIC: temporary tracing for a "agent doesn't use KB" report —
+        # logs entry/skip reasons and whether context was actually sent, but
+        # never the transcript or KB content itself. Safe to strip once KB
+        # refresh is confirmed working on a real call.
+        call_session_id = getattr(self._h, "call_session_id", None)
         session = self._openai_realtime_session
         if session is None or not transcript:
+            logger.info(
+                "[OpenAIRealtime] DIAGNOSTIC kb_refresh skipped call_session_id=%s reason=%s",
+                call_session_id, "no_session" if session is None else "empty_transcript",
+            )
             return
         flow = getattr(self._h, "call_flow", None)
         kb_ids = (flow.knowledge_base_ids or []) if flow else []
         if not kb_ids:
+            logger.info(
+                "[OpenAIRealtime] DIAGNOSTIC kb_refresh skipped call_session_id=%s reason=%s "
+                "flow_present=%s",
+                call_session_id, "no_kb_ids_configured", flow is not None,
+            )
             return
         self._openai_realtime_kb_refresh_in_flight = True
         try:
@@ -1425,17 +1439,27 @@ class VoiceOrchestrator:
                 transcript=transcript, kb_ids=kb_ids, redis_client=get_redis()
             )
             if not kb_context:
+                logger.info(
+                    "[OpenAIRealtime] DIAGNOSTIC kb_refresh call_session_id=%s: retrieval returned "
+                    "no matching context (kb_ids=%s, latency_ms=%.1f) — nothing sent",
+                    call_session_id, kb_ids, latency_ms,
+                )
                 return
             await session.send_text(
                 "[KNOWLEDGE BASE CONTEXT UPDATE — authoritative, use if relevant to the "
                 f"caller's most recent question]\n{kb_context}",
                 respond=False,
             )
-            logger.debug(
-                "[OpenAIRealtime] kb_refresh latency_ms=%.1f chars=%d", latency_ms, len(kb_context)
+            logger.info(
+                "[OpenAIRealtime] DIAGNOSTIC kb_refresh call_session_id=%s: sent kb context "
+                "latency_ms=%.1f chars=%d",
+                call_session_id, latency_ms, len(kb_context),
             )
         except Exception as exc:
-            logger.debug("[OpenAIRealtime] mid-call KB refresh failed (non-fatal): %s", exc)
+            logger.warning(
+                "[OpenAIRealtime] mid-call KB refresh failed (non-fatal) call_session_id=%s: %s",
+                call_session_id, exc, exc_info=True,
+            )
         finally:
             self._openai_realtime_kb_refresh_in_flight = False
 
