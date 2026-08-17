@@ -14,9 +14,11 @@ Covers, per the integration task write-up:
     native-audio call, and at the usual 8kHz rate otherwise
   - barge-in (on_interrupted) clears the LiveKit AudioSource's own playout
     queue directly (no _send_twilio_clear_event on this transport)
-  - transcript callbacks write to call_transcript via _add_to_transcript
-    only on finished=True chunks (shared VoiceOrchestrator logic — reasserted
-    here against a real LiveKitBrowserCallHandler instance)
+  - transcript callbacks buffer every fragment (finished flag is unreliable)
+    and flush to call_transcript via _add_to_transcript on turn_complete /
+    next-turn's first output fragment / interrupted / shutdown (shared
+    VoiceOrchestrator logic — reasserted here against a real
+    LiveKitBrowserCallHandler instance)
   - _start_gemini_live_session must build the Gemini Live system_instruction
     from ConversationOrchestrator.build_system_prompt (this transport's own
     real prompt-assembly), never from Twilio's build_system_prompt — the
@@ -305,18 +307,25 @@ class TestVoiceOrchestratorAudioConversionRoutingBrowser:
         assert not orch._gemini_live_cancel.is_set()
         assert orch._gemini_live_first_audio_marked is False
 
-    def test_input_transcript_written_only_when_finished(self):
+    def test_input_transcript_fragments_buffered_until_flush(self):
+        """Mirrors tests/voice/test_gemini_live_twilio_fork.py::
+        TestTranscriptCallbacks — the buffering/flush behavior is identical
+        on both transports since it lives entirely in VoiceOrchestrator."""
         h = _base_handler(NATIVE_AUDIO_MODEL)
         orch = VoiceOrchestrator(h)
         h._add_to_transcript = AsyncMock()
 
         asyncio.run(orch._on_gemini_live_input_transcript("partial", False))
         h._add_to_transcript.assert_not_awaited()
+        assert orch._gemini_live_input_buffer == ["partial"]
 
-        asyncio.run(orch._on_gemini_live_input_transcript("hello there", True))
-        h._add_to_transcript.assert_awaited_once_with("client", "hello there", "speech")
+        asyncio.run(orch._on_gemini_live_input_transcript(" hello there", True))
+        h._add_to_transcript.assert_not_awaited()
 
-    def test_output_transcript_written_only_when_finished(self):
+        asyncio.run(orch._on_gemini_live_turn_complete())
+        h._add_to_transcript.assert_awaited_once_with("client", "partial hello there", "speech")
+
+    def test_output_transcript_fragments_buffered_until_turn_complete(self):
         h = _base_handler(NATIVE_AUDIO_MODEL)
         orch = VoiceOrchestrator(h)
         h._add_to_transcript = AsyncMock()
@@ -324,9 +333,12 @@ class TestVoiceOrchestratorAudioConversionRoutingBrowser:
         asyncio.run(orch._on_gemini_live_output_transcript("partial reply", False))
         h._add_to_transcript.assert_not_awaited()
 
-        asyncio.run(orch._on_gemini_live_output_transcript("Sure, I can help.", True))
+        asyncio.run(orch._on_gemini_live_output_transcript(" Sure, I can help.", True))
+        h._add_to_transcript.assert_not_awaited()
+
+        asyncio.run(orch._on_gemini_live_turn_complete())
         h._add_to_transcript.assert_awaited_once_with(
-            "agent", "Sure, I can help.", "agent_response"
+            "agent", "partial reply Sure, I can help.", "agent_response"
         )
 
     def test_mid_call_error_ends_call_via_full_shutdown(self):
