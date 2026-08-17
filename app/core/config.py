@@ -93,6 +93,9 @@ class LlmSettings(BaseModel):
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="", validation_alias="OPENAI_BASE_URL")
     openai_api_version: str = Field(default="", validation_alias="OPENAI_API_VERSION")
+    openai_realtime_transcription_model: str = Field(
+        default="whisper-1", validation_alias="OPENAI_REALTIME_TRANSCRIPTION_MODEL"
+    )
     # Gemini / Vertex
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     google_application_credentials: str = Field(
@@ -449,6 +452,15 @@ class Settings(BaseSettings):
     DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
+    # Input-audio transcription model for OpenAI Realtime sessions (separate
+    # from the main gpt-realtime*/gpt-realtime-2 model itself). Defaults to
+    # whisper-1 — OpenAI's oldest, most universally-enabled transcription
+    # model — since newer options like gpt-4o-mini-transcribe require
+    # per-project access that isn't guaranteed to be enabled (confirmed via
+    # a real call: model_not_found for gpt-4o-mini-transcribe on a project
+    # that otherwise has full Realtime API access). Override per-environment
+    # if a project has access to a better model.
+    OPENAI_REALTIME_TRANSCRIPTION_MODEL: str = "whisper-1"
 
     # Rime Labs TTS Configuration
     RIME_API_KEY: str = ""
@@ -1069,6 +1081,7 @@ class Settings(BaseSettings):
             openai_api_key=self.OPENAI_API_KEY,
             openai_base_url=self.OPENAI_BASE_URL,
             openai_api_version=self.OPENAI_API_VERSION,
+            openai_realtime_transcription_model=self.OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             gemini_api_key=self.GEMINI_API_KEY,
             google_application_credentials=self.GOOGLE_APPLICATION_CREDENTIALS,
             google_cloud_project_id=self.GOOGLE_CLOUD_PROJECT_ID,
