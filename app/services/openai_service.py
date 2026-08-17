@@ -4,30 +4,164 @@ Handles all OpenAI-related operations including text generation and chat complet
 """
 
 from app.core.config import settings
-from app.core.openai_client import get_openai_client
+from app.core.openai_client import get_openai_client, get_async_openai_client
 from typing import List, Dict, Any
 import time
 
+# GPT-5.x is a reasoning-model family (gpt-5, gpt-5-mini, gpt-5.1, gpt-5.2,
+# gpt-5.4, ...). Per OpenAI docs these do not support a customizable
+# `temperature` on Chat Completions (only the default is accepted) and use
+# `max_completion_tokens` instead of `max_tokens`. gpt-4.x / gpt-4o / o1 / o3
+# etc. are untouched — this only applies to the "gpt-5" prefix.
+_REASONING_MODEL_PREFIX = "gpt-5"
+
+# `max_completion_tokens` on gpt-5.x (o1/o3-style reasoning models exposed
+# via Chat Completions) is a SHARED budget covering BOTH invisible reasoning
+# tokens AND the visible completion — this is documented OpenAI reasoning-
+# model behavior, not a misreading: a model can spend its entire budget
+# "thinking" and return content="" + finish_reason="length" with no
+# exception raised (confirmed by OpenAI community bug reports of exactly this
+# failure mode). On a live voice call that means silent dead air, since none
+# of the existing streaming error handling (try_stream / conversation
+# orchestrator) fires for a non-exceptional empty response.
+#
+# Voice agents default to a small conversational max_tokens (e.g. 100 — see
+# agent_runtime.resolve_llm_runtime's default) which is fine for gpt-4.x but
+# would starve gpt-5.x's reasoning budget. 1500 is a conservative floor:
+# a few hundred reasoning tokens is typical for a simple conversational
+# prompt, leaving ample headroom for the (short) visible reply on top,
+# without being large enough to meaningfully change worst-case per-turn
+# latency/cost for a voice agent. Deliberately biased toward safety
+# (avoiding dead air) over shaving a few hundred tokens off the ceiling.
+# Uniform across the whole gpt-5 family (gpt-5, gpt-5-mini, gpt-5.1, gpt-5.2,
+# gpt-5.4) — no evidence of a per-model difference in this shared-budget
+# behavior, so a single floor is used rather than per-model tuning.
+# Applies ONLY to gpt-5* — every other model's max_tokens is passed through
+# unchanged (see _is_reasoning_model below).
+_REASONING_MODEL_MIN_COMPLETION_TOKENS = 1500
+
+# Explicit `reasoning_effort` per exact gpt-5-family model name.
+#
+# WHY THIS EXISTS (evidence, not a name-based assumption): until this change,
+# no code path in this repo ever set `reasoning_effort`, so every gpt-5.x
+# call ran on OpenAI's *implicit* server-side default. The OpenAI Python SDK
+# installed in this repo's venv (openai==2.36.0) ships the following as the
+# generated docstring for `reasoning_effort` on
+# `openai.types.chat.completion_create_params.CompletionCreateParamsBase`
+# (i.e. this is OpenAI's own documentation, not a guess):
+#
+#   "Currently supported values are `none`, `minimal`, `low`, `medium`,
+#    `high`, and `xhigh`. ... `gpt-5.1` defaults to `none`, which does not
+#    perform reasoning. The supported reasoning values for `gpt-5.1` are
+#    `none`, `low`, `medium`, and `high`. ... All models before `gpt-5.1`
+#    default to `medium` reasoning effort, and do not support `none`."
+#
+# That means `gpt-5` and `gpt-5-mini` (both "before gpt-5.1") have been
+# silently running real `medium`-effort reasoning on every single voice-agent
+# turn — a real, mechanistic explanation for BOTH the reported latency
+# ("gpt-5 shows noticeably higher latency") and the reported KB-grounding
+# unreliability (a model given room to reason at length before answering can
+# paraphrase/generalize/synthesize away from literal injected KB text rather
+# than directly grounding to it, instead of the fast, direct instruction-
+# following a short conversational voice turn needs). `gpt-5.1`/`gpt-5.2`/
+# `gpt-5.4` already default to `none` (no reasoning) when the param is
+# omitted per the same evidence plus their individual model-docs pages
+# (developers.openai.com/api/docs/models/<id>) — so making that `none`
+# explicit here does not change their current behavior, only removes
+# reliance on an implicit default that OpenAI could change later.
+#
+# Values chosen for gpt-5 / gpt-5-mini: `low`, not the more aggressive
+# `minimal` — deliberately conservative. Both `minimal` and `low` are
+# confirmed-valid per the SDK docstring above, and `minimal` would shave
+# more latency, but this agent also relies on gpt-5.x for strict
+# instruction-following beyond KB lookup (call-flow logic, transfer/booking/
+# end-call control tokens) that was never live-tested here (no working
+# OpenAI API credits were available in this environment — see final report).
+# `low` meaningfully reduces reasoning depth from the problematic `medium`
+# default (addressing both latency and the drift hypothesis) while keeping
+# more headroom for that other instruction-following than `minimal` would,
+# to avoid risking an untested regression elsewhere for an untested gain.
+#
+# A gpt-5-family model name not present here (e.g. a future release) simply
+# gets no explicit `reasoning_effort` and falls back to server default —
+# the same behavior as before this change, never a crash or invalid value.
+_REASONING_EFFORT_BY_MODEL: Dict[str, str] = {
+    "gpt-5": "low",
+    "gpt-5-mini": "low",
+    "gpt-5.1": "none",
+    "gpt-5.2": "none",
+    "gpt-5.4": "none",
+}
+
+
+def _is_reasoning_model(model_name: str) -> bool:
+    return (model_name or "").strip().lower().startswith(_REASONING_MODEL_PREFIX)
+
+
+def _completion_params(
+    model_name: str, temperature: float, max_tokens: int | None
+) -> Dict[str, Any]:
+    """Build the model/temperature/max-tokens kwargs for a Chat Completions call.
+
+    Isolated here so all OpenAI call sites in this service (streaming and
+    non-streaming) apply the gpt-5.x parameter differences identically.
+    """
+    if _is_reasoning_model(model_name):
+        # temperature intentionally omitted: gpt-5.x rejects/ignores non-default
+        # temperature on Chat Completions.
+        if max_tokens is not None and int(max_tokens) > 0:
+            floored_max_tokens = max(int(max_tokens), _REASONING_MODEL_MIN_COMPLETION_TOKENS)
+        else:
+            floored_max_tokens = _REASONING_MODEL_MIN_COMPLETION_TOKENS
+        params: Dict[str, Any] = {
+            "model": model_name,
+            "max_completion_tokens": floored_max_tokens,
+        }
+        effort = _REASONING_EFFORT_BY_MODEL.get((model_name or "").strip().lower())
+        if effort:
+            params["reasoning_effort"] = effort
+        return params
+    return {"model": model_name, "temperature": temperature, "max_tokens": max_tokens}
+
+
 class OpenAIService:
     """Service class for handling OpenAI operations"""
-    
+
     def __init__(self):
         self._clients = {}  # Store clients by API key
+        self._async_clients = {}  # Store async clients by API key (streaming hot path)
         self._current_api_key = None
-    
+
     def get_client(self, api_key: str = None):
         """Get or create OpenAI client with specific API key"""
         # Use provided API key or fall back to global setting
         key_to_use = api_key or settings.OPENAI_API_KEY
-        
+
         if not key_to_use:
             raise Exception("OpenAI API key not found. Please provide an API key or set OPENAI_API_KEY in your config.")
-        
+
         # Return existing client or create new one for this API key
         if key_to_use not in self._clients:
             self._clients[key_to_use] = get_openai_client(key_to_use)
-        
+
         return self._clients[key_to_use]
+
+    def get_async_client(self, api_key: str = None):
+        """Get or create an AsyncOpenAI client with specific API key.
+
+        Used for the streaming hot path (stream_text) so network I/O never
+        blocks the event loop — the sync client used elsewhere in this
+        service is intentionally left untouched for non-streaming call sites.
+        """
+        key_to_use = api_key or settings.OPENAI_API_KEY
+
+        if not key_to_use:
+            raise Exception("OpenAI API key not found. Please provide an API key or set OPENAI_API_KEY in your config.")
+
+        if key_to_use not in self._async_clients:
+            self._async_clients[key_to_use] = get_async_openai_client(key_to_use)
+
+        return self._async_clients[key_to_use]
 
     def embed_text(
         self,
@@ -79,15 +213,13 @@ class OpenAIService:
             
             # Generate content
             response = client.chat.completions.create(
-                model=model_name,
                 messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens
+                **_completion_params(model_name, temperature, max_tokens),
             )
-            
+
             end_time = time.time()
             response_time = end_time - start_time
-            
+
             return {
                 "content": response.choices[0].message.content,
                 "model": response.model,
@@ -99,7 +231,7 @@ class OpenAIService:
                 },
                 "finish_reason": response.choices[0].finish_reason
             }
-            
+
         except Exception as e:
             raise Exception(f"Error in OpenAI text generation: {str(e)}")
     
@@ -138,15 +270,13 @@ class OpenAIService:
             
             # Generate chat completion
             response = client.chat.completions.create(
-                model=model_name,
                 messages=api_messages,
-                temperature=temperature,
-                max_tokens=max_tokens
+                **_completion_params(model_name, temperature, max_tokens),
             )
-            
+
             end_time = time.time()
             response_time = end_time - start_time
-            
+
             return {
                 "content": response.choices[0].message.content,
                 "model": response.model,
@@ -158,7 +288,7 @@ class OpenAIService:
                 },
                 "finish_reason": response.choices[0].finish_reason
             }
-            
+
         except Exception as e:
             raise Exception(f"Error in OpenAI chat completion: {str(e)}")
     
@@ -183,30 +313,35 @@ class OpenAIService:
             Text chunks as strings
         """
         try:
-            # Get client instance with specific API key
-            client = self.get_client(api_key)
-            
+            # Get async client instance with specific API key — this is the
+            # streaming hot path, so we must never block the event loop with
+            # a sync HTTP call / sync SSE iteration here (see AsyncOpenAI).
+            client = self.get_async_client(api_key)
+
             # Prepare messages
             messages = []
             if system_prompt:
                 messages.append({"role": "system", "content": system_prompt})
             messages.append({"role": "user", "content": prompt})
-            
+
             # Stream response
-            stream = client.chat.completions.create(
-                model=model_name,
+            stream = await client.chat.completions.create(
                 messages=messages,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                stream=True
+                stream=True,
+                **_completion_params(model_name, temperature, max_tokens),
             )
-            
-            for chunk in stream:
+
+            async for chunk in stream:
                 if chunk.choices[0].delta.content is not None:
                     yield chunk.choices[0].delta.content
-                    
-        except Exception as e:
-            raise Exception(f"Error in OpenAI streaming: {str(e)}")
+
+        except Exception:
+            # Re-raise as-is rather than wrapping in a bare Exception — SDK
+            # errors (openai.RateLimitError, AuthenticationError, etc.) carry
+            # structured data (status code, headers, retry-after) that retry
+            # logic higher in the stack may need to inspect, and wrapping
+            # would destroy that type information.
+            raise
     
     def text_to_speech(self, text: str, voice: str = "alloy", 
                       model: str = "tts-1", output_format: str = "mp3",

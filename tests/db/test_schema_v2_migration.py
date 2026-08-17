@@ -498,3 +498,73 @@ class TestV2MigrationFile:
         """Confirm we have not altered the v1 gaps migration file."""
         mod = _load_migration("20260521_schema_v1_gaps.py")
         assert mod.down_revision == "20260518_tenant_name_uq"
+
+
+# ──────────────────────── widen ck_agent_llm_model (gpt-5 family) ─────────────
+
+class TestWidenAgentLlmModelCheckMigration:
+    """20260815_widen_agent_llm_model_check.py — widens ck_agent_llm_model
+    from the 14-value 20260602 snapshot to 19 values (adds the 5 gpt-5
+    reasoning-family IDs, removes nothing)."""
+
+    def test_file_exists(self):
+        assert (_VERSIONS_DIR / "20260815_widen_agent_llm_model_check.py").exists()
+
+    def test_down_revision_is_assemblyai_stt(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert mod.down_revision == "20260814_assemblyai_stt"
+
+    def test_has_upgrade_and_downgrade(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+    def test_revision_id(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert mod.revision == "20260815_widen_llm_check"
+
+    def test_widened_snapshot_has_19_values(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert len(mod._ALLOWED_LLM_MODELS_AT_REVISION) == 19
+
+    def test_prior_snapshot_unchanged_at_14_values(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert len(mod._PRIOR_ALLOWED_LLM_MODELS) == 14
+
+    def test_widened_snapshot_is_superset_of_prior_snapshot(self):
+        """Purely additive: nothing removed or renamed."""
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert set(mod._PRIOR_ALLOWED_LLM_MODELS).issubset(
+            set(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        )
+
+    def test_widened_snapshot_adds_exactly_the_gpt5_family(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        added = set(mod._ALLOWED_LLM_MODELS_AT_REVISION) - set(mod._PRIOR_ALLOWED_LLM_MODELS)
+        assert added == {"gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"}
+
+    def test_widened_snapshot_matches_current_allow_list(self):
+        """The migration's self-contained snapshot must match the current
+        app.core.llm_models.ALLOWED_LLM_MODELS allow-list (as of this
+        revision — future edits to the module are expected to add a new
+        migration rather than retroactively changing this one)."""
+        from app.core.llm_models import ALLOWED_LLM_MODELS
+
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == set(ALLOWED_LLM_MODELS)
+
+    def test_llm_check_sql_uses_widened_snapshot(self):
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        sql = mod._llm_check_sql(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        for model in mod._ALLOWED_LLM_MODELS_AT_REVISION:
+            assert f"'{model}'" in sql
+
+    def test_downgrade_sql_uses_prior_snapshot_only(self):
+        """Downgrade must restore the narrower 14-value constraint — gpt-5
+        IDs must not appear in the downgrade CHECK SQL."""
+        mod = _load_migration("20260815_widen_agent_llm_model_check.py")
+        sql = mod._llm_check_sql(mod._PRIOR_ALLOWED_LLM_MODELS)
+        for model in mod._PRIOR_ALLOWED_LLM_MODELS:
+            assert f"'{model}'" in sql
+        for gpt5_model in ["gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"]:
+            assert f"'{gpt5_model}'" not in sql

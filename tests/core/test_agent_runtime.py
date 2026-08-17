@@ -4,8 +4,14 @@ from __future__ import annotations
 import uuid
 from unittest.mock import MagicMock, patch
 
-from app.core.agent_runtime import resolve_llm_runtime, resolve_tts_runtime
-from app.core.llm_models import infer_llm_provider
+import pytest
+
+from app.core.agent_runtime import (
+    llm_service_for_provider,
+    resolve_llm_runtime,
+    resolve_tts_runtime,
+)
+from app.core.llm_models import ALLOWED_LLM_MODELS, infer_llm_provider
 
 
 def test_infer_llm_provider_openai():
@@ -14,6 +20,77 @@ def test_infer_llm_provider_openai():
 
 def test_infer_llm_provider_groq():
     assert infer_llm_provider("llama-3.1-70b-versatile") == "groq"
+
+
+# ─────────────────────────────── gpt-5 reasoning family (new models) ──────────
+
+_NEW_GPT5_MODELS = ["gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"]
+
+
+@pytest.mark.parametrize("model_name", _NEW_GPT5_MODELS)
+def test_gpt5_models_in_allow_list(model_name):
+    assert model_name in ALLOWED_LLM_MODELS
+
+
+@pytest.mark.parametrize("model_name", _NEW_GPT5_MODELS)
+def test_infer_llm_provider_resolves_gpt5_models_to_openai(model_name):
+    assert infer_llm_provider(model_name) == "openai"
+
+
+@pytest.mark.parametrize("model_name", _NEW_GPT5_MODELS)
+def test_resolve_llm_runtime_routes_gpt5_models_to_openai(model_name):
+    agent = MagicMock()
+    agent.llm_model = model_name
+    agent.model = None
+    agent.provider = None
+    agent.agent_temperature = None
+    agent.agent_max_tokens = None
+
+    runtime = resolve_llm_runtime(agent)
+    assert runtime.model_name == model_name
+    assert runtime.provider_slug == "openai"
+    assert runtime.used_ticket_llm is True
+
+
+@pytest.mark.parametrize("model_name", _NEW_GPT5_MODELS + ["gpt-4.1"])
+def test_llm_service_for_provider_routes_gpt_family_to_openai_singleton(model_name):
+    from app.services.openai_service import openai_service
+
+    provider_slug = infer_llm_provider(model_name)
+    assert llm_service_for_provider(provider_slug) is openai_service
+
+
+@pytest.mark.parametrize(
+    "model_name, expected_provider, expected_service_attr",
+    [
+        ("gemini-2.5-flash", "gemini", "vertex_gemini_service"),
+        ("gemini-2.0-flash-001", "gemini", "vertex_gemini_service"),
+        ("gemini-1.5-pro", "gemini", "vertex_gemini_service"),
+        ("claude-3-5-sonnet", "gemini", "vertex_gemini_service"),  # no Anthropic service yet
+        ("llama-3.1-70b-versatile", "groq", "groq_service"),
+        ("llama-3.1-8b-instant", "groq", "groq_service"),
+        ("gpt-4o", "openai", "openai_service"),
+        ("gpt-4o-mini", "openai", "openai_service"),
+        ("gpt-4.1", "openai", "openai_service"),
+        ("gpt-4.1-mini", "openai", "openai_service"),
+        ("gpt-4-turbo", "openai", "openai_service"),
+    ],
+)
+def test_existing_models_still_route_to_prior_providers(
+    model_name, expected_provider, expected_service_attr
+):
+    """Regression: adding gpt-5 models must not change routing for any
+    pre-existing allow-listed model."""
+    assert infer_llm_provider(model_name) == expected_provider
+
+    if expected_service_attr == "openai_service":
+        from app.services.openai_service import openai_service as expected_service
+    elif expected_service_attr == "groq_service":
+        from app.services.groq_service import groq_service as expected_service
+    else:
+        from app.services.vertex_gemini_service import vertex_gemini_service as expected_service
+
+    assert llm_service_for_provider(expected_provider) is expected_service
 
 
 def test_resolve_llm_runtime_prefers_ticket_llm_model():
