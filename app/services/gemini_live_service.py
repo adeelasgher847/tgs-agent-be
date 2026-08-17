@@ -143,6 +143,12 @@ class GeminiLiveSession:
         self.on_interrupted: Callable[[], Awaitable[None]] | None = None
         self.on_input_transcript: Callable[[str, bool], Awaitable[None]] | None = None
         self.on_output_transcript: Callable[[str, bool], Awaitable[None]] | None = None
+        # Fired on every ``server_content.turn_complete == True`` message —
+        # the only reliable turn-boundary signal for these models (see
+        # ``on_input_transcript``/``on_output_transcript`` docstrings in
+        # ``VoiceOrchestrator``: per-fragment ``finished`` flags are NOT
+        # trustworthy turn boundaries for the native-audio model family).
+        self.on_turn_complete: Callable[[], Awaitable[None]] | None = None
         self.on_tool_call: Callable[[Sequence[Any]], Awaitable[None]] | None = None
         self.on_error: Callable[[VertexLlmError], Awaitable[None]] | None = None
 
@@ -166,6 +172,7 @@ class GeminiLiveSession:
         on_interrupted: Callable[[], Awaitable[None]],
         on_input_transcript: Callable[[str, bool], Awaitable[None]] | None = None,
         on_output_transcript: Callable[[str, bool], Awaitable[None]] | None = None,
+        on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_tool_call: Callable[[Sequence[Any]], Awaitable[None]] | None = None,
         on_error: Callable[[VertexLlmError], Awaitable[None]] | None = None,
         tools: list | None = None,
@@ -180,6 +187,7 @@ class GeminiLiveSession:
         self.on_interrupted = on_interrupted
         self.on_input_transcript = on_input_transcript
         self.on_output_transcript = on_output_transcript
+        self.on_turn_complete = on_turn_complete
         self.on_tool_call = on_tool_call
         self.on_error = on_error
 
@@ -227,33 +235,7 @@ class GeminiLiveSession:
             self._connect_cm = None
             raise _classify_vertex_error(exc) from exc
 
-        # DIAGNOSTIC (temporary — root-cause investigation, strip before merge)
-        logger.info(
-            "[GeminiLiveDiag] __aenter__ returned session=%s model=%s — creating receive task",
-            type(self._session).__name__, self.model_name,
-        )
         self._receive_task = asyncio.create_task(self._receive_loop())
-        # DIAGNOSTIC: confirm the task object is a real, live asyncio.Task
-        # (not silently GC'd / not already done) right after creation, and
-        # attach a done_callback so we get a log line the instant it exits
-        # for ANY reason (normal StopAsyncIteration, exception, or cancel) —
-        # today _receive_loop() can return normally (async-for simply runs
-        # out of items) with zero log trace, which is indistinguishable from
-        # "still running" without this.
-        def _diag_receive_task_done(t: "asyncio.Task") -> None:
-            try:
-                exc = t.exception() if not t.cancelled() else None
-            except Exception as e:  # exception() itself can raise
-                exc = e
-            logger.info(
-                "[GeminiLiveDiag] receive_task DONE model=%s cancelled=%s exception=%r",
-                self.model_name, t.cancelled(), exc,
-            )
-        self._receive_task.add_done_callback(_diag_receive_task_done)
-        logger.info(
-            "[GeminiLiveDiag] receive_task created model=%s task_done=%s",
-            self.model_name, self._receive_task.done(),
-        )
 
     async def send_audio(self, pcm16_16k_bytes: bytes) -> None:
         """Send one chunk of raw PCM16/16kHz/mono caller audio. Caller must
@@ -261,18 +243,6 @@ class GeminiLiveSession:
         ``gemini_live_audio_bridge.mulaw8k_to_pcm16_16k``) — this module has
         zero telephony-format knowledge."""
         from google.genai import types
-
-        # DIAGNOSTIC (temporary — root-cause investigation, strip before merge):
-        # cheap counter to confirm the send side keeps succeeding for the
-        # whole call (vs. silently hanging/failing) without logging every
-        # single 20ms chunk.
-        self._diag_send_count = getattr(self, "_diag_send_count", 0) + 1
-        if self._diag_send_count % 50 == 1:  # ~ once/second at 20ms frames
-            logger.info(
-                "[GeminiLiveDiag] send_audio count=%d model=%s receive_task_done=%s",
-                self._diag_send_count, self.model_name,
-                self._receive_task.done() if self._receive_task else None,
-            )
 
         await self._session.send_realtime_input(
             audio=types.Blob(data=pcm16_16k_bytes, mime_type="audio/pcm;rate=16000")
@@ -317,10 +287,6 @@ class GeminiLiveSession:
         into the registered callbacks. Any exception (SDK or otherwise) is
         translated to ``VertexLlmError`` and routed to ``on_error`` if set,
         else logged."""
-        # DIAGNOSTIC (temporary — root-cause investigation, strip before merge)
-        logger.info("[GeminiLiveDiag] _receive_loop ENTERED model=%s", self.model_name)
-        msg_count = 0
-        turn_count = 0
         try:
             # session.receive() is an async-generator that, per google-genai's
             # live.py implementation, yields only until the first
@@ -329,46 +295,28 @@ class GeminiLiveSession:
             # whole call. It must be re-invoked for every subsequent turn,
             # hence the outer while loop below.
             while True:
-                turn_count += 1
                 turn_msg_count = 0
                 async for message in self._session.receive():
-                    msg_count += 1
                     turn_msg_count += 1
-                    logger.info(
-                        "[GeminiLiveDiag] server message #%d (turn %d) model=%s type=%s",
-                        msg_count, turn_count, self.model_name, type(message).__name__,
-                    )
                     try:
                         await self._handle_message(message)
                     except asyncio.CancelledError:
                         raise
                     except Exception as exc:
-                        logger.warning(
-                            "[GeminiLiveDiag] _handle_message raised on message #%d: %r",
-                            msg_count, exc,
-                        )
                         await self._report_error(exc)
                 if turn_msg_count == 0:
                     # receive() returned with zero messages instead of raising —
                     # treat as a dead/closed connection rather than busy-loop
                     # re-invoking it forever.
                     logger.warning(
-                        "[GeminiLiveDiag] receive() yielded no messages on turn %d "
-                        "model=%s — ending receive loop (connection likely closed)",
-                        turn_count, self.model_name,
+                        "[GeminiLiveSession] receive() yielded no messages model=%s — "
+                        "ending receive loop (connection likely closed)",
+                        self.model_name,
                     )
                     break
         except asyncio.CancelledError:
-            logger.info(
-                "[GeminiLiveDiag] _receive_loop CANCELLED model=%s after %d messages/%d turns",
-                self.model_name, msg_count, turn_count,
-            )
             raise
         except Exception as exc:
-            logger.info(
-                "[GeminiLiveDiag] _receive_loop raised model=%s after %d messages/%d turns: %r",
-                self.model_name, msg_count, turn_count, exc,
-            )
             await self._report_error(exc)
 
     async def _report_error(self, exc: Exception) -> None:
@@ -379,49 +327,17 @@ class GeminiLiveSession:
             logger.error("[GeminiLiveSession] %s (model=%s): %s", err.error_type, self.model_name, err)
 
     async def _handle_message(self, message: Any) -> None:
-        # DIAGNOSTIC (temporary — root-cause investigation, strip before merge):
-        # log which top-level fields are present on this message — type/event
-        # name only, never raw audio bytes or transcript text — so we can see
-        # exactly what Gemini is sending without guessing at SDK field names.
-        logger.info(
-            "[GeminiLiveDiag] _handle_message model=%s setup_complete=%s "
-            "has_server_content=%s has_tool_call=%s go_away=%s",
-            self.model_name,
-            bool(getattr(message, "setup_complete", None)),
-            getattr(message, "server_content", None) is not None,
-            getattr(message, "tool_call", None) is not None,
-            bool(getattr(message, "go_away", None)),
-        )
-
         if getattr(message, "setup_complete", None):
             logger.info("[GeminiLiveSession] setup_complete model=%s", self.model_name)
 
         server_content = getattr(message, "server_content", None)
         if server_content is not None:
             model_turn = getattr(server_content, "model_turn", None)
-            # DIAGNOSTIC
-            logger.info(
-                "[GeminiLiveDiag] server_content model=%s has_model_turn=%s "
-                "interrupted=%s turn_complete=%s",
-                self.model_name,
-                model_turn is not None,
-                bool(getattr(server_content, "interrupted", False)),
-                bool(getattr(server_content, "turn_complete", False)),
-            )
             if model_turn is not None:
                 parts = getattr(model_turn, "parts", None) or []
                 for part in parts:
                     inline_data = getattr(part, "inline_data", None)
                     data = getattr(inline_data, "data", None) if inline_data is not None else None
-                    # DIAGNOSTIC — byte count only, never raw audio.
-                    logger.info(
-                        "[GeminiLiveDiag] model_turn part model=%s has_inline_data=%s "
-                        "data_len=%s on_audio_chunk_registered=%s",
-                        self.model_name,
-                        inline_data is not None,
-                        len(data) if data else 0,
-                        self.on_audio_chunk is not None,
-                    )
                     if data and self.on_audio_chunk is not None:
                         await self.on_audio_chunk(data)
 
@@ -441,6 +357,16 @@ class GeminiLiveSession:
                     getattr(output_transcript, "text", "") or "",
                     bool(getattr(output_transcript, "finished", False)),
                 )
+
+            # Wire-protocol turn boundary: per-fragment ``finished`` flags on
+            # input/output transcription are NOT reliable for the
+            # native-audio model family (may never fire, or fire on an
+            # incremental fragment rather than the full utterance — see
+            # VoiceOrchestrator's input/output transcript buffering). This
+            # standalone, payload-less flag is the only signal callers should
+            # treat as an actual turn boundary.
+            if getattr(server_content, "turn_complete", False) and self.on_turn_complete is not None:
+                await self.on_turn_complete()
 
         tool_call = getattr(message, "tool_call", None)
         if tool_call is not None and self.on_tool_call is not None:

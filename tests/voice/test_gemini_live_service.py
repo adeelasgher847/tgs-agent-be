@@ -365,6 +365,38 @@ class TestReceiveLoopDemux:
 
         on_output_transcript.assert_awaited_once_with("hi, how can I help", False)
 
+    def test_turn_complete_demuxed_to_on_turn_complete(self):
+        server_content = SimpleNamespace(
+            model_turn=None,
+            interrupted=False,
+            input_transcription=None,
+            output_transcription=None,
+            turn_complete=True,
+        )
+        on_turn_complete = AsyncMock()
+
+        self._run_with_messages(
+            [_msg(server_content=server_content)], on_turn_complete=on_turn_complete
+        )
+
+        on_turn_complete.assert_awaited_once_with()
+
+    def test_turn_complete_false_does_not_fire_callback(self):
+        server_content = SimpleNamespace(
+            model_turn=None,
+            interrupted=False,
+            input_transcription=None,
+            output_transcription=None,
+            turn_complete=False,
+        )
+        on_turn_complete = AsyncMock()
+
+        self._run_with_messages(
+            [_msg(server_content=server_content)], on_turn_complete=on_turn_complete
+        )
+
+        on_turn_complete.assert_not_awaited()
+
     def test_tool_call_demuxed(self):
         function_calls = [SimpleNamespace(name="check_availability", args={"date": "today"})]
         tool_call = SimpleNamespace(function_calls=function_calls)

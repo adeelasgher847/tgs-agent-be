@@ -10,8 +10,9 @@ Covers, per the integration task write-up:
   - caller/agent audio flows through the right conversion functions
     (mulaw8k_to_pcm16_16k / pcm16_24k_to_mulaw8k)
   - barge-in (on_interrupted) gates the outbound send loop
-  - transcript callbacks write to call_transcript via _add_to_transcript
-    only on finished=True chunks
+  - transcript callbacks buffer every fragment (finished flag is unreliable)
+    and flush to call_transcript via _add_to_transcript on turn_complete /
+    next-turn's first output fragment / interrupted / shutdown
   - pre-session GeminiLiveSession.start() failure falls back to the legacy
     text pipeline (in-memory agent.llm_model swap), not a silent hang
 
@@ -209,34 +210,118 @@ class TestBargeIn:
 
 
 class TestTranscriptCallbacks:
-    def test_input_transcript_written_only_when_finished(self):
+    """Google's Live API doesn't reliably send a per-fragment `finished`
+    flag (googleapis/js-genai#1429), so fragments are unconditionally
+    buffered and only written to call_transcript on a reliable flush signal
+    (next turn's first output fragment / turn_complete / interrupted /
+    shutdown) — see _on_gemini_live_input_transcript's docstring."""
+
+    def test_input_fragments_are_buffered_not_written_immediately(self):
         h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
         orch = VoiceOrchestrator(h)
 
         asyncio.run(orch._on_gemini_live_input_transcript("partial", False))
         h._add_to_transcript.assert_not_awaited()
+        assert orch._gemini_live_input_buffer == ["partial"]
 
-        asyncio.run(orch._on_gemini_live_input_transcript("hello there", True))
+        # Even a fragment carrying finished=True is just buffered, not flushed —
+        # the flag is unreliable and can't be trusted as a turn boundary.
+        asyncio.run(orch._on_gemini_live_input_transcript(" hello there", True))
+        h._add_to_transcript.assert_not_awaited()
+        assert orch._gemini_live_input_buffer == ["partial", " hello there"]
+
+    def test_input_buffer_flushed_on_first_output_fragment(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        asyncio.run(orch._on_gemini_live_input_transcript("hello", False))
+        asyncio.run(orch._on_gemini_live_input_transcript(" there", False))
+        h._add_to_transcript.assert_not_awaited()
+
+        # First output fragment of the next turn is the implicit "caller
+        # finished speaking" signal — flushes the input buffer first.
+        asyncio.run(orch._on_gemini_live_output_transcript("Sure", False))
+
         h._add_to_transcript.assert_awaited_once_with("client", "hello there", "speech")
+        assert orch._gemini_live_input_buffer == []
+        assert orch._gemini_live_output_buffer == ["Sure"]
 
-    def test_output_transcript_written_only_when_finished(self):
+    def test_output_fragments_are_buffered_not_written_immediately(self):
         h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
         orch = VoiceOrchestrator(h)
 
         asyncio.run(orch._on_gemini_live_output_transcript("partial reply", False))
         h._add_to_transcript.assert_not_awaited()
+        assert orch._gemini_live_output_buffer == ["partial reply"]
 
-        asyncio.run(orch._on_gemini_live_output_transcript("Sure, I can help.", True))
+        asyncio.run(orch._on_gemini_live_output_transcript(" continued.", True))
+        h._add_to_transcript.assert_not_awaited()
+        assert orch._gemini_live_output_buffer == ["partial reply", " continued."]
+
+    def test_output_buffer_flushed_on_turn_complete(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        asyncio.run(orch._on_gemini_live_output_transcript("Sure, ", False))
+        asyncio.run(orch._on_gemini_live_output_transcript("I can help.", False))
+        h._add_to_transcript.assert_not_awaited()
+
+        asyncio.run(orch._on_gemini_live_turn_complete())
+
         h._add_to_transcript.assert_awaited_once_with(
             "agent", "Sure, I can help.", "agent_response"
         )
+        assert orch._gemini_live_output_buffer == []
+
+    def test_turn_complete_is_a_safety_net_for_tool_call_only_turns(self):
+        """A turn with no output-transcript fragments at all (e.g.
+        tool-call-only) must still flush any buffered input rather than
+        leaking the caller's utterance forever, and must not error when the
+        output buffer is empty."""
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        asyncio.run(orch._on_gemini_live_input_transcript("book a meeting", False))
+
+        asyncio.run(orch._on_gemini_live_turn_complete())
+
+        h._add_to_transcript.assert_awaited_once_with("client", "book a meeting", "speech")
+        assert orch._gemini_live_input_buffer == []
+        assert orch._gemini_live_output_buffer == []
+
+    def test_turn_complete_with_nothing_buffered_is_a_noop(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        asyncio.run(orch._on_gemini_live_turn_complete())
+
+        h._add_to_transcript.assert_not_awaited()
 
     def test_blank_finished_transcript_not_written(self):
         h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
         orch = VoiceOrchestrator(h)
 
         asyncio.run(orch._on_gemini_live_input_transcript("   ", True))
+        asyncio.run(orch._on_gemini_live_turn_complete())
         h._add_to_transcript.assert_not_awaited()
+
+    def test_interrupted_flushes_both_buffers(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        asyncio.run(orch._on_gemini_live_input_transcript("wait, ", False))
+        asyncio.run(orch._on_gemini_live_output_transcript("Sure I", False))
+
+        asyncio.run(orch._on_gemini_live_interrupted())
+
+        # Input buffer is already flushed by the output fragment above; only
+        # the output buffer remains for interrupted to flush.
+        assert h._add_to_transcript.await_args_list == [
+            (("client", "wait,", "speech"), {}),
+            (("agent", "Sure I", "agent_response"), {}),
+        ]
+        assert orch._gemini_live_input_buffer == []
+        assert orch._gemini_live_output_buffer == []
 
 
 class TestPreSessionFallback:
@@ -288,6 +373,56 @@ class TestMidCallError:
         )
 
         h._full_shutdown.assert_called_once()
+
+
+class TestTranscriptBufferLifecycle:
+    """Buffer-reset-on-session-start and flush-on-shutdown coverage — the
+    two remaining flush signals not already covered by TestTranscriptCallbacks."""
+
+    def test_buffers_reset_when_session_restarts(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        # Simulate leftover state from a prior turn/session that was never
+        # flushed — must not leak into the next session.
+        orch._gemini_live_input_buffer = ["stale caller text"]
+        orch._gemini_live_output_buffer = ["stale agent text"]
+
+        fake_session = MagicMock()
+        fake_session.start = AsyncMock()
+
+        with patch(
+            "app.services.gemini_live_service.GeminiLiveSession", return_value=fake_session
+        ), patch(
+            "app.routers.bidirectional_stream.BidirectionalStreamHandler.build_system_prompt",
+            new=AsyncMock(return_value="system prompt"),
+        ):
+            asyncio.run(orch._start_gemini_live_session(h))
+
+        assert orch._gemini_live_input_buffer == []
+        assert orch._gemini_live_output_buffer == []
+        assert orch._gemini_live_session is fake_session
+
+    def test_shutdown_flushes_unflushed_buffers_before_closing_session(self):
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        fake_session = MagicMock()
+        fake_session.close = AsyncMock()
+        orch._gemini_live_session = fake_session
+        orch._gemini_live_input_buffer = ["caller was mid-sentence"]
+        orch._gemini_live_output_buffer = ["agent was mid-reply"]
+
+        asyncio.run(orch.shutdown())
+
+        assert h._add_to_transcript.await_args_list == [
+            (("client", "caller was mid-sentence", "speech"), {}),
+            (("agent", "agent was mid-reply", "agent_response"), {}),
+        ]
+        assert orch._gemini_live_input_buffer == []
+        assert orch._gemini_live_output_buffer == []
+        fake_session.close.assert_awaited_once()
+        assert orch._gemini_live_session is None
 
 
 def _fake_handler_for_real_prompt_build(*, llm_model: str) -> Handler:
@@ -732,6 +867,8 @@ class TestMidCallRagRefresh:
         fake_session.send_text.assert_not_awaited()
 
     def test_input_transcript_callback_schedules_refresh_task(self):
+        """The refresh task is scheduled by the flush (turn-boundary write),
+        not by the raw fragment callback — fragments only buffer."""
         h = self._handler_with_flow(kb_ids=[uuid.uuid4()])
         orch = VoiceOrchestrator(h)
 
@@ -740,6 +877,9 @@ class TestMidCallRagRefresh:
                 orch, "_refresh_gemini_live_kb_context", new=AsyncMock()
             ) as mock_refresh:
                 await orch._on_gemini_live_input_transcript("hello there", True)
+                mock_refresh.assert_not_called()
+
+                await orch._flush_gemini_live_input_buffer()
                 # The refresh runs as a tracked background task, not inline —
                 # await the same task set _full_shutdown drains, within this
                 # same event loop (a task is bound to the loop it was created

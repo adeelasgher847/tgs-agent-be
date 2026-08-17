@@ -181,6 +181,18 @@ class VoiceOrchestrator:
         # there is no TtsPipeline task to cancel (see _on_gemini_live_interrupted).
         self._gemini_live_cancel: asyncio.Event = asyncio.Event()
         self._gemini_live_first_audio_marked: bool = False
+        # Per-call accumulation buffers for input/output transcript fragments
+        # (see _on_gemini_live_input_transcript / _on_gemini_live_output_transcript).
+        # The Live API's per-fragment `finished` flag is NOT a reliable
+        # turn-boundary signal for the native-audio model family (may never
+        # fire, or fire on an incremental fragment rather than the full
+        # utterance) — fragments are buffered here and flushed to
+        # call_transcript on the documented workaround signals instead (see
+        # _flush_gemini_live_input_buffer / _flush_gemini_live_output_buffer).
+        # Reset alongside self._gemini_live_session wherever that is
+        # (re)created, so no leftover text can bleed into a later call/turn.
+        self._gemini_live_input_buffer: list[str] = []
+        self._gemini_live_output_buffer: list[str] = []
         # Coalescing guard for _refresh_gemini_live_kb_context: a chatty
         # back-and-forth call could otherwise fire several overlapping KB
         # retrievals + un-ordered session.send_text(...) calls in quick
@@ -513,12 +525,21 @@ class VoiceOrchestrator:
         except Exception as exc:
             logger.debug("[VoiceOrchestrator] STT pipeline close failed: %s", exc)
 
-        # Close Gemini Live session (native-audio calls only — no-op otherwise)
+        # Close Gemini Live session (native-audio calls only — no-op otherwise).
+        # close() cancels and awaits the receive-loop task before returning, so
+        # closing FIRST guarantees no more fragments can be appended to the
+        # buffers by a still-running receive loop; only then is it safe to
+        # flush once. Flushing before close() left a race where an in-flight
+        # receive-loop message (scheduled during the flush's own awaits) could
+        # land in a buffer that was just cleared and never get written —
+        # exactly the "call ending mid-buffer" case this flush exists to cover.
         try:
             if self._gemini_live_session is not None:
                 self._gemini_live_cancel.set()
                 await self._gemini_live_session.close()
                 self._gemini_live_session = None
+                await self._flush_gemini_live_input_buffer()
+                await self._flush_gemini_live_output_buffer()
         except Exception as exc:
             logger.debug("[VoiceOrchestrator] Gemini Live session close failed: %s", exc)
 
@@ -704,6 +725,7 @@ class VoiceOrchestrator:
                 on_interrupted=self._on_gemini_live_interrupted,
                 on_input_transcript=self._on_gemini_live_input_transcript,
                 on_output_transcript=self._on_gemini_live_output_transcript,
+                on_turn_complete=self._on_gemini_live_turn_complete,
                 on_tool_call=on_tool_call,
                 on_error=self._on_gemini_live_error,
                 tools=gemini_tools,
@@ -724,6 +746,11 @@ class VoiceOrchestrator:
             return
 
         self._gemini_live_session = session
+        # Reset transcript buffers alongside the session itself so no
+        # leftover fragments from a prior (re)start could bleed in — mirrors
+        # __init__'s initial reset.
+        self._gemini_live_input_buffer = []
+        self._gemini_live_output_buffer = []
         logger.info(
             "[GeminiLive] session started model=%s call_session_id=%s",
             model_name, getattr(h, "call_session_id", None),
@@ -831,6 +858,13 @@ class VoiceOrchestrator:
                 await self._h._send_twilio_clear_event()
             else:
                 await self._h._clear_gemini_live_playout_queue()
+            # Barge-in cuts a turn off mid-flight, but whatever was
+            # accumulated in either buffer up to this point is real speech
+            # that actually happened (the caller's interruption, and/or the
+            # agent's partial response before being cut off) — flush rather
+            # than silently drop it.
+            await self._flush_gemini_live_input_buffer()
+            await self._flush_gemini_live_output_buffer()
             # Reset for the next turn's outbound audio (mirrors _tts_cancel.clear()
             # in ConversationOrchestrator.generate_and_stream_response).
             self._gemini_live_cancel.clear()
@@ -841,12 +875,36 @@ class VoiceOrchestrator:
             )
 
     async def _on_gemini_live_input_transcript(self, text: str, finished: bool) -> None:
-        """Caller-side transcript from Gemini's own input_transcription. Only
-        written to call_transcript on finished chunks — mirrors the existing
-        STT-final (not interim) transcript-write precedent."""
-        if not finished or not (text or "").strip():
+        """
+        Caller-side transcript fragment from Gemini's own input_transcription.
+
+        The Live API's per-fragment ``finished`` flag is NOT a reliable
+        turn-boundary signal for the native-audio model family — it may
+        never fire at all, and even when it does, ``text`` is itself an
+        incremental fragment (e.g. " Ho", " you") rather than the full
+        utterance (confirmed against googleapis/js-genai#1429 and Google's
+        own forum reports). So every fragment is unconditionally appended to
+        a per-call buffer here; the accumulated buffer is written to
+        call_transcript later by _flush_gemini_live_input_buffer(), triggered
+        by the first output-transcript fragment of the next turn (implicit
+        "caller finished speaking" signal) or by turn_complete/interrupted/
+        shutdown as safety nets — see those call sites.
+        """
+        text = text or ""
+        if text:
+            self._gemini_live_input_buffer.append(text)
+
+    async def _flush_gemini_live_input_buffer(self) -> None:
+        """Write the accumulated input-transcript buffer to call_transcript
+        and clear it. Also fires the mid-call RAG refresh off the same
+        flushed text (same signal as before, just correctly assembled now
+        instead of a single stray fragment)."""
+        if not self._gemini_live_input_buffer:
             return
-        transcript = text.strip()
+        transcript = "".join(self._gemini_live_input_buffer).strip()
+        self._gemini_live_input_buffer = []
+        if not transcript:
+            return
         try:
             await self._h._add_to_transcript("client", transcript, "speech")
         except Exception as exc:
@@ -854,16 +912,16 @@ class VoiceOrchestrator:
                 "[VoiceOrchestrator] gemini live input transcript write failed: %s", exc, exc_info=True
             )
 
-        # Mid-call RAG refresh (Phase 2, plan §6): a finished input transcript
-        # is the closest thing this session has to a per-turn boundary (no
-        # STT-interim prefetch signal exists here). Fire-and-forget — must
-        # never block the receive loop or delay the caller's live audio
-        # response; tracked in the same set _full_shutdown already drains so
-        # a call ending mid-refresh doesn't leak the task. Coalesced via
-        # _gemini_live_kb_refresh_in_flight: skip rather than queue a new
-        # refresh while one is still running, so a chatty back-and-forth
-        # can't fire several overlapping retrievals + unordered
-        # session.send_text(...) calls racing each other.
+        # Mid-call RAG refresh (Phase 2, plan §6): the flushed input
+        # transcript is the closest thing this session has to a per-turn
+        # boundary (no STT-interim prefetch signal exists here).
+        # Fire-and-forget — must never block the receive loop or delay the
+        # caller's live audio response; tracked in the same set
+        # _full_shutdown already drains so a call ending mid-refresh doesn't
+        # leak the task. Coalesced via _gemini_live_kb_refresh_in_flight:
+        # skip rather than queue a new refresh while one is still running, so
+        # a chatty back-and-forth can't fire several overlapping retrievals +
+        # unordered session.send_text(...) calls racing each other.
         if not self._gemini_live_kb_refresh_in_flight:
             t = asyncio.create_task(self._refresh_gemini_live_kb_context(transcript))
             self._pending_final_tasks.add(t)
@@ -919,16 +977,59 @@ class VoiceOrchestrator:
             self._gemini_live_kb_refresh_in_flight = False
 
     async def _on_gemini_live_output_transcript(self, text: str, finished: bool) -> None:
-        """Agent-side transcript from Gemini's own output_transcription. Only
-        written on finished chunks so call_transcript gets one clean line per
-        agent turn, matching the existing agent_response convention."""
-        if not finished or not (text or "").strip():
+        """
+        Agent-side transcript fragment from Gemini's own output_transcription.
+        Same unreliable-``finished``/fragment-not-full-utterance caveat as
+        _on_gemini_live_input_transcript applies here — every fragment is
+        buffered rather than gated on ``finished``.
+
+        The first output fragment of a turn is also the documented signal
+        that the caller has finished speaking (Gemini has started
+        responding), so it flushes any pending input buffer before appending
+        itself to the output buffer. The output buffer itself is flushed on
+        turn_complete (see _on_gemini_live_turn_complete) so call_transcript
+        gets one clean accumulated line per agent turn, matching the
+        existing agent_response convention.
+        """
+        text = text or ""
+        if not text:
+            return
+        if self._gemini_live_input_buffer:
+            await self._flush_gemini_live_input_buffer()
+        self._gemini_live_output_buffer.append(text)
+
+    async def _flush_gemini_live_output_buffer(self) -> None:
+        """Write the accumulated output-transcript buffer to call_transcript
+        and clear it."""
+        if not self._gemini_live_output_buffer:
+            return
+        transcript = "".join(self._gemini_live_output_buffer).strip()
+        self._gemini_live_output_buffer = []
+        if not transcript:
             return
         try:
-            await self._h._add_to_transcript("agent", text.strip(), "agent_response")
+            await self._h._add_to_transcript("agent", transcript, "agent_response")
         except Exception as exc:
             logger.error(
                 "[VoiceOrchestrator] gemini live output transcript write failed: %s", exc, exc_info=True
+            )
+
+    async def _on_gemini_live_turn_complete(self) -> None:
+        """
+        GeminiLiveSession.on_turn_complete callback — the only reliable
+        turn-boundary signal for these models (see
+        _on_gemini_live_input_transcript's docstring). Flushes the output
+        buffer (the normal, expected flush point for an agent turn) and, as
+        a safety net, the input buffer too — covers turns that never produce
+        an output-transcript fragment at all (e.g. a tool-call-only turn),
+        which would otherwise leave a caller utterance buffered forever.
+        """
+        try:
+            await self._flush_gemini_live_input_buffer()
+            await self._flush_gemini_live_output_buffer()
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] gemini live turn_complete flush failed: %s", exc, exc_info=True
             )
 
     async def _on_gemini_live_tool_call(self, function_calls) -> None:
