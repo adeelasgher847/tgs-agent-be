@@ -26,7 +26,7 @@ import time
 from typing import TYPE_CHECKING, Any, Set
 
 from app.core.config import settings
-from app.core.llm_models import is_gemini_live_native_audio_model
+from app.core.llm_models import is_gemini_live_native_audio_model, is_openai_realtime_model
 from app.core.logger import logger
 from app.utils.audio_utils import ulaw_to_linear_sample
 from app.voice.gemini_live_audio_bridge import mulaw8k_to_pcm16_16k, pcm16_24k_to_mulaw8k
@@ -45,6 +45,14 @@ if TYPE_CHECKING:
 # `agent.llm_model` is swapped to this allow-listed text model for the
 # remainder of THIS call object only (never persisted to the DB).
 _GEMINI_LIVE_FALLBACK_TEXT_MODEL = "gemini-2.5-flash"
+
+# Same idea as _GEMINI_LIVE_FALLBACK_TEXT_MODEL above, for OpenAI Realtime
+# ("gpt-realtime"/"gpt-realtime-2") pre-session failures — see
+# _start_openai_realtime_session / _fallback_to_legacy_pipeline_openai. Kept
+# in the same provider family (OpenAI) rather than falling back cross-
+# provider to a Gemini text model, since the tenant/agent is already
+# configured for an OpenAI API key.
+_OPENAI_REALTIME_FALLBACK_TEXT_MODEL = "gpt-4o-mini"
 
 
 def _resolve_initial_endpointing_ms() -> int:
@@ -202,9 +210,32 @@ class VoiceOrchestrator:
         # says next anyway.
         self._gemini_live_kb_refresh_in_flight: bool = False
 
+        # ── OpenAI Realtime (native-audio speech-to-speech) state ─────────────
+        # Parallel to the Gemini Live block above, not a shared/refactored
+        # implementation (per this task's "strictly additive, don't touch
+        # Gemini-Live-specific code" constraint) — see
+        # app/services/openai_realtime_service.py's module docstring for the
+        # deliberate behavioral divergences (no per-turn receive loop, no
+        # transcript-fragment buffering, mostly-server-driven barge-in).
+        self._is_openai_realtime: bool = is_openai_realtime_model(
+            getattr(_agent, "llm_model", None) if _agent else None
+        )
+        self._openai_realtime_session: Any = None
+        self._openai_realtime_setup_lock: asyncio.Lock = asyncio.Lock()
+        self._openai_realtime_setup_failed: bool = False
+        self._openai_realtime_cancel: asyncio.Event = asyncio.Event()
+        self._openai_realtime_first_audio_marked: bool = False
+        # No input/output transcript buffers needed here — unlike Gemini
+        # Live, OpenAI's transcription events each fire exactly once per
+        # utterance with the full final text (see
+        # openai_realtime_service.OpenAIRealtimeSession's on_input_transcript/
+        # on_output_transcript contract).
+        self._openai_realtime_kb_refresh_in_flight: bool = False
+
         logger.info(
-            "[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready, gemini_live=%s",
-            self._is_gemini_live,
+            "[VoiceOrchestrator] Initialized — STT lazy, TTS pipeline ready, "
+            "gemini_live=%s openai_realtime=%s",
+            self._is_gemini_live, self._is_openai_realtime,
         )
 
     # ── Public interface ──────────────────────────────────────────────────────
@@ -337,6 +368,16 @@ class VoiceOrchestrator:
             # agnostic (RMS over MULAW) and stays unchanged for both paths.
             if self._is_gemini_live:
                 await self._feed_gemini_live_audio(h, audio_data)
+                return
+
+            # ── 3c. Native-audio (OpenAI Realtime) fork ─────────────────────────
+            # Same idea as 3b above, for OpenAI's Realtime speech-to-speech
+            # models. Twilio's own MULAW/8kHz wire format is sent straight
+            # through with NO conversion (see _feed_openai_realtime_audio /
+            # app.services.openai_realtime_service's module docstring) —
+            # unlike Gemini Live, which forces a PCM16 resample round-trip.
+            if self._is_openai_realtime:
+                await self._feed_openai_realtime_audio(h, audio_data)
                 return
 
             # ── 4. STT feed ───────────────────────────────────────────────────
@@ -542,6 +583,19 @@ class VoiceOrchestrator:
                 await self._flush_gemini_live_output_buffer()
         except Exception as exc:
             logger.debug("[VoiceOrchestrator] Gemini Live session close failed: %s", exc)
+
+        # Close OpenAI Realtime session (native-audio calls only — no-op
+        # otherwise). No buffer-flush step needed here (unlike the Gemini
+        # Live block above) — OpenAI's transcripts are written to
+        # call_transcript synchronously as each complete utterance arrives,
+        # never buffered.
+        try:
+            if self._openai_realtime_session is not None:
+                self._openai_realtime_cancel.set()
+                await self._openai_realtime_session.close()
+                self._openai_realtime_session = None
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] OpenAI Realtime session close failed: %s", exc)
 
         logger.info("[VoiceOrchestrator] Shutdown complete")
 
@@ -1101,6 +1155,354 @@ class VoiceOrchestrator:
         """
         logger.error(
             "[GeminiLive] mid-call session error call_session_id=%s error_type=%s: %s",
+            getattr(self._h, "call_session_id", None),
+            getattr(err, "error_type", None),
+            err,
+        )
+        asyncio.create_task(self._h._full_shutdown())
+
+    # ── OpenAI Realtime (native-audio speech-to-speech) ─────────────────────────
+    # Parallel to the "Gemini Live" section above — see
+    # app/services/openai_realtime_service.py's module docstring for the
+    # deliberate behavioral divergences from Gemini Live (no per-turn
+    # receive loop, no transcript-fragment buffering, mostly-server-driven
+    # barge-in via turn_detection.interrupt_response).
+
+    async def _feed_openai_realtime_audio(self, h, audio_data: bytes) -> None:
+        """
+        Route one MULAW/8kHz Twilio caller-audio frame to the (lazily
+        created) OpenAIRealtimeSession for this call. Called instead of the
+        SttPipeline feed for native-audio OpenAI agents. Unlike
+        _feed_gemini_live_audio, no format conversion happens here — the
+        session is started with audio_format="audio/pcmu" for a Twilio
+        call, which OpenAI accepts natively (see
+        openai_realtime_service.TWILIO_AUDIO_FORMAT).
+        """
+        if self._openai_realtime_setup_failed:
+            return
+
+        session = self._openai_realtime_session
+        if session is None:
+            async with self._openai_realtime_setup_lock:
+                if self._openai_realtime_session is None and not self._openai_realtime_setup_failed:
+                    await self._start_openai_realtime_session(h)
+            session = self._openai_realtime_session
+
+        if session is None:
+            return  # setup failed and fallback (or shutdown) already handled it
+
+        try:
+            await session.send_audio(audio_data)
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] OpenAIRealtimeSession.send_audio failed: %s", exc, exc_info=True
+            )
+
+    async def _start_openai_realtime_session(self, h) -> None:
+        """
+        Lazily open the OpenAIRealtimeSession for this call (once). Mirrors
+        _start_gemini_live_session's transport-aware system_instruction /
+        Calendly-tool wiring exactly — only the session class, audio format,
+        and voice-resolution helper differ.
+        """
+        from app.services.openai_realtime_service import (
+            OpenAIRealtimeError,
+            OpenAIRealtimeSession,
+            LIVEKIT_AUDIO_FORMAT,
+            TWILIO_AUDIO_FORMAT,
+            resolve_voice_name as resolve_openai_voice_name,
+        )
+
+        agent = getattr(h, "agent", None)
+        model_name = getattr(agent, "llm_model", None) if agent else None
+        is_twilio_transport = hasattr(h, "build_system_prompt")
+
+        try:
+            if is_twilio_transport:
+                system_instruction = await h.build_system_prompt(user_text="", confidence=1.0)
+            else:
+                from app.voice.conversation_orchestrator import ConversationOrchestrator
+
+                conv = ConversationOrchestrator(h)
+                system_instruction = await conv.build_system_prompt(user_text="", confidence=1.0)
+        except Exception as exc:
+            logger.error(
+                "[OpenAIRealtime] build_system_prompt failed for session start; using minimal "
+                "fallback instruction: %s", exc, exc_info=True,
+            )
+            agent_name = getattr(agent, "name", None) or "AI Assistant"
+            system_instruction = f"You are {agent_name}, a helpful phone assistant."
+
+        openai_tools = None
+        on_tool_call = None
+        if hasattr(h, "_calendly_enabled") and h._calendly_enabled():
+            from app.services.openai_realtime_service import _build_calendly_tool_params
+
+            openai_tools = _build_calendly_tool_params()
+            on_tool_call = self._on_openai_realtime_tool_call
+
+        voice_name = resolve_openai_voice_name(getattr(agent, "tts_voice_external_id", None))
+        audio_format = TWILIO_AUDIO_FORMAT if is_twilio_transport else LIVEKIT_AUDIO_FORMAT
+
+        session = OpenAIRealtimeSession(model_name)
+        try:
+            await session.start(
+                system_instruction=system_instruction,
+                audio_format=audio_format,
+                voice_name=voice_name,
+                on_audio_chunk=self._on_openai_realtime_audio_chunk,
+                on_interrupted=self._on_openai_realtime_interrupted,
+                on_input_transcript=self._on_openai_realtime_input_transcript,
+                on_output_transcript=self._on_openai_realtime_output_transcript,
+                on_tool_call=on_tool_call,
+                on_error=self._on_openai_realtime_error,
+                tools=openai_tools,
+            )
+        except OpenAIRealtimeError as exc:
+            logger.error(
+                "[OpenAIRealtime] pre-session start failed model=%s call_session_id=%s: %s",
+                model_name, getattr(h, "call_session_id", None), exc,
+            )
+            await self._fallback_to_legacy_pipeline_openai(h, reason=str(exc))
+            return
+        except Exception as exc:
+            logger.error(
+                "[OpenAIRealtime] unexpected pre-session start failure model=%s call_session_id=%s: %s",
+                model_name, getattr(h, "call_session_id", None), exc, exc_info=True,
+            )
+            await self._fallback_to_legacy_pipeline_openai(h, reason=str(exc))
+            return
+
+        self._openai_realtime_session = session
+        logger.info(
+            "[OpenAIRealtime] session started model=%s call_session_id=%s",
+            model_name, getattr(h, "call_session_id", None),
+        )
+
+    async def _fallback_to_legacy_pipeline_openai(self, h, reason: str) -> None:
+        """Pre-session OpenAIRealtimeSession.start() failure fallback — mirrors
+        _fallback_to_legacy_pipeline (Gemini Live) exactly, swapping in the
+        OpenAI-family fallback text model instead."""
+        self._openai_realtime_setup_failed = True
+        self._is_openai_realtime = False
+
+        agent = getattr(h, "agent", None)
+        if agent is not None:
+            logger.warning(
+                "[OpenAIRealtime] falling back to legacy pipeline for call_session_id=%s: "
+                "%s -> %s (reason: %s)",
+                getattr(h, "call_session_id", None),
+                getattr(agent, "llm_model", None),
+                _OPENAI_REALTIME_FALLBACK_TEXT_MODEL,
+                reason,
+            )
+            agent.llm_model = _OPENAI_REALTIME_FALLBACK_TEXT_MODEL
+        else:
+            logger.error(
+                "[OpenAIRealtime] pre-session failure with no agent loaded for call_session_id=%s "
+                "(reason: %s) — cannot fall back to a text pipeline; ending call.",
+                getattr(h, "call_session_id", None), reason,
+            )
+            asyncio.create_task(h._full_shutdown())
+
+    async def _on_openai_realtime_audio_chunk(self, audio_bytes: bytes) -> None:
+        """
+        OpenAIRealtimeSession.on_audio_chunk callback. Gates on
+        self._openai_realtime_cancel exactly like _on_gemini_live_audio_chunk
+        gates on self._gemini_live_cancel.
+
+        Transport-aware (duck-typed via hasattr, same pattern as
+        _on_gemini_live_audio_chunk):
+          - Twilio: `audio_bytes` is already mu-law/8kHz (the session was
+            started with audio_format="audio/pcmu") — streamed straight to
+            `_stream_live_audio_chunk` with NO conversion step, unlike
+            Gemini Live's pcm16_24k_to_mulaw8k.
+          - LiveKit browser: `audio_bytes` is raw PCM16/24kHz (audio_format=
+            "audio/pcm") — the exact format/rate
+            `_publish_gemini_live_audio_chunk` (and the publisher it
+            targets) already expects for Gemini Live, so that existing sink
+            is reused as-is (see its own docstring — it's a generic
+            "publish raw PCM16 at the publisher's rate" primitive despite
+            the Gemini-specific name).
+        """
+        if self._openai_realtime_cancel.is_set():
+            return
+        try:
+            if not self._openai_realtime_first_audio_marked:
+                self._openai_realtime_first_audio_marked = True
+                _vm = getattr(self._h, "_voice_metrics", None)
+                if _vm:
+                    _vm.mark_live_first_audio()
+
+            if hasattr(self._h, "_stream_live_audio_chunk"):
+                await self._h._stream_live_audio_chunk(audio_bytes)
+            else:
+                from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ
+
+                await self._h._publish_gemini_live_audio_chunk(
+                    audio_bytes, self._openai_realtime_cancel,
+                    sample_rate_hz=LIVEKIT_AUDIO_RATE_HZ,
+                )
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] openai realtime audio chunk send failed: %s", exc, exc_info=True
+            )
+
+    async def _on_openai_realtime_interrupted(self) -> None:
+        """
+        Barge-in for the OpenAI Realtime path. Server-side, OpenAI already
+        cancels its own in-flight response when `interrupt_response=True`
+        (session config) detects caller speech — this callback only handles
+        the LOCAL half: stop our own outbound send loop and flush whatever
+        this transport has already buffered/sent. Mirrors
+        _on_gemini_live_interrupted's transport-aware dispatch exactly.
+        """
+        try:
+            self._openai_realtime_cancel.set()
+            if hasattr(self._h, "_send_twilio_clear_event"):
+                await self._h._send_twilio_clear_event()
+            else:
+                await self._h._clear_gemini_live_playout_queue()
+            self._openai_realtime_cancel.clear()
+            self._openai_realtime_first_audio_marked = False
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] openai realtime interrupted handling failed: %s", exc, exc_info=True
+            )
+
+    async def _on_openai_realtime_input_transcript(self, text: str) -> None:
+        """
+        Caller-side FULL final transcript for one utterance — fires exactly
+        once per utterance (see OpenAIRealtimeSession's
+        on_input_transcript contract). No buffering/flush-signal dance
+        needed here, unlike _on_gemini_live_input_transcript.
+        """
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            await self._h._add_to_transcript("client", text, "speech")
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] openai realtime input transcript write failed: %s", exc, exc_info=True
+            )
+
+        # Mid-call RAG refresh (mirrors _flush_gemini_live_input_buffer's
+        # fire-and-forget trigger, keyed here directly off the complete
+        # utterance rather than off a buffer flush — there is no buffer to
+        # flush on this path). Coalesced via
+        # _openai_realtime_kb_refresh_in_flight for the same reason Gemini
+        # Live's refresh is coalesced: a chatty back-and-forth shouldn't
+        # fire several overlapping retrievals + unordered send_text() calls.
+        if not self._openai_realtime_kb_refresh_in_flight:
+            t = asyncio.create_task(self._refresh_openai_realtime_kb_context(text))
+            self._pending_final_tasks.add(t)
+            t.add_done_callback(lambda done_t, s=self: s._pending_final_tasks.discard(done_t))
+
+    async def _refresh_openai_realtime_kb_context(self, transcript: str) -> None:
+        """
+        OpenAI Realtime analog of _refresh_gemini_live_kb_context. Sends the
+        refreshed KB context as a `conversation.item.create` with
+        `respond=False` — a context-only injection must NEVER trigger
+        `response.create`, or OpenAI will speak the raw injected context
+        aloud as if it were a real reply (see
+        OpenAIRealtimeSession.send_text's docstring). Fails open on any
+        error, same as every other RAG call site in this codebase.
+        """
+        session = self._openai_realtime_session
+        if session is None or not transcript:
+            return
+        flow = getattr(self._h, "call_flow", None)
+        kb_ids = (flow.knowledge_base_ids or []) if flow else []
+        if not kb_ids:
+            return
+        self._openai_realtime_kb_refresh_in_flight = True
+        try:
+            from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+            from app.utils.redis_client import get_redis
+
+            kb_context, latency_ms = await retrieve_kb_context_for_turn(
+                transcript=transcript, kb_ids=kb_ids, redis_client=get_redis()
+            )
+            if not kb_context:
+                return
+            await session.send_text(
+                "[KNOWLEDGE BASE CONTEXT UPDATE — authoritative, use if relevant to the "
+                f"caller's most recent question]\n{kb_context}",
+                respond=False,
+            )
+            logger.debug(
+                "[OpenAIRealtime] kb_refresh latency_ms=%.1f chars=%d", latency_ms, len(kb_context)
+            )
+        except Exception as exc:
+            logger.debug("[OpenAIRealtime] mid-call KB refresh failed (non-fatal): %s", exc)
+        finally:
+            self._openai_realtime_kb_refresh_in_flight = False
+
+    async def _on_openai_realtime_output_transcript(self, text: str) -> None:
+        """Agent-side FULL final transcript for one turn — fires exactly
+        once (see OpenAIRealtimeSession's on_output_transcript contract).
+        No buffering/turn_complete flush needed, unlike
+        _on_gemini_live_output_transcript / _on_gemini_live_turn_complete."""
+        text = (text or "").strip()
+        if not text:
+            return
+        try:
+            await self._h._add_to_transcript("agent", text, "agent_response")
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] openai realtime output transcript write failed: %s", exc, exc_info=True
+            )
+
+    async def _on_openai_realtime_tool_call(self, call_id: str, name: str, arguments_json: str) -> None:
+        """
+        Calendly tool-calling for an OpenAI Realtime session. Only ever
+        registered when the handler is Twilio's BidirectionalStreamHandler
+        AND the call flow has Calendly enabled (see
+        _start_openai_realtime_session) — mirrors
+        _on_gemini_live_tool_call's gating and reuses
+        BookingMixin._execute_calendly_tool_call unmodified, same as Gemini.
+        """
+        import json as _json
+
+        session = self._openai_realtime_session
+        if session is None:
+            return
+
+        try:
+            args = _json.loads(arguments_json) if arguments_json else {}
+            if not isinstance(args, dict):
+                args = {}
+        except (ValueError, TypeError):
+            args = {}
+
+        try:
+            result = await self._h._execute_calendly_tool_call(name, args)
+        except Exception as exc:
+            logger.error(
+                "[OpenAIRealtime] Calendly tool call %s failed unexpectedly: %s",
+                name, exc, exc_info=True,
+            )
+            result = {"error": "internal error executing tool call"}
+
+        from app.core.pii_redactor import redact_pii
+
+        logger.info("[OpenAIRealtime] tool_call name=%s args=%s", name, redact_pii(args))
+        try:
+            await session.send_tool_response(call_id, result)
+        except Exception as exc:
+            logger.error("[OpenAIRealtime] send_tool_response failed: %s", exc, exc_info=True)
+
+    async def _on_openai_realtime_error(self, err) -> None:
+        """
+        Mid-call OpenAIRealtimeSession failure (session had already started —
+        pre-session failures are handled by _start_openai_realtime_session's
+        own try/except, never reach here). Mirrors _on_gemini_live_error:
+        end the call gracefully rather than attempting to reconstruct
+        STT/TTS mid-call.
+        """
+        logger.error(
+            "[OpenAIRealtime] mid-call session error call_session_id=%s error_type=%s: %s",
             getattr(self._h, "call_session_id", None),
             getattr(err, "error_type", None),
             err,

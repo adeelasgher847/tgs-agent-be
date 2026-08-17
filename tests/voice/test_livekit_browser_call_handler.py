@@ -707,7 +707,9 @@ class TestRunLiveKitBrowserCall:
              ), \
              patch(
                  "app.voice.voice_orchestrator.VoiceOrchestrator",
-                 return_value=MagicMock(shutdown=AsyncMock(), _is_gemini_live=False),
+                 return_value=MagicMock(
+                     shutdown=AsyncMock(), _is_gemini_live=False, _is_openai_realtime=False,
+                 ),
              ), \
              patch(
                  "app.voice.livekit_browser_call_handler._LiveKitAgentAudioPublisher",
@@ -756,11 +758,13 @@ class TestRunLiveKitBrowserCall:
         mock_vo_instance._on_interim = AsyncMock()
         mock_vo_instance._on_final = AsyncMock()
         # Explicit, not auto-Mock-truthy: this test exercises the normal
-        # (non-Gemini-Live) STT/TTS path — a bare MagicMock() would make
-        # `_is_gemini_live` an auto-created truthy child Mock, wrongly
-        # entering the Gemini Live branch and awaiting an un-awaitable
-        # `_start_gemini_live_session` Mock.
+        # (non-Gemini-Live/non-OpenAI-Realtime) STT/TTS path — a bare
+        # MagicMock() would make `_is_gemini_live` / `_is_openai_realtime`
+        # auto-created truthy child Mocks, wrongly entering one of those
+        # native-audio branches and awaiting an un-awaitable
+        # `_start_gemini_live_session` / `_start_openai_realtime_session` Mock.
         mock_vo_instance._is_gemini_live = False
+        mock_vo_instance._is_openai_realtime = False
 
         async def _immediately_stop_and_greet(self, *_args, **_kwargs):
             # Simulate handler.generate_and_stream_response for the greeting,

@@ -575,6 +575,8 @@ class TestGreetingBypassesExternalTtsForNativeAudio:
         vo = MagicMock()
         vo._is_gemini_live = is_gemini_live
         vo._gemini_live_session = fake_session if is_gemini_live else None
+        vo._is_openai_realtime = False
+        vo._openai_realtime_session = None
         h._voice_orchestrator = vo
         h._fake_session = fake_session  # test-only handle
         return h

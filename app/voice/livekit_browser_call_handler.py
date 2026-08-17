@@ -57,6 +57,7 @@ from app.utils.audio_utils import MULAW_FRAME_BYTES, ulaw_to_linear_sample
 from app.utils.ssml_utils import strip_ssml_tags
 from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_TUNABLES
 from app.voice.gemini_live_audio_bridge import GEMINI_OUTPUT_PCM_RATE_HZ
+from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI_REALTIME_AUDIO_RATE_HZ
 from app.voice.humanization_engine import pause_frames_for_chunk
 
 if TYPE_CHECKING:
@@ -353,6 +354,32 @@ class _GeminiLiveAudioSink:
             )
 
 
+class _OpenAIRealtimeAudioSink:
+    """
+    OpenAI Realtime analog of ``_GeminiLiveAudioSink`` — same
+    ``stt_pipeline``-shaped adapter pattern, targeting an
+    ``OpenAIRealtimeSession`` instead. ``LiveKitAudioSubscriber`` is opened
+    with ``output_sample_rate=OPENAI_REALTIME_AUDIO_RATE_HZ`` (24kHz) for a
+    native-audio OpenAI call (see ``run_livekit_browser_call``) — exactly
+    the rate ``OpenAIRealtimeSession.send_audio`` expects when the session
+    was started with ``audio_format="audio/pcm"``, so no conversion happens
+    here either.
+    """
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    async def feed_audio_chunk(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            return
+        try:
+            await self._session.send_audio(pcm_bytes)
+        except Exception as exc:
+            logger.error(
+                "[LiveKitBrowserCall] OpenAIRealtimeSession.send_audio failed: %s", exc, exc_info=True
+            )
+
+
 class LiveKitBrowserCallHandler:
     """
     Transport adapter: implements exactly the attribute/method surface that
@@ -513,21 +540,32 @@ class LiveKitBrowserCallHandler:
     # module for the branch).
 
     async def _publish_gemini_live_audio_chunk(
-        self, pcm16_24k_bytes: bytes, cancel: asyncio.Event
+        self,
+        pcm16_24k_bytes: bytes,
+        cancel: asyncio.Event,
+        sample_rate_hz: int = GEMINI_OUTPUT_PCM_RATE_HZ,
     ) -> None:
         """
-        GeminiLiveSession audio-out sink for this transport (native-audio
-        calls only). Publishes Gemini's raw PCM16/24kHz output directly via
-        `_agent_publisher.publish_pcm` — `_agent_publisher` is opened at
-        24kHz for a native-audio call (see run_livekit_browser_call), so
-        unlike the Twilio path's `_stream_live_audio_chunk` (mu-law/8kHz),
+        Native-audio-S2S audio-out sink for this transport, shared by both
+        Gemini Live and OpenAI Realtime (see the Gemini-specific name's note
+        below). Publishes raw PCM16 output directly via
+        `_agent_publisher.publish_pcm` — `_agent_publisher` is opened at the
+        matching rate for a native-audio call (see run_livekit_browser_call),
+        so unlike the Twilio path's `_stream_live_audio_chunk` (mu-law/8kHz),
         no resampling or codec conversion happens here at all.
+
+        `sample_rate_hz` defaults to Gemini's own output rate for the
+        original Gemini call site; OpenAI Realtime's call site passes its own
+        rate explicitly instead of relying on the two providers' rates
+        happening to both be 24kHz today — a future rate change to either
+        provider must not silently mismatch the other and get audio dropped
+        by `publish_pcm`'s rate-mismatch guard.
         """
         publisher = self._agent_publisher
         if publisher is None or not publisher.connected:
             return
         await publisher.publish_pcm(
-            pcm16_24k_bytes, sample_rate_hz=GEMINI_OUTPUT_PCM_RATE_HZ, cancel=cancel
+            pcm16_24k_bytes, sample_rate_hz=sample_rate_hz, cancel=cancel
         )
 
     async def _clear_gemini_live_playout_queue(self) -> None:
@@ -1346,12 +1384,30 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
             await voice_orchestrator._start_gemini_live_session(handler)
             is_gemini_live = voice_orchestrator._is_gemini_live
 
-        # ── Connect agent audio-out (TTS / Gemini Live) ──────────────────────
-        # A native-audio call opens the publisher at Gemini's own 24kHz PCM
-        # output rate (no mu-law, no resampling on this path — see
+        # ── OpenAI Realtime (native-audio speech-to-speech) fork ─────────────
+        # Parallel to the Gemini Live fork above, not shared/refactored code
+        # (per this task's "strictly additive, don't touch Gemini-Live-
+        # specific code" constraint) — mutually exclusive with is_gemini_live
+        # since VoiceOrchestrator.__init__ resolves each provider from a
+        # disjoint model-ID allow-list.
+        is_openai_realtime = voice_orchestrator._is_openai_realtime
+        if is_openai_realtime:
+            await voice_orchestrator._start_openai_realtime_session(handler)
+            is_openai_realtime = voice_orchestrator._is_openai_realtime
+
+        # ── Connect agent audio-out (TTS / Gemini Live / OpenAI Realtime) ────
+        # A native-audio call opens the publisher at the provider's own 24kHz
+        # PCM output rate (no mu-law, no resampling on this path — see
         # _LiveKitAgentAudioPublisher.publish_pcm); every other call keeps the
-        # existing 8kHz mu-law-derived rate.
-        publisher_sample_rate = GEMINI_OUTPUT_PCM_RATE_HZ if is_gemini_live else _AGENT_AUDIO_SAMPLE_RATE
+        # existing 8kHz mu-law-derived rate. Gemini Live and OpenAI Realtime
+        # both happen to use 24kHz PCM16 for this transport, so the same
+        # publisher/sink plumbing serves either provider unmodified.
+        if is_gemini_live:
+            publisher_sample_rate = GEMINI_OUTPUT_PCM_RATE_HZ
+        elif is_openai_realtime:
+            publisher_sample_rate = OPENAI_REALTIME_AUDIO_RATE_HZ
+        else:
+            publisher_sample_rate = _AGENT_AUDIO_SAMPLE_RATE
         publisher = _LiveKitAgentAudioPublisher(room_name, sample_rate_hz=publisher_sample_rate)
         connected = await publisher.connect()
         if not connected:
@@ -1393,6 +1449,19 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
                 room_name=room_name,
                 stt_pipeline=_GeminiLiveAudioSink(session),
                 output_sample_rate=_STT_INPUT_SAMPLE_RATE,
+            )
+        elif is_openai_realtime:
+            # Native-audio OpenAI agents skip STT entirely too. Unlike the
+            # Gemini Live branch above, this requests LiveKitAudioSubscriber
+            # resample caller audio to 24kHz (not 16kHz) — the rate
+            # OpenAIRealtimeSession.send_audio expects when the session was
+            # started with audio_format="audio/pcm" (symmetric 24kHz in/out,
+            # unlike Gemini Live's asymmetric 16kHz-in/24kHz-out).
+            session = voice_orchestrator._openai_realtime_session
+            audio_subscriber = LiveKitAudioSubscriber(
+                room_name=room_name,
+                stt_pipeline=_OpenAIRealtimeAudioSink(session),
+                output_sample_rate=OPENAI_REALTIME_AUDIO_RATE_HZ,
             )
         else:
             from app.core.agent_runtime import resolve_stt_runtime

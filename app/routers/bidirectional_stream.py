@@ -2025,6 +2025,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     self._twilio_buffer_primed = False
                     return
 
+                # Mirror-image bypass for OpenAI Realtime native-audio calls —
+                # same rationale as the Gemini Live branch above, routed
+                # through OpenAIRealtimeSession.send_text(respond=True) so
+                # OpenAI actually speaks the greeting (unlike the mid-call KB
+                # refresh's respond=False, this scripted greeting SHOULD be
+                # spoken as a real turn).
+                if _vo is not None and getattr(_vo, "_is_openai_realtime", False):
+                    session = _vo._openai_realtime_session
+                    if session is not None:
+                        try:
+                            await session.send_text(greeting_text, respond=True)
+                        except Exception as exc:
+                            logger.warning(
+                                "[OpenAIRealtime] failed to send greeting via live session: %s", exc
+                            )
+                    else:
+                        logger.debug(
+                            "[OpenAIRealtime] skipping scripted greeting — live session not ready yet"
+                        )
+                    self._twilio_buffer_primed = False
+                    return
+
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._tts_pipeline:
                     return
