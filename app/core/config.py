@@ -161,6 +161,8 @@ class TtsSettings(BaseModel):
     provider: str = Field(default="elevenlabs", validation_alias="TTS_PROVIDER")
     api_key: str = Field(default="", validation_alias="TTS_API_KEY")
     rime_api_key: str = Field(default="", validation_alias="RIME_API_KEY")
+    hume_api_key: str = Field(default="", validation_alias="HUME_API_KEY")
+    hume_sample_rate_hz: int = Field(default=48000, validation_alias="HUME_TTS_SAMPLE_RATE_HZ")
     elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
     elevenlabs_encryption_key: str = Field(
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
@@ -464,6 +466,17 @@ class Settings(BaseSettings):
 
     # Rime Labs TTS Configuration
     RIME_API_KEY: str = ""
+
+    # Hume AI TTS Configuration
+    HUME_API_KEY: str = ""
+    # ASSUMED default — Hume's PCM streaming output sample rate is not
+    # documented publicly as of this integration (2026-08). 48000 Hz is a
+    # reasonable industry-standard guess for a modern neural TTS PCM stream,
+    # but MUST be verified against a real Hume account/API key before this
+    # goes to production traffic; override via env var if Hume support
+    # confirms a different value. Drives PCMStreamDownsampler's src_rate_hz
+    # when converting Hume's PCM16LE chunks down to mulaw 8kHz for Twilio.
+    HUME_TTS_SAMPLE_RATE_HZ: int = 48000
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
@@ -1114,6 +1127,8 @@ class Settings(BaseSettings):
             provider=self.TTS_PROVIDER,
             api_key=self.TTS_API_KEY,
             rime_api_key=self.RIME_API_KEY,
+            hume_api_key=self.HUME_API_KEY,
+            hume_sample_rate_hz=self.HUME_TTS_SAMPLE_RATE_HZ,
             elevenlabs_api_key=self.ELEVENLABS_API_KEY,
             elevenlabs_encryption_key=self.ELEVENLABS_ENCRYPTION_KEY,
             enable_audio_tags=self.ENABLE_ELEVENLABS_AUDIO_TAGS,

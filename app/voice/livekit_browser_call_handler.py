@@ -874,6 +874,8 @@ class LiveKitBrowserCallHandler:
                     external_voice_id = getattr(tts_voice, "external_voice_id", None)
                 if not external_voice_id and tts_provider_slug == "rime":
                     external_voice_id = "mistv2_Wildflower"
+                elif not external_voice_id and tts_provider_slug == "hume":
+                    external_voice_id = "Male English Actor"
                 if not external_voice_id:
                     logger.warning(
                         "[LiveKitBrowserCall] TTS voice not configured for streaming provider=%s",

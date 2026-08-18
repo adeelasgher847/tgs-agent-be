@@ -358,6 +358,104 @@ def downsample_linear_samples(samples: list[int], src_rate_hz: int, dst_rate_hz:
     return out
 
 
+class PCMStreamDownsampler:
+    """
+    Incrementally convert PCM16 LE mono chunks at an arbitrary source sample
+    rate into raw mu-law bytes at an arbitrary destination sample rate.
+
+    Generalizes the box-average downsampling approach originally written
+    for PCM16KStreamDownsampler (16kHz -> 8kHz only) to any integer ratio
+    `src_rate_hz // dst_rate_hz`. Handles:
+    - partial byte pairs across chunks (buffered across `feed()` calls)
+    - a one-time WAV header at the start of the stream
+    - src -> dst box-average downsampling
+    - direct mu-law encoding of the resulting samples (via linear_to_ulaw_sample)
+
+    `src_rate_hz` must be an integer multiple of `dst_rate_hz` (matches the
+    existing PCM16KStreamDownsampler's assumption — no fractional-ratio
+    resampling here).
+    """
+
+    __slots__ = ("_buf", "_header_done", "_factor", "_bytes_per_group")
+
+    def __init__(self, src_rate_hz: int, dst_rate_hz: int):
+        if src_rate_hz <= 0 or dst_rate_hz <= 0 or src_rate_hz % dst_rate_hz != 0:
+            raise ValueError(
+                f"Unsupported resample ratio: {src_rate_hz} -> {dst_rate_hz}"
+            )
+        self._buf = bytearray()
+        self._header_done = False
+        self._factor = src_rate_hz // dst_rate_hz
+        # `factor` int16 samples (2 bytes each) collapse into one output sample.
+        self._bytes_per_group = self._factor * 2
+
+    def _strip_header_if_ready(self) -> bool:
+        if self._header_done:
+            return True
+        if len(self._buf) < 12:
+            return False
+        if self._buf[:4] != b"RIFF" or self._buf[8:12] != b"WAVE":
+            self._header_done = True
+            return True
+        idx = self._buf.find(b"data")
+        if idx == -1 or idx + 8 > len(self._buf):
+            return False
+        del self._buf[:idx + 8]
+        self._header_done = True
+        return True
+
+    def _drain(self, take_all: bool) -> bytes:
+        group = self._bytes_per_group
+        usable = len(self._buf)
+        if not take_all:
+            usable -= usable % group
+        else:
+            usable -= usable % 2  # always need whole int16 samples
+        if usable <= 0:
+            if take_all:
+                self._buf.clear()
+            return b""
+
+        out = bytearray()
+        factor = self._factor
+        i = 0
+        while i < usable:
+            end = min(i + group, usable)
+            n = (end - i) // 2
+            if n <= 0:
+                break
+            total = 0
+            for j in range(i, i + n * 2, 2):
+                total += int.from_bytes(self._buf[j:j + 2], "little", signed=True)
+            avg = int(total / (factor if not take_all else n))
+            out.append(linear_to_ulaw_sample(avg))
+            i = end
+
+        if take_all:
+            self._buf.clear()
+        else:
+            del self._buf[:usable]
+        return bytes(out)
+
+    def feed(self, chunk: bytes) -> bytes:
+        """Feed a raw PCM16LE chunk; returns mu-law bytes for whichever
+        complete sample-groups are now available (partial trailing bytes are
+        buffered for the next call)."""
+        if chunk:
+            self._buf.extend(chunk)
+        if not self._strip_header_if_ready():
+            return b""
+        return self._drain(take_all=False)
+
+    def flush(self) -> bytes:
+        """Encode any remaining buffered bytes (a final, possibly-short
+        sample group) and clear internal state."""
+        if not self._strip_header_if_ready():
+            self._buf.clear()
+            return b""
+        return self._drain(take_all=True)
+
+
 class PCM16KStreamDownsampler:
     """
     Incrementally convert PCM16 LE 16kHz chunks to linear PCM 8kHz samples.

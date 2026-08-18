@@ -31,7 +31,7 @@ def create_app() -> FastAPI:
     from app.utils.arq_pool import init_arq_pool
     from app.utils.rate_limiter import init_rate_limiter
     from app.core.config import settings
-    from app.core.secret_manager import get_rime_api_key
+    from app.core.secret_manager import get_hume_api_key, get_rime_api_key
     from app.core.shutdown import graceful_shutdown
     from app.core.exception_handlers import register_exception_handlers
     from app.middleware.api_key_middleware import ApiKeyMiddleware
@@ -85,6 +85,20 @@ def create_app() -> FastAPI:
                 raise
             else:
                 logger.warning("Rime TTS not configured: %s — fine if TTS_PROVIDER is not 'rime'", exc)
+
+        try:
+            get_hume_api_key()
+            logger.info("Hume TTS API key configured")
+        except (ValueError, RuntimeError) as exc:
+            # Hume is opt-in (not seeded as an always-available platform default
+            # the way Rime is) — only hard-fail startup when it's actually the
+            # configured default provider. Mirrors the Rime check above.
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production") and settings.TTS_PROVIDER == "hume":
+                logger.error("Hume TTS misconfigured: %s", exc)
+                raise
+            else:
+                logger.warning("Hume TTS not configured: %s — fine if TTS_PROVIDER is not 'hume'", exc)
 
         if settings.LIVEKIT_ENABLED:
             from app.core.secret_manager import get_livekit_credentials
