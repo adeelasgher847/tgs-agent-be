@@ -183,9 +183,32 @@ class HumeTtsService:
                         f"Hume TTS WebSocket receive failed: {_redact(str(exc))}"
                     ) from exc
 
+                if isinstance(raw_msg, (bytes, bytearray)):
+                    # Binary WebSocket frame: Hume sends raw audio payload
+                    # directly (no JSON/base64 envelope) for at least some
+                    # requests under format_type=pcm — observed in production
+                    # (a text-frame-only assumption crashed on non-UTF-8
+                    # binary audio bytes here). No `is_last_chunk`/`type`
+                    # metadata is available for these frames; stream end is
+                    # detected via ConnectionClosedOK / idle timeout / a
+                    # subsequent JSON control message instead.
+                    pcm_bytes = bytes(raw_msg)
+                    if pcm_bytes:
+                        mulaw_bytes = downsampler.feed(pcm_bytes)
+                        if mulaw_bytes:
+                            if first_chunk:
+                                latency_ms = (time.perf_counter() - t0) * 1000
+                                logger.info(
+                                    "[Hume] first audio chunk latency: %.0f ms (voice=%s)",
+                                    latency_ms, voice_external_id,
+                                )
+                                first_chunk = False
+                            yield mulaw_bytes
+                    continue
+
                 try:
                     msg = json.loads(raw_msg)
-                except (json.JSONDecodeError, TypeError):
+                except (json.JSONDecodeError, TypeError, UnicodeDecodeError):
                     continue
 
                 msg_type = msg.get("type")

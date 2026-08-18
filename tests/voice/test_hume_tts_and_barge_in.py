@@ -149,6 +149,84 @@ class TestHumeTtsServiceStreaming:
         assert all(c for c in chunks)  # every yielded chunk is non-empty
         assert fake_ws.closed is True
 
+    def test_binary_frame_audio_is_handled_directly(self):
+        """
+        Production incident: Hume's WS server sends at least some audio as
+        raw BINARY WebSocket frames (no JSON/base64 envelope) rather than
+        the documented JSON `{"type": "audio", "audio": <base64>}` shape.
+        `websockets` surfaces a binary frame as `bytes` from `ws.recv()` —
+        the original implementation unconditionally called
+        `json.loads(raw_msg)` on every message, which crashed with
+        UnicodeDecodeError on real (non-UTF-8) binary PCM payloads instead
+        of treating them as raw audio. This must not happen: raw bytes
+        frames are fed directly to the downsampler.
+        """
+        from app.services.hume_tts_service import HumeTtsService
+
+        samples1 = [1000, 1200, 900, 1100, 1050, 950]
+        samples2 = [300, -200, 100, -50, 400, -600]
+        raw_pcm_frame_1 = _pcm16le(samples1)
+        raw_pcm_frame_2 = _pcm16le(samples2)
+
+        # Mix of raw binary frames and a trailing JSON control message that
+        # signals stream end — exactly the hybrid framing observed live.
+        messages = [raw_pcm_frame_1, raw_pcm_frame_2, _audio_msg([], is_last_chunk=True)]
+        fake_ws = _FakeHumeWebSocket(messages)
+        key_patch, fake_connect = _patch_hume_connect(fake_ws)
+        with key_patch, patch("websockets.connect", side_effect=fake_connect):
+            svc = HumeTtsService()
+
+            async def _run():
+                chunks = []
+                async for chunk in svc.stream_text_to_speech(
+                    text="Hello there",
+                    voice_external_id="Male English Actor",
+                    src_sample_rate_hz=48000,
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_run())
+
+        ref = PCMStreamDownsampler(48000, 8000)
+        expected = ref.feed(raw_pcm_frame_1) + ref.feed(raw_pcm_frame_2) + ref.flush()
+
+        assert b"".join(chunks) == expected
+        assert fake_ws.closed is True
+
+    def test_binary_frame_stream_ends_on_connection_close_without_json(self):
+        """A pure-binary stream (no trailing JSON control message at all,
+        server just closes the socket after the last frame) must still
+        complete cleanly — not every request necessarily gets a JSON
+        is_last_chunk terminator."""
+        import websockets as _websockets
+
+        from app.services.hume_tts_service import HumeTtsService
+
+        samples = [1000, 1200, 900, 1100, 1050, 950]
+        raw_pcm_frame = _pcm16le(samples)
+        messages = [raw_pcm_frame, _websockets.ConnectionClosedOK(None, None)]
+        fake_ws = _FakeHumeWebSocket(messages)
+        key_patch, fake_connect = _patch_hume_connect(fake_ws)
+        with key_patch, patch("websockets.connect", side_effect=fake_connect):
+            svc = HumeTtsService()
+
+            async def _run():
+                chunks = []
+                async for chunk in svc.stream_text_to_speech(
+                    text="Hi", voice_external_id="Male English Actor",
+                    src_sample_rate_hz=48000,
+                ):
+                    chunks.append(chunk)
+                return chunks
+
+            chunks = asyncio.run(_run())
+
+        ref = PCMStreamDownsampler(48000, 8000)
+        expected = ref.feed(raw_pcm_frame) + ref.flush()
+        assert b"".join(chunks) == expected
+        assert fake_ws.closed is True
+
     def test_outbound_message_shape_plain_voice_name(self):
         from app.services.hume_tts_service import HumeTtsService
 
