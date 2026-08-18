@@ -30,6 +30,12 @@ def _principal():
     return p
 
 
+def _request(accept: str = ""):
+    req = MagicMock()
+    req.headers = {"accept": accept} if accept else {}
+    return req
+
+
 class TestConnect:
     @pytest.mark.anyio
     async def test_redirects_to_hubspot(self):
@@ -45,11 +51,34 @@ class TestConnect:
                 return_value="https://app.hubspot.com/oauth/authorize?client_id=abc&state=signed-state",
             ),
         ):
-            response = await hubspot_connect(principal=_principal())
+            response = await hubspot_connect(request=_request(), principal=_principal())
 
         assert response.status_code == 302
         assert response.headers["location"] == (
             "https://app.hubspot.com/oauth/authorize?client_id=abc&state=signed-state"
+        )
+
+    @pytest.mark.anyio
+    async def test_returns_json_when_accept_header_requests_it(self):
+        from app.routers.hubspot_integration import hubspot_connect
+
+        with (
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.build_oauth_state",
+                return_value="signed-state",
+            ),
+            patch(
+                "app.routers.hubspot_integration.hubspot_service.build_authorization_url",
+                return_value="https://app.hubspot.com/oauth/authorize?client_id=abc&state=signed-state",
+            ),
+        ):
+            response = await hubspot_connect(
+                request=_request("application/json"), principal=_principal()
+            )
+
+        assert response.status_code == 200
+        assert response.body == (
+            b'{"authorization_url":"https://app.hubspot.com/oauth/authorize?client_id=abc&state=signed-state"}'
         )
 
 
