@@ -878,6 +878,10 @@ class LiveKitBrowserCallHandler:
                     from app.services.hume_tts_service import HUME_DEFAULT_VOICE
 
                     external_voice_id = HUME_DEFAULT_VOICE
+                elif not external_voice_id and tts_provider_slug == "xai":
+                    from app.services.xai_tts_service import XAI_DEFAULT_VOICE
+
+                    external_voice_id = XAI_DEFAULT_VOICE
                 if not external_voice_id:
                     logger.warning(
                         "[LiveKitBrowserCall] TTS voice not configured for streaming provider=%s",

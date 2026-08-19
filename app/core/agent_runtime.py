@@ -28,8 +28,8 @@ _TICKET_TTS_TO_ADAPTER: dict[str, str] = {
     "11labs_byo": "elevenlabs",
     # "rime" now has its own adapter — no longer falls back to google.
     "rime": "rime",
-    # "hume" needs no entry — .get(slug, slug) already falls through unchanged
-    # since the ticket slug and adapter slug are identical.
+    # "hume"/"xai" need no entry — .get(slug, slug) already falls through
+    # unchanged since the ticket slug and adapter slug are identical.
 }
 
 def _coerce_float(value: Any, default: float) -> float:
@@ -117,10 +117,10 @@ def _decrypt_stored_api_key(
 
 
 def _ticket_tts_triad(agent: Agent) -> bool:
-    # Rime and Hume both have a built-in default voice — allow ticket path
-    # even without explicit voice_id.
+    # Rime, Hume, and xAI all have a built-in default voice — allow ticket
+    # path even without explicit voice_id.
     has_voice = bool(agent.tts_voice_external_id) or (
-        (agent.tts_provider_slug or "").lower() in ("rime", "hume")
+        (agent.tts_provider_slug or "").lower() in ("rime", "hume", "xai")
     )
     return bool(agent.tts_provider_slug and agent.tts_language and has_voice)
 
@@ -307,13 +307,17 @@ def resolve_tts_runtime(
                     f"Agent {agent.id}: stored BYO ElevenLabs API key is corrupted or "
                     "unreadable. Re-save the API key in agent settings."
                 ) from exc
-        # For Rime/Hume: ensure default voice when none configured.
+        # For Rime/Hume/xAI: ensure default voice when none configured.
         if adapter_slug == "rime" and not voice_id:
             voice_id = "mistv2_Wildflower"
         elif adapter_slug == "hume" and not voice_id:
             from app.services.hume_tts_service import HUME_DEFAULT_VOICE
 
             voice_id = HUME_DEFAULT_VOICE
+        elif adapter_slug == "xai" and not voice_id:
+            from app.services.xai_tts_service import XAI_DEFAULT_VOICE
+
+            voice_id = XAI_DEFAULT_VOICE
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,
