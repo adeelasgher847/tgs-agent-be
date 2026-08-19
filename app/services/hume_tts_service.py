@@ -33,7 +33,11 @@ from app.core.secret_manager import get_hume_api_key
 from app.utils.audio_utils import PCMStreamDownsampler
 
 _HUME_WS_URL = "wss://api.hume.ai/v0/tts/stream/input"
-_DEFAULT_VOICE = "Male English Actor"
+# Public — imported by agent_runtime.py / tts_stream_mixin.py /
+# livekit_browser_call_handler.py so the default voice string exists in
+# exactly one place instead of being duplicated (and risking drift/typos).
+HUME_DEFAULT_VOICE = "Male English Actor"
+_DEFAULT_VOICE = HUME_DEFAULT_VOICE
 _DEFAULT_VOICE_PROVIDER = "HUME_AI"
 
 # Mirrors the connect-timeout budget used elsewhere on the hot TTS path
@@ -83,11 +87,19 @@ class HumeTtsService:
     """Thin async wrapper around the Hume TTS WebSocket streaming endpoint."""
 
     def __init__(self) -> None:
-        # Resolve once at construction so a missing key fails before any live call.
-        self._api_key = get_hume_api_key()
+        # Resolved lazily on first call, not here -- this class is
+        # constructed as a module-level singleton at import time, and Hume
+        # is an optional/BYO provider most tenants never configure. Eagerly
+        # calling get_hume_api_key() (which raises when unset) would crash
+        # any eager import of this module for every tenant, not just ones
+        # using Hume.
+        pass
+
+    def _get_api_key(self) -> str:
+        return get_hume_api_key()
 
     def _build_url(self) -> str:
-        return f"{_HUME_WS_URL}?api_key={self._api_key}&format_type=pcm&instant_mode=true"
+        return f"{_HUME_WS_URL}?api_key={self._get_api_key()}&format_type=pcm&instant_mode=true"
 
     # ------------------------------------------------------------------
     # Public API
@@ -132,6 +144,14 @@ class HumeTtsService:
             "close": True,
         }
         if description:
+            # 100-char limit is not documented in Hume's public API docs --
+            # logged so a silently-truncated acting instruction (e.g. cut
+            # mid-sentence) is at least traceable, rather than an invisible
+            # behavior change.
+            if len(description) > 100:
+                logger.debug(
+                    "[Hume] description truncated from %d to 100 chars", len(description)
+                )
             message["description"] = description[:100]
 
         url = self._build_url()

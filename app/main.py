@@ -89,6 +89,19 @@ def create_app() -> FastAPI:
         try:
             get_hume_api_key()
             logger.info("Hume TTS API key configured")
+            # HUME_TTS_SAMPLE_RATE_HZ's default (48000) is an ASSUMED value,
+            # not confirmed against Hume's public docs -- if the actual
+            # stream rate differs, PCMStreamDownsampler downsamples at the
+            # wrong ratio and every Twilio call using Hume produces
+            # silently garbled (pitch-shifted/distorted) audio with no
+            # runtime error. Surface this loudly at startup so operators
+            # verify against a real Hume account before production traffic.
+            logger.warning(
+                "Hume TTS sample rate is assumed to be %d Hz (unverified against "
+                "Hume's public docs) — confirm against a real Hume account before "
+                "production traffic. Override via HUME_TTS_SAMPLE_RATE_HZ if different.",
+                settings.HUME_TTS_SAMPLE_RATE_HZ,
+            )
         except (ValueError, RuntimeError) as exc:
             # Hume is opt-in (not seeded as an always-available platform default
             # the way Rime is) — only hard-fail startup when it's actually the

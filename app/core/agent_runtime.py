@@ -311,7 +311,9 @@ def resolve_tts_runtime(
         if adapter_slug == "rime" and not voice_id:
             voice_id = "mistv2_Wildflower"
         elif adapter_slug == "hume" and not voice_id:
-            voice_id = "Male English Actor"
+            from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+            voice_id = HUME_DEFAULT_VOICE
         settings.setdefault("language_code", language)
         return ResolvedTtsRuntime(
             adapter_slug=adapter_slug,

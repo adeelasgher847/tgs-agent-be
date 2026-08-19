@@ -451,7 +451,9 @@ class TtsStreamMixin:
                                 if not external_voice_id and tts_provider_slug == "rime":
                                     external_voice_id = "mistv2_Wildflower"
                                 elif not external_voice_id and tts_provider_slug == "hume":
-                                    external_voice_id = "Male English Actor"
+                                    from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+                                    external_voice_id = HUME_DEFAULT_VOICE
                                 if not external_voice_id:
                                     raise ValueError("TTS voice is not configured for streaming.")
                                 adapter = get_tts_adapter(tts_provider_slug)
@@ -777,7 +779,9 @@ class TtsStreamMixin:
                 if not external_voice_id and tts_provider_slug == "rime":
                     external_voice_id = "mistv2_Wildflower"
                 elif not external_voice_id and tts_provider_slug == "hume":
-                    external_voice_id = "Male English Actor"
+                    from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+                    external_voice_id = HUME_DEFAULT_VOICE
                 if not external_voice_id:
                     return None
                 adapter = get_tts_adapter(tts_provider_slug)

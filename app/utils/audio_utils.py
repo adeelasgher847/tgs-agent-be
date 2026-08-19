@@ -381,7 +381,8 @@ class PCMStreamDownsampler:
     def __init__(self, src_rate_hz: int, dst_rate_hz: int):
         if src_rate_hz <= 0 or dst_rate_hz <= 0 or src_rate_hz % dst_rate_hz != 0:
             raise ValueError(
-                f"Unsupported resample ratio: {src_rate_hz} -> {dst_rate_hz}"
+                f"src_rate_hz must be a positive integer multiple of dst_rate_hz "
+                f"(got {src_rate_hz} -> {dst_rate_hz})"
             )
         self._buf = bytearray()
         self._header_done = False

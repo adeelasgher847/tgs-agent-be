@@ -107,6 +107,25 @@ def _patch_hume_connect(fake_ws: _FakeHumeWebSocket):
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+class TestHumeTtsServiceConstruction:
+    def test_construction_never_resolves_api_key_eagerly(self):
+        """Regression test: HumeTtsService() is built as a module-level
+        singleton at import time. If __init__ eagerly called
+        get_hume_api_key() (which raises when HUME_API_KEY is unset), any
+        eager import of this module would crash app startup for every
+        tenant, not just ones using Hume. The key must only be resolved
+        lazily, on first actual use (_build_url)."""
+        from app.services.hume_tts_service import HumeTtsService
+
+        with patch(
+            "app.services.hume_tts_service.get_hume_api_key",
+            side_effect=ValueError("HUME_API_KEY not set"),
+        ):
+            svc = HumeTtsService()  # must not raise
+            with pytest.raises(ValueError):
+                svc._build_url()  # resolved lazily, raises here instead
+
+
 class TestHumeTtsServiceStreaming:
     def test_stream_yields_expected_mulaw_bytes(self):
         """Chunks must match an independent reference computation via

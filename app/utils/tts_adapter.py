@@ -541,9 +541,10 @@ class HumeTTSAdapter(BaseTTSProviderAdapter):
                              HumanizationDecision.
     """
 
-    _DEFAULT_VOICE = "Male English Actor"
-
     def __init__(self) -> None:
+        from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+        self._DEFAULT_VOICE = HUME_DEFAULT_VOICE
         # Fail at adapter construction — not on first mid-call synthesis request.
         self._api_key = get_hume_api_key()
 
