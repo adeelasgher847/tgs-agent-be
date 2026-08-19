@@ -19000,6 +19000,7 @@ components:
       - elevenlabs
       - elevenlabs_byo
       - hume
+      - xai
       title: TtsProviderEnum
     TtsSettingsJsonSchema:
       properties:

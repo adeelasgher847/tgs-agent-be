@@ -113,6 +113,25 @@ def create_app() -> FastAPI:
             else:
                 logger.warning("Hume TTS not configured: %s — fine if TTS_PROVIDER is not 'hume'", exc)
 
+        try:
+            from app.services.tts_catalog_service import tts_catalog_service
+
+            tts_catalog_service.verify_xai_api_key_configured()
+            logger.info("xAI TTS API key configured")
+        except ValueError as exc:
+            # xAI TTS is opt-in (not seeded as an always-available platform
+            # default the way Rime is) — only hard-fail startup when it's
+            # actually the configured default provider. Mirrors the Hume
+            # check above. Unlike Hume/Rime, the key is read directly via
+            # settings.XAI_API_KEY (matching xai_grok_stt_service.py's
+            # existing xAI STT integration), not app.core.secret_manager.
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production") and settings.TTS_PROVIDER == "xai":
+                logger.error("xAI TTS misconfigured: %s", exc)
+                raise
+            else:
+                logger.warning("xAI TTS not configured: %s — fine if TTS_PROVIDER is not 'xai'", exc)
+
         if settings.LIVEKIT_ENABLED:
             from app.core.secret_manager import get_livekit_credentials
 

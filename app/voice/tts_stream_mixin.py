@@ -454,6 +454,10 @@ class TtsStreamMixin:
                                     from app.services.hume_tts_service import HUME_DEFAULT_VOICE
 
                                     external_voice_id = HUME_DEFAULT_VOICE
+                                elif not external_voice_id and tts_provider_slug == "xai":
+                                    from app.services.xai_tts_service import XAI_DEFAULT_VOICE
+
+                                    external_voice_id = XAI_DEFAULT_VOICE
                                 if not external_voice_id:
                                     raise ValueError("TTS voice is not configured for streaming.")
                                 adapter = get_tts_adapter(tts_provider_slug)
@@ -468,6 +472,8 @@ class TtsStreamMixin:
                                     # (mulaw 8 kHz is the default in RimeTTSAdapter).
                                     pass
                                 else:
+                                    # xai/hume/google ignore this key — codec/sample_rate are fixed
+                                    # (mulaw/8kHz) in their own adapters, not read from provider_settings.
                                     provider_settings.setdefault("output_format", "ulaw_8000")
 
                                 # Prefer async streaming for providers that support it (Rime, ElevenLabs).
@@ -782,6 +788,10 @@ class TtsStreamMixin:
                     from app.services.hume_tts_service import HUME_DEFAULT_VOICE
 
                     external_voice_id = HUME_DEFAULT_VOICE
+                elif not external_voice_id and tts_provider_slug == "xai":
+                    from app.services.xai_tts_service import XAI_DEFAULT_VOICE
+
+                    external_voice_id = XAI_DEFAULT_VOICE
                 if not external_voice_id:
                     return None
                 adapter = get_tts_adapter(tts_provider_slug)
@@ -801,6 +811,8 @@ class TtsStreamMixin:
                     # Rime adapter handles format internally; no output_format key needed.
                     pass
                 else:
+                    # xai/hume/google ignore this key — codec/sample_rate are fixed
+                    # (mulaw/8kHz) in their own adapters, not read from provider_settings.
                     provider_settings.setdefault("output_format", "ulaw_8000")
 
                 # Fold in any humanization overlay (e.g. ElevenLabs stability hint)

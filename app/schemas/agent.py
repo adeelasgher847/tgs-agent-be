@@ -40,6 +40,7 @@ class TtsProviderEnum(str, Enum):
     elevenlabs = "elevenlabs"
     elevenlabs_byo = "elevenlabs_byo"
     hume = "hume"
+    xai = "xai"
 
 
 class AgentStatusEnum(str, Enum):

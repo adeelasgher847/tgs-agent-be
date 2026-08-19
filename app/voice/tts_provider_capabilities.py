@@ -129,6 +129,20 @@ _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
         supports_pause_control=False,  # no native break/pause param used
         supports_streaming_session=False,  # one-shot WS request per chunk, not a persistent session
     ),
+    # XaiTTSAdapter.async_stream_synthesize (app/utils/tts_adapter.py)
+    "xai": TTSProviderCapabilities(
+        provider_slug="xai",
+        supports_streaming=True,  # sync stream_synthesize explicitly raises NotImplementedError
+        supports_ssml=False,  # xAI's WebSocket protocol has no SSML concept — plain text.delta only
+        supports_speaking_rate=True,  # settings_json["speed"] -> xAI's native "speed" query param (0.7-1.5)
+        supports_pitch=False,  # no pitch parameter documented for xAI's TTS WebSocket
+        supports_stability_control=False,  # no stability/similarity_boost-style numeric knob documented
+        supports_native_expressive_tags=False,  # bracket tags are stripped for non-ElevenLabs providers
+        supports_pause_control=False,  # no native break/pause param used
+        supports_streaming_session=False,  # one-shot WS request per chunk, not a persistent session
+        # (text.clear/audio.clear exist for a future persistent-session mode
+        # but are unused by this integration — see xai_tts_service.py)
+    ),
 }
 
 
