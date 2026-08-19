@@ -543,15 +543,37 @@ class TestWidenAgentLlmModelCheckMigration:
         added = set(mod._ALLOWED_LLM_MODELS_AT_REVISION) - set(mod._PRIOR_ALLOWED_LLM_MODELS)
         assert added == {"gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"}
 
-    def test_widened_snapshot_matches_current_allow_list(self):
-        """The migration's self-contained snapshot must match the current
-        app.core.llm_models.ALLOWED_LLM_MODELS allow-list (as of this
-        revision — future edits to the module are expected to add a new
-        migration rather than retroactively changing this one)."""
-        from app.core.llm_models import ALLOWED_LLM_MODELS
-
+    def test_widened_snapshot_is_frozen_historical_value(self):
+        """This migration's snapshot is a historical point-in-time value —
+        it is NOT expected to track the current live
+        app.core.llm_models.ALLOWED_LLM_MODELS allow-list once a later
+        migration (e.g. 20260816_widen_agent_llm_model_check_gemini3.py)
+        widens the constraint further. Per the module docstring, future
+        edits to the allow-list are expected to add a new migration rather
+        than retroactively changing this one, so this snapshot must stay
+        pinned to its original 19-value set."""
         mod = _load_migration("20260815_widen_agent_llm_model_check.py")
-        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == set(ALLOWED_LLM_MODELS)
+        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == {
+            "gpt-4o-mini",
+            "gpt-4o",
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4-turbo",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash-001",
+            "gemini-2.0-flash",
+            "gemini-1.5-pro",
+            "gemini-1.5-flash",
+            "claude-3-5-sonnet",
+            "claude-3-haiku",
+            "llama-3.1-70b-versatile",
+            "llama-3.1-8b-instant",
+            "gpt-5",
+            "gpt-5-mini",
+            "gpt-5.1",
+            "gpt-5.2",
+            "gpt-5.4",
+        }
 
     def test_llm_check_sql_uses_widened_snapshot(self):
         mod = _load_migration("20260815_widen_agent_llm_model_check.py")
@@ -568,3 +590,79 @@ class TestWidenAgentLlmModelCheckMigration:
             assert f"'{model}'" in sql
         for gpt5_model in ["gpt-5", "gpt-5-mini", "gpt-5.1", "gpt-5.2", "gpt-5.4"]:
             assert f"'{gpt5_model}'" not in sql
+
+
+# ─────────────────── widen ck_agent_llm_model (gemini-3 family) ──────────────
+
+class TestWidenAgentLlmModelCheckGemini3Migration:
+    """20260816_widen_agent_llm_model_check_gemini3.py — widens
+    ck_agent_llm_model from the 19-value 20260815 snapshot to 21 values (adds
+    the 2 Gemini 3 family IDs, removes nothing)."""
+
+    def test_file_exists(self):
+        assert (
+            _VERSIONS_DIR / "20260816_widen_agent_llm_model_check_gemini3.py"
+        ).exists()
+
+    def test_down_revision_is_gpt5_widen_migration(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert mod.down_revision == "20260815_widen_llm_check"
+
+    def test_has_upgrade_and_downgrade(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+    def test_revision_id(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert mod.revision == "20260816_widen_llm_check_g3"
+
+    def test_widened_snapshot_has_21_values(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert len(mod._ALLOWED_LLM_MODELS_AT_REVISION) == 21
+
+    def test_prior_snapshot_unchanged_at_19_values(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert len(mod._PRIOR_ALLOWED_LLM_MODELS) == 19
+
+    def test_widened_snapshot_is_superset_of_prior_snapshot(self):
+        """Purely additive: nothing removed or renamed."""
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert set(mod._PRIOR_ALLOWED_LLM_MODELS).issubset(
+            set(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        )
+
+    def test_widened_snapshot_adds_exactly_the_gemini3_family(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        added = set(mod._ALLOWED_LLM_MODELS_AT_REVISION) - set(
+            mod._PRIOR_ALLOWED_LLM_MODELS
+        )
+        assert added == {"gemini-3-flash-preview", "gemini-3.1-flash-lite"}
+
+    def test_widened_snapshot_matches_current_allow_list(self):
+        """The migration's self-contained snapshot must match the current
+        app.core.llm_models.ALLOWED_LLM_MODELS allow-list (as of this
+        revision — this is now the latest widening migration, so this
+        assertion correctly lives here; future edits to the module are
+        expected to add a new migration rather than retroactively changing
+        this one)."""
+        from app.core.llm_models import ALLOWED_LLM_MODELS
+
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == set(ALLOWED_LLM_MODELS)
+
+    def test_llm_check_sql_uses_widened_snapshot(self):
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        sql = mod._llm_check_sql(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        for model in mod._ALLOWED_LLM_MODELS_AT_REVISION:
+            assert f"'{model}'" in sql
+
+    def test_downgrade_sql_uses_prior_snapshot_only(self):
+        """Downgrade must restore the narrower 19-value constraint — the two
+        new gemini-3 IDs must not appear in the downgrade CHECK SQL."""
+        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
+        sql = mod._llm_check_sql(mod._PRIOR_ALLOWED_LLM_MODELS)
+        for model in mod._PRIOR_ALLOWED_LLM_MODELS:
+            assert f"'{model}'" in sql
+        for gemini3_model in ["gemini-3-flash-preview", "gemini-3.1-flash-lite"]:
+            assert f"'{gemini3_model}'" not in sql

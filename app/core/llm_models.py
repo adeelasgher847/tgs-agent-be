@@ -35,6 +35,9 @@ ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
     "gemini-2.0-flash",
     "gemini-1.5-pro",
     "gemini-1.5-flash",
+    # Google Gemini — Gemini 3 family (new)
+    "gemini-3-flash-preview",
+    "gemini-3.1-flash-lite",
     # Anthropic — existing
     "claude-3-5-sonnet",
     "claude-3-haiku",
