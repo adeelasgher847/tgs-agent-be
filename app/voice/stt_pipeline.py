@@ -88,6 +88,7 @@ class SttPipeline:
 
         self._stt_session = None
         self._reader_task: asyncio.Task | None = None
+        self._start_task: asyncio.Task | None = None
         # Set by aclose() — once the pipeline has been deliberately shut down,
         # a trailing/late-arriving audio chunk (e.g. an ffmpeg buffer flush
         # racing the call's own shutdown sequence) must not lazily reopen a
@@ -255,7 +256,10 @@ class SttPipeline:
             api_config=self._api_config,
         )
         self._reader_task = asyncio.create_task(self._reader_loop())
-        asyncio.create_task(self._stt_session.start())
+        # Tracked so a start() failure (e.g. WebSocket connect error) isn't a
+        # silently-dropped "Future exception was never retrieved" warning;
+        # start() also pushes errors onto results_q, which _reader_loop drains.
+        self._start_task = asyncio.create_task(self._stt_session.start())
 
     # ── Reader loop (provider-agnostic) ───────────────────────────────────
 

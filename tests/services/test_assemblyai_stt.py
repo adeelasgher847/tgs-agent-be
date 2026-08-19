@@ -147,6 +147,16 @@ def test_interim_state_emits_interim_result():
     assert result == {"transcript": "hel", "confidence": 0.0, "is_final": False}
 
 
+def test_handle_turn_forwards_real_confidence_value():
+    """confidence must be forwarded from AssemblyAI's payload, not hardcoded
+    to 0.0 -- barge-in gates (VOICE_BARGE_IN_MIN_CONFIDENCE) depend on it."""
+    session = _make_session()
+    session._handle_turn({"transcript": "hello", "end_of_turn": False, "confidence": 0.87})
+
+    result = session._results_q.get_nowait()
+    assert result == {"transcript": "hello", "confidence": pytest.approx(0.87), "is_final": False}
+
+
 def test_end_of_turn_true_emits_pipeline_final_directly():
     """end_of_turn=true's transcript IS the finalized text for the turn --
     there is no separate withheld "chunk-final" state like xAI's
@@ -349,6 +359,32 @@ def test_sender_loop_sends_terminate_and_waits_for_termination():
 
     done = session._results_q.get_nowait()
     assert done == {"done": True}
+
+
+def test_sender_loop_normal_exit_marks_session_closed():
+    """Regression test: `_closed` must be set even on a graceful
+    Terminate/Termination exit, not only on the exception branch --
+    otherwise a straggler push_audio() after shutdown queues into a
+    buffer nothing will ever drain."""
+    session = _make_session()
+    ws = _FakeWebSocket()
+    session._ws = ws
+
+    async def _run():
+        session._ready_evt.set()
+        session.finish()
+
+        async def _ack():
+            await asyncio.sleep(0.05)
+            session._termination_received = True
+            session._termination_evt.set()
+
+        asyncio.create_task(_ack())
+        await session._sender_loop()
+
+    asyncio.run(_run())
+
+    assert session._closed is True
 
 
 def test_finish_while_utterance_pending_is_not_dropped():

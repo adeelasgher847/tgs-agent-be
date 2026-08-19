@@ -92,7 +92,7 @@ def _mask_key(key: str | None) -> str:
         return "<empty>"
     if len(key) <= 8:
         return f"<masked len={len(key)}>"
-    return f"{key[:4]}...{key[-2:]} (len={len(key)})"
+    return f"{key[:4]}{'*' * min(8, len(key) - 4)} (len={len(key)})"
 
 
 class AssemblyAiSTTService:
@@ -314,11 +314,12 @@ class AssemblyAiSTTService:
                 # regardless of end_of_turn.
                 return
             end_of_turn = bool(data.get("end_of_turn"))
+            confidence = float(data.get("confidence") or 0.0)
             # Two-state only: end_of_turn=false -> interim, end_of_turn=true
             # -> this Turn's transcript IS the finalized text for the turn.
             # No third "chunk-final but not a boundary" state exists here.
             self._results_q.put_nowait(
-                {"transcript": transcript, "confidence": 0.0, "is_final": end_of_turn}
+                {"transcript": transcript, "confidence": confidence, "is_final": end_of_turn}
             )
 
         def _push_done(self) -> None:
@@ -384,6 +385,7 @@ class AssemblyAiSTTService:
                 )
                 self._closed = True
             finally:
+                self._closed = True
                 logger.info("[AssemblyAI STT] session_end reason=%s", session_end_reason)
                 self._push_done()
                 if self._receiver_task and not self._receiver_task.done():

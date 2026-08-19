@@ -604,7 +604,10 @@ class Settings(BaseSettings):
     # universal-streaming-english, deliberately not offered here).
     ASSEMBLYAI_STT_SPEECH_MODEL: str = "universal-streaming-multilingual"
     # Silence (ms) before AssemblyAI's native end-of-turn detection considers
-    # a turn boundary. Range 50-10000ms per docs; no vendor-documented default.
+    # a turn boundary. Range 50-10000ms per docs; no vendor-documented default
+    # -- 400ms chosen empirically as a conservative responsiveness/false-positive
+    # tradeoff, not a measured value. Revisit if end-of-turn detection feels
+    # too eager or too laggy in production.
     ASSEMBLYAI_STT_MIN_TURN_SILENCE_MS: int = 400
     # Vendor default per docs; same 50-10000ms range as min_turn_silence.
     ASSEMBLYAI_STT_MAX_TURN_SILENCE_MS: int = 1536
@@ -865,6 +868,11 @@ class Settings(BaseSettings):
     # Similarity floor (0-1, higher = more similar) shared by both the Twilio path
     # (rag_context.py) and the LiveKit path (kb_retrieval_service._query_single_kb,
     # which returns 1 - cosine_distance as `score` — same direction/semantics).
+    # Lowered from 0.4 -> 0.2 based on production telemetry showing relevant KB
+    # matches were being filtered out at 0.4. 0.2 is a deliberately low floor --
+    # verify with recall/precision metrics before lowering further. Irrelevant
+    # results at this threshold risk degrading LLM answer quality (hallucination
+    # risk) more than returning no KB context would.
     RAG_SCORE_THRESHOLD: float = 0.2
     # Hard cap for the size of the rendered context block injected into prompts.
     # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
