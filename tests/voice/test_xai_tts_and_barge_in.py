@@ -441,14 +441,16 @@ class TestXaiTTSAdapterRegistration:
     def test_catalog_seed_includes_xai(self):
         from app.services.tts_catalog_service import TTSCatalogService
 
-        svc = TTSCatalogService()
-        # ensure_default_provider() is DB-backed; assert against the static
-        # seed spec list directly instead, mirroring how this module has no
-        # existing unit test hitting a real DB.
-        import inspect
-
-        source = inspect.getsource(svc.ensure_default_provider)
-        assert '"slug": "xai"' in source
+        # ensure_default_provider() is DB-backed; assert against the
+        # SEED_PROVIDERS class constant directly (the actual seed data,
+        # not a text search over the method's source) instead of hitting a
+        # real DB, mirroring how this module has no existing unit test that
+        # does that.
+        slugs = [spec["slug"] for spec in TTSCatalogService.SEED_PROVIDERS]
+        assert "xai" in slugs
+        xai_spec = next(s for s in TTSCatalogService.SEED_PROVIDERS if s["slug"] == "xai")
+        assert xai_spec["is_active"] is True
+        assert xai_spec["supports_streaming"] is True
 
     def test_verify_xai_api_key_configured_raises_when_missing(self):
         from app.services.tts_catalog_service import TTSCatalogService

@@ -74,12 +74,17 @@ class XaiTtsServiceError(RuntimeError):
 
 
 def _mask_key(key: str | None) -> str:
-    """Safe, non-reversible preview for diagnostics — never logs the raw key."""
+    """Safe, non-reversible preview for diagnostics — never logs the raw key.
+
+    Only a 4-char prefix is shown (no suffix) — a prefix+suffix reveal on a
+    short key can leak a large fraction of it (flagged in PR #207 for the
+    equivalent AssemblyAI helper).
+    """
     if not key:
         return "<empty>"
     if len(key) <= 8:
         return f"<masked len={len(key)}>"
-    return f"{key[:4]}...{key[-2:]} (len={len(key)})"
+    return f"{key[:4]}{'*' * min(8, len(key) - 4)} (len={len(key)})"
 
 
 class XaiTtsService:
@@ -164,7 +169,8 @@ class XaiTtsService:
             # trace in the logs if that upstream invariant ever breaks.
             logger.warning(
                 "[xAI TTS] text.delta exceeds %d chars (got %d) — truncating",
-                _MAX_TEXT_DELTA_CHARS, len(stripped_text),
+                _MAX_TEXT_DELTA_CHARS,
+                len(stripped_text),
             )
             stripped_text = stripped_text[:_MAX_TEXT_DELTA_CHARS]
 

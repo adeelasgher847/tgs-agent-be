@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -12,6 +13,47 @@ from app.utils.tts_adapter import get_tts_adapter_for_provider
 
 
 class TTSCatalogService:
+    # Extracted as a class constant (rather than a local var inside
+    # ensure_default_provider) so tests can assert against the actual seed
+    # data directly instead of grepping the method's source text.
+    SEED_PROVIDERS: list[dict[str, Any]] = [
+        {
+            "slug": "elevenlabs",
+            "display_name": "ElevenLabs",
+            "is_active": True,
+            "supports_streaming": True,
+            "supports_ssml": True,
+        },
+        {
+            "slug": "google",
+            "display_name": "Google Cloud TTS",
+            "is_active": True,
+            "supports_streaming": True,
+            "supports_ssml": True,
+        },
+        {
+            "slug": "rime",
+            "display_name": "Rime Labs",
+            "is_active": True,
+            "supports_streaming": True,
+            "supports_ssml": False,
+        },
+        {
+            "slug": "hume",
+            "display_name": "Hume AI",
+            "is_active": True,
+            "supports_streaming": True,
+            "supports_ssml": False,
+        },
+        {
+            "slug": "xai",
+            "display_name": "xAI Grok",
+            "is_active": True,
+            "supports_streaming": True,
+            "supports_ssml": False,
+        },
+    ]
+
     @staticmethod
     def verify_rime_api_key_configured() -> None:
         """Fail fast when Rime is enabled but RIME_API_KEY is missing or invalid."""
@@ -36,47 +78,9 @@ class TTSCatalogService:
             )
 
     def ensure_default_provider(self, db: Session) -> TTSProvider:
-        providers_to_seed = [
-            {
-                "slug": "elevenlabs",
-                "display_name": "ElevenLabs",
-                "is_active": True,
-                "supports_streaming": True,
-                "supports_ssml": True,
-            },
-            {
-                "slug": "google",
-                "display_name": "Google Cloud TTS",
-                "is_active": True,
-                "supports_streaming": True,
-                "supports_ssml": True,
-            },
-            {
-                "slug": "rime",
-                "display_name": "Rime Labs",
-                "is_active": True,
-                "supports_streaming": True,
-                "supports_ssml": False,
-            },
-            {
-                "slug": "hume",
-                "display_name": "Hume AI",
-                "is_active": True,
-                "supports_streaming": True,
-                "supports_ssml": False,
-            },
-            {
-                "slug": "xai",
-                "display_name": "xAI Grok",
-                "is_active": True,
-                "supports_streaming": True,
-                "supports_ssml": False,
-            },
-        ]
-
         selected = None
         changed = False
-        for spec in providers_to_seed:
+        for spec in self.SEED_PROVIDERS:
             provider = db.query(TTSProvider).filter(TTSProvider.slug == spec["slug"]).first()
             if provider is None:
                 provider = TTSProvider(**spec)

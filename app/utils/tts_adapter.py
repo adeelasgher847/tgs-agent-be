@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Coroutine
 
 from app.core.config import settings
+from app.core.logger import logger
 from app.core.secret_manager import get_hume_api_key, get_rime_api_key
 from app.models.tts_provider import TTSProvider
 from app.services.elevenlabs_service import elevenlabs_service
@@ -719,18 +720,27 @@ class XaiTTSAdapter(BaseTTSProviderAdapter):
 
         self._DEFAULT_VOICE = XAI_DEFAULT_VOICE
         # Fail at adapter construction — not on first mid-call synthesis request.
-        key = (settings.XAI_API_KEY or "").strip()
-        if not key:
+        # Validated but NOT stored: every synthesis call goes through
+        # xai_tts_service, which re-reads settings.XAI_API_KEY itself via
+        # _get_api_key(). Storing a separate copy here would go stale if the
+        # key changes between construction and a later call, and would
+        # surface as a different exception type (XaiTtsServiceError instead
+        # of this constructor's ValueError) than callers might expect.
+        if not (settings.XAI_API_KEY or "").strip():
             raise ValueError(
                 "XAI_API_KEY is not set. Add it to your environment/.env to use xAI TTS."
             )
-        self._api_key = key
 
     def list_voices(self) -> list[dict[str, Any]]:
         # xAI's GET /v1/tts/voices exists but there is no vendor SDK / prior
         # verified integration for it in this codebase — return a small
         # static list (matches Rime's approach) so the admin voice-picker UI
         # has something to show without depending on an unverified live call.
+        # xAI's documented default voice is "eve"; see
+        # https://docs.x.ai/developers/model-capabilities/audio/text-to-speech
+        # for the current full voice roster if more need to be added here.
+        # A live GET /v1/tts/voices fetch is not wired up yet — add it if the
+        # catalog needs to stay current without manual updates.
         return [
             {"voice_id": "eve", "name": "Eve"},
         ]
@@ -803,7 +813,16 @@ class XaiTTSAdapter(BaseTTSProviderAdapter):
         voice_external_id: str,
         settings_json: dict[str, Any] | None = None,
     ):
-        # Sync streaming is not used for xAI; callers should use async_stream_synthesize.
+        # Sync streaming is not used for xAI; callers should use
+        # async_stream_synthesize. tts_stream_mixin.py's hot path already
+        # dispatches via hasattr(adapter, "async_stream_synthesize") before
+        # ever considering this method, so this should not fire in the live
+        # call path — logged so any other caller that does hit it traces
+        # cleanly back here instead of surfacing a bare NotImplementedError.
+        logger.warning(
+            "[xAI TTS] stream_synthesize (sync) is not implemented — "
+            "callers must use async_stream_synthesize instead"
+        )
         raise NotImplementedError(
             "Use async_stream_synthesize for xAI TTS streaming"
         )
