@@ -252,11 +252,9 @@ def analyze_response(
     completely unmodified input — so callers can always fall back to text
     that's safe to speak and TTS is never blocked.
 
-    `use_ssml` must match the same flag the caller will pass to
-    TtsPipeline.queue_tts()/the TTS provider for this chunk: tone_adapter's
-    substitutions are a no-op whenever use_ssml is True (its calling
-    convention, unchanged here) — passing a mismatched value would silently
-    diverge from what the caller intended.
+    `use_ssml` is forwarded to tone_adapter for call-site parity. Plain spoken
+    text is still shaped when the flag is True (production wraps SSML after
+    this step). Chunks that already contain SSML markup are left unchanged.
     """
     if not bool(getattr(settings, "VOICE_ENABLE_HUMANIZATION_ENGINE", True)):
         return _neutral_decision(text)

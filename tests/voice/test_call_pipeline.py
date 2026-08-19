@@ -468,9 +468,12 @@ class TestTtsPipeline:
     def test_prepare_tts_strips_control_tokens(self):
         """Control tokens must be stripped before text reaches the TTS engine."""
         h = _base_handler()
-        result = h._prepare_tts_text("Thank you. [END_CALL] [SCREENING_QUALIFIED]")
+        result = h._prepare_tts_text(
+            "Thank you. [END_CALL] [SCREENING_QUALIFIED] [CHECK_SLOTS:date=2026-05-20]"
+        )
         assert "[END_CALL]" not in result
         assert "[SCREENING_QUALIFIED]" not in result
+        assert "[CHECK_SLOTS" not in result
         assert "Thank you" in result
 
     def test_prepare_tts_preserves_natural_text(self):

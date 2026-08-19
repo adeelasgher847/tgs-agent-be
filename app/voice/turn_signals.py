@@ -43,7 +43,7 @@ _URGENT = re.compile(
     r"\b(urgent|emergency|asap|immediately|right now|help me|sos)\b", re.I
 )
 _FRUSTRATED = re.compile(
-    r"\b(frustrat|annoy|ridiculous|waste|not working|sick of|tired of|terrible|useless|worst|awful|horrible|disgust|useless|cancel)\b",
+    r"\b(frustrat\w*|annoy\w*|ridiculous|waste|not working|sick of|tired of|terrible|useless|worst|awful|horrible|disgust\w*|cancel)\b",
     re.I,
 )
 _ANGRY = re.compile(
@@ -142,5 +142,6 @@ def build_user_signals_block(ctx: TurnContext) -> str:
         f"- stt_confidence: {ctx.stt_confidence:.2f}\n"
         f"- When inferred_mood is frustrated, angry, or urgent: acknowledge and help first; be concise; avoid cheerful small talk.\n"
         f"- When inferred_mood is sad: be warm, gentle, and patient; do not be overly enthusiastic.\n"
+        f"- When inferred_mood is happy or neutral: sound like a person on the phone — contractions, short sentences, one question at a time.\n"
         f"- When respond_briefly is yes: prefer very short TTS-friendly sentences."
     )

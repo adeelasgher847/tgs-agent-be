@@ -46,20 +46,23 @@ def test_leading_chipper_opener_is_stripped_when_not_ssml():
     assert d.text == "Let me check that for you."
 
 
-def test_tone_adapter_is_noop_when_use_ssml_true():
+def test_tone_adapter_still_shapes_plain_text_when_use_ssml_flag_true():
     """
-    tone_adapter's own calling convention (unchanged by this phase): every
-    substitution branch is gated on `not use_ssml`. Both Twilio and the
-    browser handler hardcode use_ssml=True in production today, so this is
-    the actual production behavior — verify the centralized call site
-    preserves it exactly (text passes through, only stripped).
+    Production handlers set use_ssml=True because SSML wrapping happens after
+    this step. Plain spoken text must still be humanized.
     """
     d = analyze_response(
         "Awesome! Let me check that for you.",
         user_text="hi there",
         use_ssml=True,
     )
-    assert d.text == "Awesome! Let me check that for you."
+    assert d.text == "Let me check that for you."
+
+
+def test_tone_adapter_leaves_existing_ssml_markup_unchanged():
+    ssml = "<speak>Awesome! Let me check that for you.</speak>"
+    d = analyze_response(ssml, user_text="hi there", use_ssml=True)
+    assert d.text == ssml
 
 
 # ---------------------------------------------------------------------------

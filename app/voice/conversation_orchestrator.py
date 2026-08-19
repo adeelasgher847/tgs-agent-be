@@ -15,6 +15,7 @@ from app.utils.eleven_tts_text import (
     strip_eleven_v3_style_tags_for_non_eleven_tts,
     supports_elevenlabs_audio_tags,
 )
+from app.voice.human_speech_style import build_style_and_tone_section
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
 
 
@@ -349,17 +350,16 @@ class ConversationOrchestrator:
                 )
             )
 
+            style_and_tone = build_style_and_tone_section(
+                output_plain_text_rule=output_plain_text_rule,
+                no_bracket_tags_line=no_bracket_tags_line,
+            )
+
             # Base prompt for phone conversations (voice-first, plain text only, no SSML)
             base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
 
-# STYLE & TONE
-- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- CONCISE: Max 20 words per response unless explaining something complex.
-- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-{output_plain_text_rule}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
+{style_and_tone}
 
 # CONVERSATION STATE
 Previous conversation:
@@ -432,12 +432,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 # CUSTOM INSTRUCTIONS
 {effective_custom_prompt}
 
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-{output_plain_text_rule}
-{no_bracket_tags_line}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
+{style_and_tone}
 
 # CONVERSATION STATE
 Previous conversation:
@@ -471,11 +466,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 # MODEL INSTRUCTIONS
 {effective_model_prompt}
 
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}
-{no_bracket_tags_line}
+{style_and_tone}
 
 # CONVERSATION STATE
 Previous conversation:

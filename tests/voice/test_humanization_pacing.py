@@ -199,8 +199,8 @@ def test_disabled_flag_yields_neutral_pacing(monkeypatch):
 def test_pacing_analysis_does_not_alter_text():
     original = "The total is $42.50. Does that work for you?"
     d = analyze_response(original, use_ssml=True)
-    # use_ssml=True keeps tone_adapter a no-op (see Phase 4A), so text
-    # should be byte-for-byte identical — pacing must never touch it either.
+    # Pacing must never rewrite amounts/questions. This string has no canned
+    # formal phrases, so tone_adapter must also leave it byte-for-byte intact.
     assert d.text == original
 
 

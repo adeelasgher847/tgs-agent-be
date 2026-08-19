@@ -43,7 +43,37 @@ def test_tone_adapter_strips_chipper_leading_when_sad():
     assert not out.lower().startswith("great!")
 
 
-def test_tone_adapter_unchanged_for_neutral():
+def test_tone_adapter_unchanged_for_neutral_hours():
     ctx = build_turn_context("What are your hours?", 0.9)
     text = "We are open nine to five."
     assert tone_adapter(text, ctx, use_ssml=False) == text
+
+
+def test_tone_adapter_shapes_plain_text_when_ssml_flag_true():
+    ctx = build_turn_context("What are your hours?", 0.9)
+    out = tone_adapter("Great! I can help with that.", ctx, use_ssml=True)
+    assert not out.lower().startswith("great!")
+
+
+def test_tone_adapter_skips_ssml_markup():
+    ctx = build_turn_context("What are your hours?", 0.9)
+    ssml = "<speak>Great! I can help with that.</speak>"
+    assert tone_adapter(ssml, ctx, use_ssml=True) == ssml
+
+
+def test_tone_adapter_spoken_rewrites():
+    ctx = build_turn_context("What are your hours?", 0.9)
+    out = tone_adapter(
+        "How may I assist you? I would be happy to check.",
+        ctx,
+        use_ssml=True,
+    )
+    assert "How may I assist" not in out
+    assert "How can I help" in out
+    assert "I'd be happy to" in out
+
+
+def test_tone_adapter_contracts_i_am():
+    ctx = build_turn_context("hello", 0.9)
+    out = tone_adapter("I am here to help.", ctx, use_ssml=True)
+    assert out.startswith("I'm")

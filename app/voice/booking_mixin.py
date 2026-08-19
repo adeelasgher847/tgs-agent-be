@@ -517,6 +517,8 @@ class BookingMixin:
         out = _RE_VOICE_SCREENING_QUALIFIED.sub("", out)
         out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
+        out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out, flags=re.IGNORECASE)
+        out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out, flags=re.IGNORECASE)
         # Strip all known ElevenLabs-style audio tags and common variants so they
         # are never spoken as literal words regardless of TTS provider.
         out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
@@ -547,6 +549,8 @@ class BookingMixin:
         leak_patterns = (
             r"\boutcome\b",
             r"\bclient phone number slot\b",
+            r"\[check_slots",
+            r"\[book_appointment",
         )
         return any(re.search(p, t, flags=re.IGNORECASE) for p in leak_patterns)
 
