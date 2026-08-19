@@ -52,6 +52,9 @@ class PricingService:
             "gemini-2.5-flash-lite": (0.05, 0.20),
             "gemini-2.0-flash": (0.05, 0.20),
             "gemini-2.0-flash-lite": (0.04, 0.15),
+            # Placeholder — same rate as gemini-2.5-flash pending official preview pricing.
+            "gemini-3-flash-preview": (0.15, 1.25),
+            "gemini-3.1-flash-lite": (0.25, 1.50),
         }
 
         # -----------------------------

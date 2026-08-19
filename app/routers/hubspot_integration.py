@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
@@ -46,12 +46,23 @@ def _tenant_id(principal) -> uuid.UUID:
 
 @router.get("/connect",include_in_schema=False)
 async def hubspot_connect(
+    request: Request,
     principal=Depends(require_admin),
 ):
-    """Redirect to HubSpot's OAuth consent page. Scopes: contacts read/write."""
+    """Redirect to HubSpot's OAuth consent page. Scopes: contacts read/write.
+
+    Frontend `fetch()` calls send `Accept: application/json` and can't follow
+    a cross-origin 302 to HubSpot with our auth headers attached, so they get
+    the URL back as JSON instead and navigate to it themselves. Normal browser
+    navigation (no `Accept: application/json`) keeps the existing 302.
+    """
     tenant_id = _tenant_id(principal)
     state = hubspot_service.build_oauth_state(tenant_id)
     auth_url = hubspot_service.build_authorization_url(state)
+
+    if request.headers.get("accept") == "application/json":
+        return JSONResponse(content={"authorization_url": auth_url})
+
     return RedirectResponse(url=auth_url, status_code=status.HTTP_302_FOUND)
 
 

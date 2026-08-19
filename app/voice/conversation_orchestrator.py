@@ -121,6 +121,34 @@ def should_send_quick_ack(user_text: str, config: QuickAckConfig) -> bool:
     return True
 
 
+def rag_prefetch_matches_final(prefetch_source_text: str, final_text: str) -> bool:
+    """
+    Decide whether a RAG/KB prefetch fired on an STT *interim* is still safe
+    to reuse for the STT *final* of the same turn.
+
+    The Twilio path (bidirectional_stream.py's `_prefetch_rag_context`) fires
+    on the first qualifying interim and always reuses whatever result that
+    produced, with no divergence check — it accepts that a slight interim/
+    final wording difference is fine for retrieval purposes. The browser path
+    adds this lightweight safety check on top of that same pattern: if the
+    final utterance diverges *materially* from the interim that triggered the
+    prefetch (e.g. the STT correction changed the meaning, not just a couple
+    of trailing words), the prefetch result is discarded and a fresh
+    retrieval is used instead — never a behavior change to Twilio, since this
+    helper is only consumed by the browser call path.
+    """
+    source = (prefetch_source_text or "").strip().lower()
+    final = (final_text or "").strip().lower()
+    if not source or not final:
+        return False
+    if final.startswith(source) or source.startswith(final):
+        return True
+    source_words = set(source.split())
+    final_words = set(final.split())
+    overlap = len(source_words & final_words) / max(len(source_words), len(final_words))
+    return overlap >= 0.6
+
+
 @dataclass
 class ConversationActions:
     """
@@ -202,6 +230,525 @@ class ConversationOrchestrator:
 
     # ---- LLM + history orchestration ----------------------------------
 
+    async def build_system_prompt(self, user_text: str, confidence: float) -> str:
+        """
+        Assemble the full system prompt for a turn: base/agent-override/
+        model-override branching, business-facts grounding, call-policy
+        block, RAG/KB injection (prefetch-consume-once), CRM context, caller
+        memory, and HubSpot field-mapping substitution.
+
+        Behavior-preserving extraction from ``generate_and_stream_response``
+        (which used to build this prompt inline) — reused as-is by that
+        method's streaming-text path AND by the Gemini Live native-audio
+        session's ``system_instruction`` at session start (see
+        ``VoiceOrchestrator._start_gemini_live_session``). ``confidence`` is
+        accepted for signature symmetry with the STT-final callback that
+        triggers a turn but is not currently read by any branch below.
+        """
+        # Build conversation context from transcript
+        conversation_history: List[Dict[str, Any]] = []
+        if self._h.call_session and self._h.call_session.call_transcript:
+            try:
+                raw = self._h.call_session.call_transcript
+                conversation_history = json.loads(raw) if isinstance(raw, str) else list(raw)
+            except Exception:
+                conversation_history = []
+
+        # Build history text - bounded filtered history for stable long-call memory
+        history_text = ""
+        if conversation_history:
+            try:
+                history_lines: List[str] = []
+                filtered: List[Tuple[str, str]] = []
+                for msg in conversation_history:
+                    if isinstance(msg, Dict):
+                        # Handle both 'content' and 'message' keys
+                        role = msg.get("role", "unknown")
+                        content = msg.get("content") or msg.get("message", "")
+                        message_type = msg.get("message_type", "")
+
+                        # Filter: Only include client and agent messages (skip system/greeting/status messages)
+                        if (
+                            content
+                            and role in ["client", "agent"]
+                            and message_type not in ["greeting", "system", "status"]
+                        ):
+                            filtered.append((role, content))
+
+                # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
+                max_msgs = getattr(self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages)
+                if len(filtered) > max_msgs:
+                    filtered = filtered[-max_msgs:]
+
+                # Build history text from the bounded window
+                for role, content in filtered:
+                    history_lines.append(f"{role.capitalize()}: {content}")
+
+                history_text = "\n".join(history_lines)
+            except Exception:
+                history_text = ""
+
+        # Build system prompt with agent personality + history
+        agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
+        agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
+        from app.core.agent_runtime import resolve_tts_runtime
+
+        tts_provider_slug = (
+            resolve_tts_runtime(
+                self._h.agent, db=getattr(self._h, "db", None)
+            ).adapter_slug
+            if self._h.agent
+            else ""
+        )
+        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+        if elevenlabs_audio_tags_enabled:
+            output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
+                get_elevenlabs_voice_prompt_rule_lines()
+            )
+        else:
+            output_plain_text_rule = (
+                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+                "Prosody is handled by the system."
+            )
+            no_ssml_rule_base = (
+                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+            )
+            no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
+        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+        # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
+        # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
+        # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+        no_bracket_tags_line = (
+            ""
+            if elevenlabs_audio_tags_enabled
+            else (
+                "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+                "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+                "will be read aloud literally."
+            )
+        )
+
+        # Base prompt for phone conversations (voice-first, plain text only, no SSML)
+        base_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call with a human.
+
+# STYLE & TONE
+- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- CONCISE: Max 20 words per response unless explaining something complex.
+- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
+{output_plain_text_rule}
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
+
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+# CRITICAL RULES
+1. NO REPETITION: If the history shows you asked a question, move to the next point.
+2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
+3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
+4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
+5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
+6. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
+{no_ssml_rule_base}
+
+{elevenlabs_audio_tag_block}
+
+# GOAL
+Continue the conversation based on the history above. Be {agent_name}."""
+
+        # Batch calls may inject a per-row substituted prompt via call_metadata
+        batch_prompt_override = None
+        ab_prompt_override = None
+        if self._h.call_session and self._h.call_session.call_metadata:
+            batch_prompt_override = self._h.call_session.call_metadata.get(
+                "batch_prompt_override"
+            )
+            # A/B prompt testing: variant + resolved prompt text are locked onto
+            # call_metadata at dispatch time (see ab_testing_service) and never
+            # re-resolved mid-call.
+            ab_prompt_override = self._h.call_session.call_metadata.get(
+                "ab_prompt_text"
+            )
+
+        # Resolve call flow prompt override if present on session
+        flow_prompt_override = None
+        call_flow = getattr(self._h, "call_flow", None)
+        if call_flow:
+            if getattr(call_flow, "current_prompt", None) and call_flow.current_prompt.prompt_text:
+                flow_prompt_override = call_flow.current_prompt.prompt_text
+            elif call_flow.current_prompt_id and getattr(self._h, "db", None):
+                try:
+                    from sqlalchemy import select
+                    from app.models.prompt_version import PromptVersion
+                    pv = self._h.db.execute(
+                        select(PromptVersion).where(PromptVersion.id == call_flow.current_prompt_id)
+                    ).scalar_one_or_none()
+                    if pv and pv.prompt_text:
+                        flow_prompt_override = pv.prompt_text
+                except Exception as exc:
+                    logger.debug("Could not resolve call flow current_prompt: %s", exc)
+
+        # Use agent's custom system prompt / flow prompt if available, otherwise use base prompt
+        if (self._h.agent and self._h.agent.system_prompt) or flow_prompt_override:
+            effective_custom_prompt = (
+                batch_prompt_override
+                or ab_prompt_override
+                or flow_prompt_override
+                or (self._h.agent.system_prompt if self._h.agent else None)
+            )
+            system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
+These rules override any conflicting custom instructions below. Never deviate from them.
+1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+# CUSTOM INSTRUCTIONS
+{effective_custom_prompt}
+
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+{output_plain_text_rule}
+{no_bracket_tags_line}
+- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
+
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+# CRITICAL RULES
+1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
+2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
+
+# GOAL
+Follow your custom instructions. Continue from the history above. Be {agent_name}."""
+        elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
+            effective_model_prompt = (
+                batch_prompt_override
+                or ab_prompt_override
+                or self._h.agent.model.system_prompt
+            )
+            system_prompt = f"""# ROLE
+You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
+
+# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
+These rules override any conflicting model instructions below. Never deviate from them.
+1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
+2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
+3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
+4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+
+# MODEL INSTRUCTIONS
+{effective_model_prompt}
+
+# STYLE & TONE
+- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
+- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+{output_plain_text_rule}
+{no_bracket_tags_line}
+
+# CONVERSATION STATE
+Previous conversation:
+{history_text}
+
+# CRITICAL RULES
+1. NO REPETITION: Do not repeat questions. Move to the next point.
+2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+{no_ssml_rule}
+
+{elevenlabs_audio_tag_block}
+
+# GOAL
+Follow the model instructions. Continue from the history above. Be {agent_name}."""
+        else:
+            system_prompt = base_prompt
+
+        call_policy_block = agent_service.build_call_policy_block(
+            transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
+        )
+        if call_policy_block:
+            system_prompt = call_policy_block + "\n" + system_prompt
+
+        # KB context injection: runs when flow.knowledge_base_ids is non-empty.
+        # Injected AFTER the system prompt and BEFORE conversation history.
+        #
+        # RAG retrieval: reuse the interim-fired prefetch when available
+        # (fired in LiveKitBrowserCallHandler._maybe_start_rag_prefetch on
+        # STT interim, overlapping STT endpointing) instead of always
+        # blocking here on a fresh retrieval — mirrors
+        # bidirectional_stream.py's prefetch-consume-once pattern, adapted
+        # to this transport's kb_retrieval_service call. Falls back to the
+        # exact same synchronous retrieval this code path always used
+        # when no prefetch fired (e.g. a very short first utterance) or
+        # when the final utterance diverged materially from the interim
+        # that triggered the prefetch.
+        kb_context_block = ""
+        flow = getattr(self._h, "call_flow", None)
+        flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
+        if flow_kb_ids and self._h.db:
+            _kb_timeout_sec = float(
+                getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
+            )
+
+            # Consume the prefetch slot exactly once per turn, immediately —
+            # so it can never be read/reused by a later, unrelated turn.
+            # isinstance-checked (not just `is not None`) so a handler
+            # that never initialised this attribute at all (e.g. a bare
+            # test double) is treated the same as "no prefetch fired",
+            # rather than accidentally treating an unrelated truthy value
+            # as a real in-flight prefetch task.
+            _prefetch = getattr(self._h, "_rag_prefetch_task", None)
+            if not isinstance(_prefetch, asyncio.Task):
+                _prefetch = None
+            self._h._rag_prefetch_task = None
+            _prefetch_source_text = getattr(self._h, "_rag_prefetch_source_text", "")
+            if not isinstance(_prefetch_source_text, str):
+                _prefetch_source_text = ""
+            self._h._rag_prefetch_source_text = ""
+
+            if _prefetch is not None and not rag_prefetch_matches_final(
+                _prefetch_source_text, user_text
+            ):
+                # Final utterance materially diverged from the interim that
+                # triggered this prefetch — don't reuse a possibly-wrong
+                # result. Cancel it (if still running) and fall through to
+                # a fresh retrieval below, same as the "no prefetch" branch.
+                if not _prefetch.done():
+                    _prefetch.cancel()
+                _prefetch = None
+
+            try:
+                if _prefetch is not None:
+                    if _prefetch.done():
+                        # Already finished — zero-cost read. Check for a stored
+                        # exception explicitly rather than relying on
+                        # _prefetch_kb_context's current "always returns
+                        # ('', 0.0), never raises" contract — that contract is
+                        # easy to break in a future edit, and an unguarded
+                        # .result() would then raise here and be silently
+                        # swallowed by the outer except Exception below.
+                        _prefetch_exc = _prefetch.exception()
+                        if _prefetch_exc is not None:
+                            logger.debug(
+                                "[RAG prefetch] stored exception: %s", _prefetch_exc
+                            )
+                            kb_context_block, kb_latency_ms = "", 0.0
+                        else:
+                            kb_context_block, kb_latency_ms = _prefetch.result()
+                            logger.debug("[RAG prefetch] used prefetch result (done)")
+                    else:
+                        # Still running — await the SAME in-flight task
+                        # (never start a second parallel retrieval).
+                        # asyncio.shield so a local timeout here doesn't
+                        # cancel a retrieval that may still be useful to
+                        # warm the KB cache for a future turn.
+                        kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                            asyncio.shield(_prefetch),
+                            timeout=_kb_timeout_sec,
+                        )
+                        logger.debug("[RAG prefetch] awaited in-flight prefetch")
+                else:
+                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                    from app.utils.redis_client import get_redis
+
+                    kb_context_block, kb_latency_ms = await asyncio.wait_for(
+                        retrieve_kb_context_for_turn(
+                            transcript=user_text,
+                            kb_ids=flow_kb_ids,
+                            redis_client=get_redis(),
+                        ),
+                        timeout=_kb_timeout_sec,  # fail open if exceeded — see settings.RAG_KB_RETRIEVAL_TIMEOUT_SEC
+                    )
+                logger.info(
+                    "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
+                    kb_latency_ms,
+                    len(flow_kb_ids),
+                    getattr(self._h, "call_sid", ""),
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "kb_retrieval timed out after %.0fms; proceeding without KB context",
+                    _kb_timeout_sec * 1000,
+                )
+            except asyncio.CancelledError:
+                # This turn itself was cancelled (e.g. barge-in) while
+                # awaiting the prefetch — propagate rather than swallow.
+                # The shielded prefetch task (if any) keeps running
+                # independently and is not affected by this.
+                raise
+            except Exception as exc:
+                logger.error("kb_retrieval failed; proceeding without context: %s", exc)
+
+        # Inject KB context block between system prompt and conversation history.
+        if kb_context_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, kb_context_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + kb_context_block
+
+        # HubSpot CRM context injection: fetched once at call start (Redis-cached
+        # contact lookup) and cached on call_session.call_metadata, so every later
+        # turn (the prompt is rebuilt each turn) is a cheap in-memory dict read.
+        # Fails open on timeout/error — never blocks the call.
+        crm_context_block = ""
+        if self._h.call_session and self._h.db:
+            try:
+                from app.services.hubspot_service import get_crm_context_block_for_call
+
+                crm_context_block = await asyncio.wait_for(
+                    get_crm_context_block_for_call(self._h.db, self._h.call_session),
+                    timeout=0.6,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "HubSpot CRM context lookup timed out; proceeding without CRM context"
+                )
+            except Exception as exc:
+                logger.error(
+                    "HubSpot CRM context lookup failed; proceeding without context: %s", exc
+                )
+
+        if crm_context_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, crm_context_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + crm_context_block
+
+        # Salesforce CRM context injection: same fail-open, once-per-call,
+        # call_metadata-cached pattern as the HubSpot block above.
+        salesforce_context_block = ""
+        if self._h.call_session and self._h.db:
+            try:
+                from app.services import salesforce_service
+
+                salesforce_context_block = await asyncio.wait_for(
+                    salesforce_service.get_crm_context_block_for_call(
+                        self._h.db, self._h.call_session
+                    ),
+                    timeout=0.6,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "Salesforce CRM context lookup timed out; proceeding without CRM context"
+                )
+            except Exception as exc:
+                logger.error(
+                    "Salesforce CRM context lookup failed; proceeding without context: %s", exc
+                )
+
+        if salesforce_context_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, salesforce_context_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + salesforce_context_block
+
+        # GoHighLevel (GHL) CRM context injection: same fail-open, once-per-call,
+        # call_metadata-cached pattern as the HubSpot/Salesforce blocks above.
+        ghl_context_block = ""
+        if self._h.call_session and self._h.db:
+            try:
+                from app.services import ghl_service
+
+                ghl_context_block = await asyncio.wait_for(
+                    ghl_service.get_crm_context_block_for_call(
+                        self._h.db, self._h.call_session
+                    ),
+                    timeout=0.6,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "GHL CRM context lookup timed out; proceeding without CRM context"
+                )
+            except Exception as exc:
+                logger.error(
+                    "GHL CRM context lookup failed; proceeding without context: %s", exc
+                )
+
+        if ghl_context_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, ghl_context_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + ghl_context_block
+
+        # Cross-session caller memory: fetched once at call start (DB lookup,
+        # 100ms timeout budget, fail-open) and cached on call_session.call_metadata
+        # so every later turn is a cheap in-memory dict read. Injected right after
+        # the KB/CRM context blocks and before conversation history.
+        caller_memory_block = ""
+        if self._h.call_session and self._h.db and flow and flow.caller_memory_enabled:
+            try:
+                from app.services.caller_memory_service import (
+                    get_caller_memory_context_block_for_call,
+                )
+
+                caller_memory_block = await get_caller_memory_context_block_for_call(
+                    self._h.db, self._h.call_session, flow
+                )
+            except Exception as exc:
+                logger.error(
+                    "caller_memory lookup failed; proceeding without context: %s", exc
+                )
+
+        if caller_memory_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, caller_memory_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + caller_memory_block
+
+        # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
+        # in the prompt with tenant-configured HubSpot contact field values.
+        # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.
+        if self._h.call_session and self._h.db:
+            try:
+                from app.services.hubspot_service import (
+                    apply_field_mapping_values,
+                    get_field_mapping_values_for_call,
+                )
+
+                field_mapping_values = await asyncio.wait_for(
+                    get_field_mapping_values_for_call(self._h.db, self._h.call_session),
+                    timeout=0.6,
+                )
+                if field_mapping_values:
+                    system_prompt = apply_field_mapping_values(
+                        system_prompt, field_mapping_values
+                    )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "HubSpot field mapping lookup timed out; proceeding without substitution"
+                )
+            except Exception as exc:
+                logger.error(
+                    "HubSpot field mapping lookup failed; proceeding without substitution: %s",
+                    exc,
+                )
+
+        return system_prompt
+
     async def generate_and_stream_response(
         self, user_text: str, confidence: float, is_greeting: bool = False
     ) -> None:
@@ -233,6 +780,48 @@ class ConversationOrchestrator:
 
                 # Add greeting to transcript
                 await self._h._add_to_transcript("agent", greeting_text, "greeting")
+
+                # Gemini Live native-audio calls must never invoke the external
+                # TTS provider — route the greeting through the live session's
+                # own send_text so Gemini speaks it in its native voice,
+                # instead of queue_tts below. If the session isn't up yet,
+                # skip the scripted greeting entirely rather than falling
+                # through to queue_tts()/TtsPipeline. Mirrors the same gate in
+                # BidirectionalStreamHandler.generate_and_stream_response.
+                _vo = getattr(self._h, "_voice_orchestrator", None)
+                if _vo is not None and getattr(_vo, "_is_gemini_live", False):
+                    session = _vo._gemini_live_session
+                    if session is not None:
+                        try:
+                            await session.send_text(greeting_text, turn_complete=True)
+                        except Exception as exc:
+                            logger.warning(
+                                "[GeminiLive] failed to send greeting via live session: %s", exc
+                            )
+                    else:
+                        logger.debug(
+                            "[GeminiLive] skipping scripted greeting — live session not ready yet"
+                        )
+                    self._h._twilio_buffer_primed = False
+                    return
+
+                # Mirror-image bypass for OpenAI Realtime native-audio calls —
+                # same rationale as the Gemini Live branch above.
+                if _vo is not None and getattr(_vo, "_is_openai_realtime", False):
+                    session = _vo._openai_realtime_session
+                    if session is not None:
+                        try:
+                            await session.send_text(greeting_text, respond=True)
+                        except Exception as exc:
+                            logger.warning(
+                                "[OpenAIRealtime] failed to send greeting via live session: %s", exc
+                            )
+                    else:
+                        logger.debug(
+                            "[OpenAIRealtime] skipping scripted greeting — live session not ready yet"
+                        )
+                    self._h._twilio_buffer_primed = False
+                    return
 
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._h._tts_pipeline:
@@ -266,432 +855,7 @@ class ConversationOrchestrator:
             # Send quick acknowledgement for longer queries (instant from cache!)
             await self.send_quick_acknowledgement(user_text)
 
-            # Build conversation context from transcript
-            conversation_history: List[Dict[str, Any]] = []
-            if self._h.call_session and self._h.call_session.call_transcript:
-                try:
-                    raw = self._h.call_session.call_transcript
-                    conversation_history = json.loads(raw) if isinstance(raw, str) else list(raw)
-                except Exception:
-                    conversation_history = []
-
-            # Build history text - bounded filtered history for stable long-call memory
-            history_text = ""
-            if conversation_history:
-                try:
-                    history_lines: List[str] = []
-                    filtered: List[Tuple[str, str]] = []
-                    for msg in conversation_history:
-                        if isinstance(msg, Dict):
-                            # Handle both 'content' and 'message' keys
-                            role = msg.get("role", "unknown")
-                            content = msg.get("content") or msg.get("message", "")
-                            message_type = msg.get("message_type", "")
-
-                            # Filter: Only include client and agent messages (skip system/greeting/status messages)
-                            if (
-                                content
-                                and role in ["client", "agent"]
-                                and message_type not in ["greeting", "system", "status"]
-                            ):
-                                filtered.append((role, content))
-
-                    # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
-                    max_msgs = getattr(self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages)
-                    if len(filtered) > max_msgs:
-                        filtered = filtered[-max_msgs:]
-
-                    # Build history text from the bounded window
-                    for role, content in filtered:
-                        history_lines.append(f"{role.capitalize()}: {content}")
-
-                    history_text = "\n".join(history_lines)
-                except Exception:
-                    history_text = ""
-
-            # Build system prompt with agent personality + history
-            agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
-            agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
-            from app.core.agent_runtime import resolve_tts_runtime
-
-            tts_provider_slug = (
-                resolve_tts_runtime(
-                    self._h.agent, db=getattr(self._h, "db", None)
-                ).adapter_slug
-                if self._h.agent
-                else ""
-            )
-            elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
-            if elevenlabs_audio_tags_enabled:
-                output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
-                    get_elevenlabs_voice_prompt_rule_lines()
-                )
-            else:
-                output_plain_text_rule = (
-                    "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
-                    "Prosody is handled by the system."
-                )
-                no_ssml_rule_base = (
-                    "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-                )
-                no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-            elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
-            # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
-            # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
-            # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
-            no_bracket_tags_line = (
-                ""
-                if elevenlabs_audio_tags_enabled
-                else (
-                    "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
-                    "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
-                    "will be read aloud literally."
-                )
-            )
-
-            # Base prompt for phone conversations (voice-first, plain text only, no SSML)
-            base_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call with a human.
-
-# STYLE & TONE
-- VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-- CONCISE: Max 20 words per response unless explaining something complex.
-- NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
-{output_plain_text_rule}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
-2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
-3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
-4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
-5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
-6. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
-{no_ssml_rule_base}
-
-{elevenlabs_audio_tag_block}
-
-# GOAL
-Continue the conversation based on the history above. Be {agent_name}."""
-
-            # Batch calls may inject a per-row substituted prompt via call_metadata
-            batch_prompt_override = None
-            ab_prompt_override = None
-            if self._h.call_session and self._h.call_session.call_metadata:
-                batch_prompt_override = self._h.call_session.call_metadata.get(
-                    "batch_prompt_override"
-                )
-                # A/B prompt testing: variant + resolved prompt text are locked onto
-                # call_metadata at dispatch time (see ab_testing_service) and never
-                # re-resolved mid-call.
-                ab_prompt_override = self._h.call_session.call_metadata.get(
-                    "ab_prompt_text"
-                )
-
-            # Resolve call flow prompt override if present on session
-            flow_prompt_override = None
-            call_flow = getattr(self._h, "call_flow", None)
-            if call_flow:
-                if getattr(call_flow, "current_prompt", None) and call_flow.current_prompt.prompt_text:
-                    flow_prompt_override = call_flow.current_prompt.prompt_text
-                elif call_flow.current_prompt_id and getattr(self._h, "db", None):
-                    try:
-                        from sqlalchemy import select
-                        from app.models.prompt_version import PromptVersion
-                        pv = self._h.db.execute(
-                            select(PromptVersion).where(PromptVersion.id == call_flow.current_prompt_id)
-                        ).scalar_one_or_none()
-                        if pv and pv.prompt_text:
-                            flow_prompt_override = pv.prompt_text
-                    except Exception as exc:
-                        logger.debug("Could not resolve call flow current_prompt: %s", exc)
-
-            # Use agent's custom system prompt / flow prompt if available, otherwise use base prompt
-            if (self._h.agent and self._h.agent.system_prompt) or flow_prompt_override:
-                effective_custom_prompt = (
-                    batch_prompt_override
-                    or ab_prompt_override
-                    or flow_prompt_override
-                    or (self._h.agent.system_prompt if self._h.agent else None)
-                )
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING CUSTOM INSTRUCTIONS)
-These rules override any conflicting custom instructions below. Never deviate from them.
-1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
-2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
-3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
-4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-
-# CUSTOM INSTRUCTIONS
-{effective_custom_prompt}
-
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
-{output_plain_text_rule}
-{no_bracket_tags_line}
-- TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-{no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
-
-# GOAL
-Follow your custom instructions. Continue from the history above. Be {agent_name}."""
-            elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
-                effective_model_prompt = (
-                    batch_prompt_override
-                    or ab_prompt_override
-                    or self._h.agent.model.system_prompt
-                )
-                system_prompt = f"""# ROLE
-You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
-
-# GROUNDING RULES (NON-NEGOTIABLE — APPLY BEFORE READING MODEL INSTRUCTIONS)
-These rules override any conflicting model instructions below. Never deviate from them.
-1. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
-2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
-3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
-4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-
-# MODEL INSTRUCTIONS
-{effective_model_prompt}
-
-# STYLE & TONE
-- VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
-{output_plain_text_rule}
-{no_bracket_tags_line}
-
-# CONVERSATION STATE
-Previous conversation:
-{history_text}
-
-# CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
-{no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
-
-# GOAL
-Follow the model instructions. Continue from the history above. Be {agent_name}."""
-            else:
-                system_prompt = base_prompt
-
-            call_policy_block = agent_service.build_call_policy_block(
-                transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
-            )
-            if call_policy_block:
-                system_prompt = call_policy_block + "\n" + system_prompt
-
-            # KB context injection: runs when flow.knowledge_base_ids is non-empty.
-            # Injected AFTER the system prompt and BEFORE conversation history.
-            kb_context_block = ""
-            flow = getattr(self._h, "call_flow", None)
-            flow_kb_ids = (flow.knowledge_base_ids or []) if flow else []
-            if flow_kb_ids and self._h.db:
-                try:
-                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
-                    from app.utils.redis_client import get_redis
-
-                    _kb_timeout_sec = float(
-                        getattr(settings, "RAG_KB_RETRIEVAL_TIMEOUT_SEC", 0.7) or 0.7
-                    )
-                    kb_context_block, kb_latency_ms = await asyncio.wait_for(
-                        retrieve_kb_context_for_turn(
-                            transcript=user_text,
-                            kb_ids=flow_kb_ids,
-                            redis_client=get_redis(),
-                        ),
-                        timeout=_kb_timeout_sec,  # fail open if exceeded — see settings.RAG_KB_RETRIEVAL_TIMEOUT_SEC
-                    )
-                    logger.info(
-                        "kb_retrieval latency_ms=%.1f kb_count=%d call_sid=%s",
-                        kb_latency_ms,
-                        len(flow_kb_ids),
-                        getattr(self._h, "call_sid", ""),
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "kb_retrieval timed out after %.0fms; proceeding without KB context",
-                        _kb_timeout_sec * 1000,
-                    )
-                except Exception as exc:
-                    logger.error("kb_retrieval failed; proceeding without context: %s", exc)
-
-            # Inject KB context block between system prompt and conversation history.
-            if kb_context_block:
-                anchor = "# CONVERSATION STATE"
-                if anchor in system_prompt:
-                    system_prompt = system_prompt.replace(
-                        anchor, kb_context_block + "\n\n" + anchor, 1
-                    )
-                else:
-                    system_prompt = system_prompt + "\n\n" + kb_context_block
-
-            # HubSpot CRM context injection: fetched once at call start (Redis-cached
-            # contact lookup) and cached on call_session.call_metadata, so every later
-            # turn (the prompt is rebuilt each turn) is a cheap in-memory dict read.
-            # Fails open on timeout/error — never blocks the call.
-            crm_context_block = ""
-            if self._h.call_session and self._h.db:
-                try:
-                    from app.services.hubspot_service import get_crm_context_block_for_call
-
-                    crm_context_block = await asyncio.wait_for(
-                        get_crm_context_block_for_call(self._h.db, self._h.call_session),
-                        timeout=0.6,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "HubSpot CRM context lookup timed out; proceeding without CRM context"
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "HubSpot CRM context lookup failed; proceeding without context: %s", exc
-                    )
-
-            if crm_context_block:
-                anchor = "# CONVERSATION STATE"
-                if anchor in system_prompt:
-                    system_prompt = system_prompt.replace(
-                        anchor, crm_context_block + "\n\n" + anchor, 1
-                    )
-                else:
-                    system_prompt = system_prompt + "\n\n" + crm_context_block
-
-            # Salesforce CRM context injection: same fail-open, once-per-call,
-            # call_metadata-cached pattern as the HubSpot block above.
-            salesforce_context_block = ""
-            if self._h.call_session and self._h.db:
-                try:
-                    from app.services import salesforce_service
-
-                    salesforce_context_block = await asyncio.wait_for(
-                        salesforce_service.get_crm_context_block_for_call(
-                            self._h.db, self._h.call_session
-                        ),
-                        timeout=0.6,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "Salesforce CRM context lookup timed out; proceeding without CRM context"
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "Salesforce CRM context lookup failed; proceeding without context: %s", exc
-                    )
-
-            if salesforce_context_block:
-                anchor = "# CONVERSATION STATE"
-                if anchor in system_prompt:
-                    system_prompt = system_prompt.replace(
-                        anchor, salesforce_context_block + "\n\n" + anchor, 1
-                    )
-                else:
-                    system_prompt = system_prompt + "\n\n" + salesforce_context_block
-
-            # GoHighLevel (GHL) CRM context injection: same fail-open, once-per-call,
-            # call_metadata-cached pattern as the HubSpot/Salesforce blocks above.
-            ghl_context_block = ""
-            if self._h.call_session and self._h.db:
-                try:
-                    from app.services import ghl_service
-
-                    ghl_context_block = await asyncio.wait_for(
-                        ghl_service.get_crm_context_block_for_call(
-                            self._h.db, self._h.call_session
-                        ),
-                        timeout=0.6,
-                    )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "GHL CRM context lookup timed out; proceeding without CRM context"
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "GHL CRM context lookup failed; proceeding without context: %s", exc
-                    )
-
-            if ghl_context_block:
-                anchor = "# CONVERSATION STATE"
-                if anchor in system_prompt:
-                    system_prompt = system_prompt.replace(
-                        anchor, ghl_context_block + "\n\n" + anchor, 1
-                    )
-                else:
-                    system_prompt = system_prompt + "\n\n" + ghl_context_block
-
-            # Cross-session caller memory: fetched once at call start (DB lookup,
-            # 100ms timeout budget, fail-open) and cached on call_session.call_metadata
-            # so every later turn is a cheap in-memory dict read. Injected right after
-            # the KB/CRM context blocks and before conversation history.
-            caller_memory_block = ""
-            if self._h.call_session and self._h.db and flow and flow.caller_memory_enabled:
-                try:
-                    from app.services.caller_memory_service import (
-                        get_caller_memory_context_block_for_call,
-                    )
-
-                    caller_memory_block = await get_caller_memory_context_block_for_call(
-                        self._h.db, self._h.call_session, flow
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "caller_memory lookup failed; proceeding without context: %s", exc
-                    )
-
-            if caller_memory_block:
-                anchor = "# CONVERSATION STATE"
-                if anchor in system_prompt:
-                    system_prompt = system_prompt.replace(
-                        anchor, caller_memory_block + "\n\n" + anchor, 1
-                    )
-                else:
-                    system_prompt = system_prompt + "\n\n" + caller_memory_block
-
-            # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
-            # in the prompt with tenant-configured HubSpot contact field values.
-            # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.
-            if self._h.call_session and self._h.db:
-                try:
-                    from app.services.hubspot_service import (
-                        apply_field_mapping_values,
-                        get_field_mapping_values_for_call,
-                    )
-
-                    field_mapping_values = await asyncio.wait_for(
-                        get_field_mapping_values_for_call(self._h.db, self._h.call_session),
-                        timeout=0.6,
-                    )
-                    if field_mapping_values:
-                        system_prompt = apply_field_mapping_values(
-                            system_prompt, field_mapping_values
-                        )
-                except asyncio.TimeoutError:
-                    logger.warning(
-                        "HubSpot field mapping lookup timed out; proceeding without substitution"
-                    )
-                except Exception as exc:
-                    logger.error(
-                        "HubSpot field mapping lookup failed; proceeding without substitution: %s",
-                        exc,
-                    )
+            system_prompt = await self.build_system_prompt(user_text, confidence)
 
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
