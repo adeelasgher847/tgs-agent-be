@@ -4,6 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Local persona file
+
+If `.claude/Personality/SOUL.md` exists, read it before starting work. It's a
+local-only, gitignored file (`.claude/Personality/`, never pushed to GitHub)
+where the maintainer records how they want Claude to approach this specific
+codebase — mindset, priorities, and working style — as a complement to the
+concrete rules below. It is not a substitute for anything in this file: the
+architecture, conventions, and agent-routing rules here still apply in full:
+`SOUL.md` shapes judgment calls, it doesn't override documented behavior. If
+it's absent, proceed as normal; it's optional per-developer, not shared
+project configuration.
+
+---
+
 ## Knowledge base vault
 
 A local-only Obsidian vault documenting this backend lives adjacent to this repo at `../tgs-agent-be-vault/` (i.e. `/Users/mc/tgs-agent-be-vault/`), sibling to `tgs-agent-be/`. Start at `00 Home/Home.md`.

@@ -182,6 +182,43 @@ def get_rime_api_key() -> str:
 
 
 @lru_cache(maxsize=1)
+def get_hume_api_key() -> str:
+    """
+    Return the Hume AI TTS API key appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager (secret name: HUME_API_KEY), with
+      env-var fallback so deployments that set the var directly still work.
+    - development → plain env-var / .env value.
+
+    Raises ValueError (development) or RuntimeError (staging/production) if no
+    key is available so callers fail at startup rather than sending unauthenticated
+    requests mid-call.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        secret_key = _fetch_from_secret_manager("HUME_API_KEY")
+        if secret_key:
+            return secret_key
+        # Fall back to env var (covers deployments that inject the var via CI/CD).
+        env_key = getattr(settings, "HUME_API_KEY", "") or ""
+        if env_key.strip():
+            return env_key.strip()
+        raise RuntimeError(
+            f"HUME_API_KEY unavailable in {env}. "
+            "Set it in GCP Secret Manager (secret: HUME_API_KEY) or as an env var."
+        )
+
+    # development — plain env var / .env
+    env_key = getattr(settings, "HUME_API_KEY", "") or ""
+    if not env_key.strip():
+        raise ValueError(
+            "HUME_API_KEY is not set. Add it to your .env file for local development."
+        )
+    return env_key.strip()
+
+
+@lru_cache(maxsize=1)
 def _load_hubspot_production_credentials() -> Tuple[str, str]:
     """Fetch HubSpot OAuth app credentials from Secret Manager (cached after first call)."""
     client_id = _fetch_from_secret_manager("HUBSPOT_CLIENT_ID") or settings.HUBSPOT_CLIENT_ID

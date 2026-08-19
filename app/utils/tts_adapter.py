@@ -5,7 +5,7 @@ import threading
 from abc import ABC, abstractmethod
 from typing import Any, AsyncIterator, Coroutine
 
-from app.core.secret_manager import get_rime_api_key
+from app.core.secret_manager import get_hume_api_key, get_rime_api_key
 from app.models.tts_provider import TTSProvider
 from app.services.elevenlabs_service import elevenlabs_service
 from app.services.google_tts_service import google_tts_service
@@ -83,6 +83,60 @@ class _RimeSyncEventLoopBridge:
 
 
 _rime_sync_bridge = _RimeSyncEventLoopBridge()
+
+
+class _HumeSyncEventLoopBridge:
+    """Same rationale/pattern as `_RimeSyncEventLoopBridge` above, applied to
+    Hume's `websockets`-based streaming client instead of Rime's cached
+    httpx.AsyncClient — a websocket connection opened on one event loop
+    cannot be safely driven from a different loop either, so
+    HumeTTSAdapter.synthesize() (the sync-bridge path, invoked from a worker
+    thread via run_in_executor()) needs its own dedicated, persistent
+    background loop, kept entirely separate from Rime's bridge instance.
+    """
+
+    def __init__(self) -> None:
+        self._loop: asyncio.AbstractEventLoop | None = None
+        self._start_lock = threading.Lock()
+
+    def _ensure_started(self) -> asyncio.AbstractEventLoop:
+        loop = self._loop
+        if loop is not None:
+            return loop
+        with self._start_lock:
+            if self._loop is not None:
+                return self._loop
+
+            ready = threading.Event()
+            state: dict[str, asyncio.AbstractEventLoop] = {}
+
+            def _run_forever() -> None:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                state["loop"] = loop
+                ready.set()
+                loop.run_forever()
+
+            thread = threading.Thread(
+                target=_run_forever,
+                name="hume-tts-sync-bridge",
+                daemon=True,
+            )
+            thread.start()
+            ready.wait()
+            self._loop = state["loop"]
+            return self._loop
+
+    def run(self, coro: "Coroutine[Any, Any, bytes]") -> bytes:
+        """Schedule `coro` on the dedicated bridge loop and block the
+        calling thread until it completes. Safe to call from any thread,
+        regardless of whether that thread has its own running event loop."""
+        loop = self._ensure_started()
+        future = asyncio.run_coroutine_threadsafe(coro, loop)
+        return future.result()
+
+
+_hume_sync_bridge = _HumeSyncEventLoopBridge()
 
 
 class BaseTTSProviderAdapter(ABC):
@@ -465,6 +519,129 @@ class RimeTTSAdapter(BaseTTSProviderAdapter):
         )
 
 
+class HumeTTSAdapter(BaseTTSProviderAdapter):
+    """
+    Adapter for Hume AI TTS (streaming WebSocket, `tts/stream/input`).
+
+    Telephony output: mulaw 8 kHz — matches Twilio MULAW 8000 directly
+    (downsampled incrementally from Hume's PCM16LE stream via
+    PCMStreamDownsampler; see hume_tts_service.py for details, including the
+    ASSUMED source-sample-rate caveat).
+
+    Default voice: "Male English Actor" (a HUME_AI-provider preset voice
+    from Hume's Voice Library), configurable via voice_id per agent.
+
+    settings_json keys (all optional):
+        speed              (float, default 1.0) — Hume's native speed param (0.5-2.0)
+        hume_voice_provider (str, default "HUME_AI") — "HUME_AI" | "CUSTOM_VOICE"
+        hume_description    (str) — optional free-text prosody/acting-instructions hint,
+                             Hume's own mechanism (structurally distinct from the numeric
+                             stability path build_voice_settings_overlay() drives for
+                             ElevenLabs) — passed through as-is, not derived from
+                             HumanizationDecision.
+    """
+
+    def __init__(self) -> None:
+        from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+        self._DEFAULT_VOICE = HUME_DEFAULT_VOICE
+        # Fail at adapter construction — not on first mid-call synthesis request.
+        self._api_key = get_hume_api_key()
+
+    def list_voices(self) -> list[dict[str, Any]]:
+        # Admin voice-picker UI path only — latency doesn't matter here.
+        import requests
+
+        try:
+            response = requests.get(
+                "https://api.hume.ai/v0/tts/voices",
+                headers={"X-Hume-Api-Key": self._api_key},
+                timeout=20,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            raise RuntimeError("Failed to fetch Hume voices.") from exc
+        if isinstance(payload, dict):
+            return payload.get("voices_page") or payload.get("voices") or []
+        if isinstance(payload, list):
+            return payload
+        return []
+
+    def normalize_voice_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "external_voice_id": payload.get("id") or payload.get("name"),
+            "display_name": payload.get("name") or "Hume Voice",
+            "language_code": None,
+            "gender": None,
+            "accent": None,
+            "description": "Hume AI voice",
+            "preview_audio_url": None,
+            "sample_rate_hz": 8000,
+            "metadata_json": payload,
+        }
+
+    def synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: dict[str, Any] | None = None,
+    ) -> bytes:
+        cfg = dict(settings_json or {})
+        speed = float(cfg.get("speed", 1.0))
+        voice_provider = cfg.get("hume_voice_provider", "HUME_AI")
+        description = cfg.get("hume_description")
+        speaker = voice_external_id or self._DEFAULT_VOICE
+        from app.services.hume_tts_service import hume_tts_service
+
+        coro = hume_tts_service.synthesize(
+            text=text,
+            voice_external_id=speaker,
+            voice_provider=voice_provider,
+            speed=speed,
+            description=description,
+        )
+
+        # Drive the coroutine on a single persistent background event loop
+        # (see _HumeSyncEventLoopBridge above) instead of asyncio.run()'s
+        # per-call fresh-loop-then-teardown — mirrors the Rime sync-bridge
+        # rationale exactly, using its own dedicated bridge instance.
+        return _hume_sync_bridge.run(coro)
+
+    async def async_stream_synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: dict[str, Any] | None = None,
+    ) -> AsyncIterator[bytes]:
+        """True async streaming — yields raw mulaw bytes as they arrive."""
+        cfg = dict(settings_json or {})
+        speed = float(cfg.get("speed", 1.0))
+        voice_provider = cfg.get("hume_voice_provider", "HUME_AI")
+        description = cfg.get("hume_description")
+        speaker = voice_external_id or self._DEFAULT_VOICE
+        from app.services.hume_tts_service import hume_tts_service
+        async for chunk in hume_tts_service.stream_text_to_speech(
+            text=text,
+            voice_external_id=speaker,
+            voice_provider=voice_provider,
+            speed=speed,
+            description=description,
+        ):
+            yield chunk
+
+    def stream_synthesize(
+        self,
+        text: str,
+        voice_external_id: str,
+        settings_json: dict[str, Any] | None = None,
+    ):
+        # Sync streaming is not used for Hume; callers should use async_stream_synthesize.
+        raise NotImplementedError(
+            "Use async_stream_synthesize for Hume TTS streaming"
+        )
+
+
 def get_tts_adapter(provider_slug: str) -> BaseTTSProviderAdapter:
     slug = (provider_slug or "").strip().lower()
     if slug == "elevenlabs":
@@ -473,6 +650,8 @@ def get_tts_adapter(provider_slug: str) -> BaseTTSProviderAdapter:
         return GoogleTTSAdapter()
     if slug == "rime":
         return RimeTTSAdapter()
+    if slug == "hume":
+        return HumeTTSAdapter()
     raise ValueError(f"Unsupported TTS provider: {provider_slug}")
 
 
