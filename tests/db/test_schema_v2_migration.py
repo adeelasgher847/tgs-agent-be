@@ -639,18 +639,6 @@ class TestWidenAgentLlmModelCheckGemini3Migration:
         )
         assert added == {"gemini-3-flash-preview", "gemini-3.1-flash-lite"}
 
-    def test_widened_snapshot_matches_current_allow_list(self):
-        """The migration's self-contained snapshot must match the current
-        app.core.llm_models.ALLOWED_LLM_MODELS allow-list (as of this
-        revision — this is now the latest widening migration, so this
-        assertion correctly lives here; future edits to the module are
-        expected to add a new migration rather than retroactively changing
-        this one)."""
-        from app.core.llm_models import ALLOWED_LLM_MODELS
-
-        mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
-        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == set(ALLOWED_LLM_MODELS)
-
     def test_llm_check_sql_uses_widened_snapshot(self):
         mod = _load_migration("20260816_widen_agent_llm_model_check_gemini3.py")
         sql = mod._llm_check_sql(mod._ALLOWED_LLM_MODELS_AT_REVISION)
@@ -666,3 +654,154 @@ class TestWidenAgentLlmModelCheckGemini3Migration:
             assert f"'{model}'" in sql
         for gemini3_model in ["gemini-3-flash-preview", "gemini-3.1-flash-lite"]:
             assert f"'{gemini3_model}'" not in sql
+
+
+# ─────────────────── widen ck_agent_llm_model (gemini live native-audio) ─────
+
+class TestWidenAgentLlmModelCheckGeminiLiveMigration:
+    """20260817_widen_agent_llm_model_check_gemini_live.py — widens
+    ck_agent_llm_model from the 21-value 20260816 snapshot to 24 values (adds
+    the 3 Gemini Live native-audio model IDs, removes nothing)."""
+
+    _FILE = "20260817_widen_agent_llm_model_check_gemini_live.py"
+
+    def test_file_exists(self):
+        assert (_VERSIONS_DIR / self._FILE).exists()
+
+    def test_down_revision_is_gemini3_widen_migration(self):
+        mod = _load_migration(self._FILE)
+        assert mod.down_revision == "20260816_widen_llm_check_g3"
+
+    def test_has_upgrade_and_downgrade(self):
+        mod = _load_migration(self._FILE)
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+    def test_revision_id(self):
+        mod = _load_migration(self._FILE)
+        assert mod.revision == "20260817_widen_llm_check_glive"
+
+    def test_widened_snapshot_has_24_values(self):
+        mod = _load_migration(self._FILE)
+        assert len(mod._ALLOWED_LLM_MODELS_AT_REVISION) == 24
+
+    def test_prior_snapshot_unchanged_at_21_values(self):
+        mod = _load_migration(self._FILE)
+        assert len(mod._PRIOR_ALLOWED_LLM_MODELS) == 21
+
+    def test_widened_snapshot_is_superset_of_prior_snapshot(self):
+        """Purely additive: nothing removed or renamed."""
+        mod = _load_migration(self._FILE)
+        assert set(mod._PRIOR_ALLOWED_LLM_MODELS).issubset(
+            set(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        )
+
+    def test_widened_snapshot_adds_exactly_the_gemini_live_family(self):
+        mod = _load_migration(self._FILE)
+        added = set(mod._ALLOWED_LLM_MODELS_AT_REVISION) - set(
+            mod._PRIOR_ALLOWED_LLM_MODELS
+        )
+        assert added == {
+            "gemini-live-2.5-flash-native-audio",
+            "gemini-live-2.5-flash-preview-native-audio-09-2025",
+            "gemini-3.1-flash-live-preview",
+        }
+
+    def test_llm_check_sql_uses_widened_snapshot(self):
+        mod = _load_migration(self._FILE)
+        sql = mod._llm_check_sql(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        for model in mod._ALLOWED_LLM_MODELS_AT_REVISION:
+            assert f"'{model}'" in sql
+
+    def test_downgrade_sql_uses_prior_snapshot_only(self):
+        """Downgrade must restore the narrower 21-value constraint — the
+        three new gemini-live IDs must not appear in the downgrade CHECK
+        SQL."""
+        mod = _load_migration(self._FILE)
+        sql = mod._llm_check_sql(mod._PRIOR_ALLOWED_LLM_MODELS)
+        for model in mod._PRIOR_ALLOWED_LLM_MODELS:
+            assert f"'{model}'" in sql
+        for gemini_live_model in [
+            "gemini-live-2.5-flash-native-audio",
+            "gemini-live-2.5-flash-preview-native-audio-09-2025",
+            "gemini-3.1-flash-live-preview",
+        ]:
+            assert f"'{gemini_live_model}'" not in sql
+
+
+# ─────────────────── widen ck_agent_llm_model (OpenAI Realtime) ──────────────
+
+class TestWidenAgentLlmModelCheckOpenAIRealtimeMigration:
+    """20260817b_widen_agent_llm_model_check_openai_realtime.py — widens
+    ck_agent_llm_model from the 24-value 20260817 gemini-live snapshot to 26
+    values (adds the 2 OpenAI Realtime native-audio model IDs, removes
+    nothing)."""
+
+    _FILE = "20260817b_widen_agent_llm_model_check_openai_realtime.py"
+
+    def test_file_exists(self):
+        assert (_VERSIONS_DIR / self._FILE).exists()
+
+    def test_down_revision_is_gemini_live_widen_migration(self):
+        mod = _load_migration(self._FILE)
+        assert mod.down_revision == "20260817_widen_llm_check_glive"
+
+    def test_has_upgrade_and_downgrade(self):
+        mod = _load_migration(self._FILE)
+        assert callable(mod.upgrade)
+        assert callable(mod.downgrade)
+
+    def test_revision_id(self):
+        mod = _load_migration(self._FILE)
+        assert mod.revision == "20260817_widen_llm_check_oair"
+
+    def test_widened_snapshot_has_26_values(self):
+        mod = _load_migration(self._FILE)
+        assert len(mod._ALLOWED_LLM_MODELS_AT_REVISION) == 26
+
+    def test_prior_snapshot_unchanged_at_24_values(self):
+        mod = _load_migration(self._FILE)
+        assert len(mod._PRIOR_ALLOWED_LLM_MODELS) == 24
+
+    def test_widened_snapshot_is_superset_of_prior_snapshot(self):
+        """Purely additive: nothing removed or renamed."""
+        mod = _load_migration(self._FILE)
+        assert set(mod._PRIOR_ALLOWED_LLM_MODELS).issubset(
+            set(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        )
+
+    def test_widened_snapshot_adds_exactly_the_openai_realtime_family(self):
+        mod = _load_migration(self._FILE)
+        added = set(mod._ALLOWED_LLM_MODELS_AT_REVISION) - set(
+            mod._PRIOR_ALLOWED_LLM_MODELS
+        )
+        assert added == {"gpt-realtime", "gpt-realtime-2"}
+
+    def test_widened_snapshot_matches_current_allow_list(self):
+        """The migration's self-contained snapshot must match the current
+        app.core.llm_models.ALLOWED_LLM_MODELS allow-list (as of this
+        revision — this is now the latest widening migration, so this
+        assertion correctly lives here; future edits to the module are
+        expected to add a new migration rather than retroactively changing
+        this one)."""
+        from app.core.llm_models import ALLOWED_LLM_MODELS
+
+        mod = _load_migration(self._FILE)
+        assert set(mod._ALLOWED_LLM_MODELS_AT_REVISION) == set(ALLOWED_LLM_MODELS)
+
+    def test_llm_check_sql_uses_widened_snapshot(self):
+        mod = _load_migration(self._FILE)
+        sql = mod._llm_check_sql(mod._ALLOWED_LLM_MODELS_AT_REVISION)
+        for model in mod._ALLOWED_LLM_MODELS_AT_REVISION:
+            assert f"'{model}'" in sql
+
+    def test_downgrade_sql_uses_prior_snapshot_only(self):
+        """Downgrade must restore the narrower 24-value constraint — the
+        two new OpenAI Realtime IDs must not appear in the downgrade CHECK
+        SQL."""
+        mod = _load_migration(self._FILE)
+        sql = mod._llm_check_sql(mod._PRIOR_ALLOWED_LLM_MODELS)
+        for model in mod._PRIOR_ALLOWED_LLM_MODELS:
+            assert f"'{model}'" in sql
+        for openai_realtime_model in ["gpt-realtime", "gpt-realtime-2"]:
+            assert f"'{openai_realtime_model}'" not in sql

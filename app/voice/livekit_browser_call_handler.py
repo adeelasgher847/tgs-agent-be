@@ -56,6 +56,8 @@ from app.services.transcript_service import transcript_service
 from app.utils.audio_utils import MULAW_FRAME_BYTES, ulaw_to_linear_sample
 from app.utils.ssml_utils import strip_ssml_tags
 from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_TUNABLES
+from app.voice.gemini_live_audio_bridge import GEMINI_OUTPUT_PCM_RATE_HZ
+from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI_REALTIME_AUDIO_RATE_HZ
 from app.voice.humanization_engine import pause_frames_for_chunk
 
 if TYPE_CHECKING:
@@ -124,11 +126,20 @@ class _LiveKitAgentAudioPublisher:
     recording-mirror path and is not in this task's touch list).
     """
 
-    def __init__(self, room_name: str) -> None:
+    def __init__(self, room_name: str, sample_rate_hz: int = _AGENT_AUDIO_SAMPLE_RATE) -> None:
         self._room_name = room_name
         self._room: Any = None
         self._source: Any = None
         self._connected = False
+        # Per-instance publish sample rate — defaults to the usual TTS-provider
+        # rate (8kHz mu-law-derived PCM), but a Gemini Live native-audio call
+        # opens this publisher at Gemini's own 24kHz output rate instead (see
+        # run_livekit_browser_call), so publish_pcm() below can push Gemini's
+        # raw PCM straight into the room with zero resampling. rtc.AudioSource
+        # takes its sample rate per-instance at construction (confirmed by
+        # reading this SDK usage), not once globally for the whole room, so
+        # this is safe to vary per call.
+        self._sample_rate = int(sample_rate_hz)
         # Rate-limits the "publish failed" warning to once per outage (rather
         # than once per ~20ms frame) so a sustained failure doesn't flood the
         # logs while still being visible at all — previously this was a bare
@@ -140,6 +151,10 @@ class _LiveKitAgentAudioPublisher:
     @property
     def connected(self) -> bool:
         return self._connected
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     async def connect(self) -> bool:
         if not settings.LIVEKIT_ENABLED:
@@ -163,7 +178,7 @@ class _LiveKitAgentAudioPublisher:
             self._room = rtc.Room()
             await self._room.connect(ws_url, token)
 
-            self._source = rtc.AudioSource(_AGENT_AUDIO_SAMPLE_RATE, 1)
+            self._source = rtc.AudioSource(self._sample_rate, 1)
             track = rtc.LocalAudioTrack.create_audio_track("agent-tts-audio", self._source)
             options = rtc.TrackPublishOptions()
             options.source = rtc.TrackSource.SOURCE_MICROPHONE
@@ -221,7 +236,7 @@ class _LiveKitAgentAudioPublisher:
 
                 samples = [ulaw_to_linear_sample(b) for b in chunk]
                 pcm = struct.pack(f"<{len(samples)}h", *samples)
-                frame = rtc.AudioFrame.create(_AGENT_AUDIO_SAMPLE_RATE, 1, len(samples))
+                frame = rtc.AudioFrame.create(self._sample_rate, 1, len(samples))
                 # frame.data is a memoryview already cast to int16 ("h")
                 # format (see livekit.rtc.AudioFrame.data); assigning a plain
                 # `bytes` object (format "B") straight into it raises
@@ -240,6 +255,65 @@ class _LiveKitAgentAudioPublisher:
                 )
                 self._publish_failed_logged = True
 
+    async def publish_pcm(
+        self, pcm_bytes: bytes, sample_rate_hz: int, cancel: asyncio.Event | None = None
+    ) -> None:
+        """
+        Push raw PCM16 little-endian mono bytes directly into the outgoing
+        track — no mu-law decode, unlike publish_mulaw(). Used exclusively by
+        the Gemini Live native-audio path (see gemini_live_audio_bridge.py /
+        run_livekit_browser_call): Gemini's own audio output is already raw
+        PCM16 at 24kHz, and this publisher instance is opened at that same
+        rate (self._sample_rate) for a native-audio call, so no resampling
+        step is needed here at all — a deliberate design choice over
+        resampling 24k->8k, since rtc.AudioSource's sample rate is set once
+        per publisher instance at construction, not globally for the room.
+
+        `sample_rate_hz` is the rate the caller believes `pcm_bytes` is
+        encoded at — it must match `self._sample_rate` (the rate this
+        publisher's AudioSource was actually opened at). A mismatch would
+        silently play audio at the wrong pitch/speed, so instead of playing
+        anything, this logs once and drops the chunk.
+        """
+        if not self._connected or not self._source or not pcm_bytes:
+            return
+        if cancel is not None and cancel.is_set():
+            return
+        if sample_rate_hz != self._sample_rate:
+            if not self._publish_failed_logged:
+                logger.error(
+                    "[LiveKitBrowserCall] publish_pcm sample_rate mismatch room=%s "
+                    "publisher_rate=%d chunk_rate=%d — dropping chunk",
+                    self._room_name, self._sample_rate, sample_rate_hz,
+                )
+                self._publish_failed_logged = True
+            return
+
+        try:
+            from livekit import rtc
+        except ImportError:
+            return
+
+        try:
+            # A trailing odd byte (incomplete final PCM16 sample) is dropped
+            # rather than raising — mirrors gemini_live_audio_bridge's own
+            # odd-length handling convention.
+            num_samples = len(pcm_bytes) // 2
+            if num_samples <= 0:
+                return
+            aligned = pcm_bytes[: num_samples * 2]
+            frame = rtc.AudioFrame.create(self._sample_rate, 1, num_samples)
+            frame.data.cast("B")[:] = aligned
+            await self._source.capture_frame(frame)
+            self._publish_failed_logged = False
+        except Exception as exc:
+            if not self._publish_failed_logged:
+                logger.warning(
+                    "[LiveKitBrowserCall] publish_pcm failed room=%s: %s",
+                    self._room_name, exc, exc_info=True,
+                )
+                self._publish_failed_logged = True
+
     async def disconnect(self) -> None:
         self._connected = False
         if self._room is not None:
@@ -249,6 +323,61 @@ class _LiveKitAgentAudioPublisher:
                 logger.debug("[LiveKitBrowserCall] room disconnect failed: %s", exc)
         self._room = None
         self._source = None
+
+
+class _GeminiLiveAudioSink:
+    """
+    Minimal ``stt_pipeline``-shaped adapter so ``LiveKitAudioSubscriber``
+    (which unconditionally calls ``self._stt_pipeline.feed_audio_chunk(...)``
+    on every decoded frame) can feed a ``GeminiLiveSession`` instead of an
+    ``SttPipeline``, for native-audio agents — without widening
+    ``LiveKitAudioSubscriber``'s constructor to accept a bare callback. This
+    is the smaller, more targeted change: ``LiveKitAudioSubscriber`` already
+    resamples caller audio to LINEAR16 16kHz mono
+    (``_STT_INPUT_SAMPLE_RATE``), exactly the format
+    ``GeminiLiveSession.send_audio`` expects, so no conversion happens here
+    — only the sink changes (see the Gemini Live integration plan's
+    "Browser | in" row).
+    """
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    async def feed_audio_chunk(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            return
+        try:
+            await self._session.send_audio(pcm_bytes)
+        except Exception as exc:
+            logger.error(
+                "[LiveKitBrowserCall] GeminiLiveSession.send_audio failed: %s", exc, exc_info=True
+            )
+
+
+class _OpenAIRealtimeAudioSink:
+    """
+    OpenAI Realtime analog of ``_GeminiLiveAudioSink`` — same
+    ``stt_pipeline``-shaped adapter pattern, targeting an
+    ``OpenAIRealtimeSession`` instead. ``LiveKitAudioSubscriber`` is opened
+    with ``output_sample_rate=OPENAI_REALTIME_AUDIO_RATE_HZ`` (24kHz) for a
+    native-audio OpenAI call (see ``run_livekit_browser_call``) — exactly
+    the rate ``OpenAIRealtimeSession.send_audio`` expects when the session
+    was started with ``audio_format="audio/pcm"``, so no conversion happens
+    here either.
+    """
+
+    def __init__(self, session: Any) -> None:
+        self._session = session
+
+    async def feed_audio_chunk(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            return
+        try:
+            await self._session.send_audio(pcm_bytes)
+        except Exception as exc:
+            logger.error(
+                "[LiveKitBrowserCall] OpenAIRealtimeSession.send_audio failed: %s", exc, exc_info=True
+            )
 
 
 class LiveKitBrowserCallHandler:
@@ -402,6 +531,60 @@ class LiveKitBrowserCallHandler:
                 )
         except Exception as exc:
             logger.error("[LiveKitBrowserCall] _add_to_transcript failed: %s", exc, exc_info=True)
+
+    # ── Gemini Live (native-audio speech-to-speech) audio-out sink ──────────
+    # Wired by VoiceOrchestrator._on_gemini_live_audio_chunk /
+    # _on_gemini_live_interrupted (duck-typed via hasattr, since the Twilio
+    # handler exposes its own differently-shaped `_stream_live_audio_chunk` /
+    # `_send_twilio_clear_event` methods for the same two hooks — see that
+    # module for the branch).
+
+    async def _publish_gemini_live_audio_chunk(
+        self,
+        pcm16_24k_bytes: bytes,
+        cancel: asyncio.Event,
+        sample_rate_hz: int = GEMINI_OUTPUT_PCM_RATE_HZ,
+    ) -> None:
+        """
+        Native-audio-S2S audio-out sink for this transport, shared by both
+        Gemini Live and OpenAI Realtime (see the Gemini-specific name's note
+        below). Publishes raw PCM16 output directly via
+        `_agent_publisher.publish_pcm` — `_agent_publisher` is opened at the
+        matching rate for a native-audio call (see run_livekit_browser_call),
+        so unlike the Twilio path's `_stream_live_audio_chunk` (mu-law/8kHz),
+        no resampling or codec conversion happens here at all.
+
+        `sample_rate_hz` defaults to Gemini's own output rate for the
+        original Gemini call site; OpenAI Realtime's call site passes its own
+        rate explicitly instead of relying on the two providers' rates
+        happening to both be 24kHz today — a future rate change to either
+        provider must not silently mismatch the other and get audio dropped
+        by `publish_pcm`'s rate-mismatch guard.
+        """
+        publisher = self._agent_publisher
+        if publisher is None or not publisher.connected:
+            return
+        await publisher.publish_pcm(
+            pcm16_24k_bytes, sample_rate_hz=sample_rate_hz, cancel=cancel
+        )
+
+    async def _clear_gemini_live_playout_queue(self) -> None:
+        """
+        Barge-in for the Gemini Live path on this transport: discard whatever
+        LiveKit's own AudioSource has already buffered internally (up to
+        ~1000ms) so an interruption is heard immediately instead of after the
+        already-queued audio finishes playing out. Mirrors
+        `_cancel_inflight_llm_response`'s existing `source.clear_queue()` call
+        for the regular TTS barge-in path — there is no Twilio
+        `_send_twilio_clear_event` equivalent on this transport.
+        """
+        publisher = getattr(self, "_agent_publisher", None)
+        source = getattr(publisher, "_source", None) if publisher else None
+        if source is not None:
+            try:
+                source.clear_queue()
+            except Exception:  # noqa: S110 - best-effort barge-in abort
+                pass
 
     # ── Out-of-scope side effects — clean stubs, never crash ────────────────
 
@@ -691,6 +874,10 @@ class LiveKitBrowserCallHandler:
                     external_voice_id = getattr(tts_voice, "external_voice_id", None)
                 if not external_voice_id and tts_provider_slug == "rime":
                     external_voice_id = "mistv2_Wildflower"
+                elif not external_voice_id and tts_provider_slug == "hume":
+                    from app.services.hume_tts_service import HUME_DEFAULT_VOICE
+
+                    external_voice_id = HUME_DEFAULT_VOICE
                 if not external_voice_id:
                     logger.warning(
                         "[LiveKitBrowserCall] TTS voice not configured for streaming provider=%s",
@@ -1173,9 +1360,59 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
         from app.voice.voice_orchestrator import VoiceOrchestrator
 
         voice_orchestrator = VoiceOrchestrator(handler)
+        # Back-reference so ConversationOrchestrator's greeting branch (which
+        # only has access to self._h, i.e. this handler) can check
+        # _is_gemini_live / reach _gemini_live_session — mirrors
+        # BidirectionalStreamHandler.__init__'s self._voice_orchestrator.
+        handler._voice_orchestrator = voice_orchestrator
 
-        # ── Connect agent audio-out (TTS) ───────────────────────────────────
-        publisher = _LiveKitAgentAudioPublisher(room_name)
+        # ── Gemini Live (native-audio speech-to-speech) fork ─────────────────
+        # VoiceOrchestrator.__init__ already resolved _is_gemini_live from
+        # agent.llm_model (is_gemini_live_native_audio_model) — same flag the
+        # Twilio transport uses, just read here instead of re-derived, so both
+        # transports agree on routing for the same agent. Unlike Twilio (which
+        # lazily starts the session on the first audio chunk inside
+        # on_audio_chunk — this transport's equivalent per-chunk fork point,
+        # see module docstring), this transport has no such per-chunk hook: a
+        # LiveKit browser call's whole audio path is set up once, up front, so
+        # the session is started eagerly here, before anything audio-related
+        # (including which sample rate to open the outbound publisher at) is
+        # decided. On a pre-session failure, _start_gemini_live_session's own
+        # fallback (_fallback_to_legacy_pipeline) flips
+        # voice_orchestrator._is_gemini_live back to False and swaps
+        # handler.agent.llm_model to a text model in-memory — re-read the flag
+        # below so this function falls through to the normal STT/TTS
+        # construction path for the rest of the call.
+        is_gemini_live = voice_orchestrator._is_gemini_live
+        if is_gemini_live:
+            await voice_orchestrator._start_gemini_live_session(handler)
+            is_gemini_live = voice_orchestrator._is_gemini_live
+
+        # ── OpenAI Realtime (native-audio speech-to-speech) fork ─────────────
+        # Parallel to the Gemini Live fork above, not shared/refactored code
+        # (per this task's "strictly additive, don't touch Gemini-Live-
+        # specific code" constraint) — mutually exclusive with is_gemini_live
+        # since VoiceOrchestrator.__init__ resolves each provider from a
+        # disjoint model-ID allow-list.
+        is_openai_realtime = voice_orchestrator._is_openai_realtime
+        if is_openai_realtime:
+            await voice_orchestrator._start_openai_realtime_session(handler)
+            is_openai_realtime = voice_orchestrator._is_openai_realtime
+
+        # ── Connect agent audio-out (TTS / Gemini Live / OpenAI Realtime) ────
+        # A native-audio call opens the publisher at the provider's own 24kHz
+        # PCM output rate (no mu-law, no resampling on this path — see
+        # _LiveKitAgentAudioPublisher.publish_pcm); every other call keeps the
+        # existing 8kHz mu-law-derived rate. Gemini Live and OpenAI Realtime
+        # both happen to use 24kHz PCM16 for this transport, so the same
+        # publisher/sink plumbing serves either provider unmodified.
+        if is_gemini_live:
+            publisher_sample_rate = GEMINI_OUTPUT_PCM_RATE_HZ
+        elif is_openai_realtime:
+            publisher_sample_rate = OPENAI_REALTIME_AUDIO_RATE_HZ
+        else:
+            publisher_sample_rate = _AGENT_AUDIO_SAMPLE_RATE
+        publisher = _LiveKitAgentAudioPublisher(room_name, sample_rate_hz=publisher_sample_rate)
         connected = await publisher.connect()
         if not connected:
             logger.error("[LiveKitBrowserCall] failed to connect TTS publisher room=%s", room_name)
@@ -1201,41 +1438,69 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
             publisher._room.on("participant_disconnected", _on_participant_disconnected)
             publisher._room.on("disconnected", _on_room_disconnected)
 
-        # ── Resolve + start STT ─────────────────────────────────────────────
-        from app.core.agent_runtime import resolve_stt_runtime
-
-        flow_lang = None
-        if call_flow and isinstance(call_flow.settings, dict):
-            raw = call_flow.settings.get("sttLanguageCode") or call_flow.settings.get("stt_language_code")
-            if isinstance(raw, str) and raw.strip():
-                flow_lang = raw.strip()
-
-        resolved_stt = _forced_browser_stt_runtime(
-            resolve_stt_runtime(agent, flow_language_code=flow_lang, db=db)
-        )
-
-        from app.voice.stt_pipeline import SttPipeline
-
-        stt_pipeline = SttPipeline.from_runtime_config(
-            resolved=resolved_stt,
-            on_interim=voice_orchestrator._on_interim,
-            on_final=voice_orchestrator._on_final,
-            call_session_id=handler.call_session_id,
-            agent_id=handler.agent_id,
-            event_bus=voice_orchestrator.stt_event_bus,
-        )
-        # Register onto VoiceOrchestrator so its shutdown() closes this
-        # session too (it only closes a pipeline it knows about).
-        voice_orchestrator._stt_pipeline = stt_pipeline
-        voice_orchestrator._stt_active = True
-
+        # ── Resolve + start inbound audio (STT, or Gemini Live) ──────────────
         from app.voice.livekit_audio_subscriber import LiveKitAudioSubscriber
 
-        audio_subscriber = LiveKitAudioSubscriber(
-            room_name=room_name,
-            stt_pipeline=stt_pipeline,
-            output_sample_rate=_STT_INPUT_SAMPLE_RATE,
-        )
+        if is_gemini_live:
+            # Native-audio agents skip STT entirely — SttPipeline is never
+            # constructed for this call. LiveKitAudioSubscriber already
+            # resamples caller audio to LINEAR16 16kHz mono
+            # (_STT_INPUT_SAMPLE_RATE), exactly the format
+            # GeminiLiveSession.send_audio expects, so only the sink changes
+            # (via the _GeminiLiveAudioSink adapter) — no new conversion work.
+            session = voice_orchestrator._gemini_live_session
+            audio_subscriber = LiveKitAudioSubscriber(
+                room_name=room_name,
+                stt_pipeline=_GeminiLiveAudioSink(session),
+                output_sample_rate=_STT_INPUT_SAMPLE_RATE,
+            )
+        elif is_openai_realtime:
+            # Native-audio OpenAI agents skip STT entirely too. Unlike the
+            # Gemini Live branch above, this requests LiveKitAudioSubscriber
+            # resample caller audio to 24kHz (not 16kHz) — the rate
+            # OpenAIRealtimeSession.send_audio expects when the session was
+            # started with audio_format="audio/pcm" (symmetric 24kHz in/out,
+            # unlike Gemini Live's asymmetric 16kHz-in/24kHz-out).
+            session = voice_orchestrator._openai_realtime_session
+            audio_subscriber = LiveKitAudioSubscriber(
+                room_name=room_name,
+                stt_pipeline=_OpenAIRealtimeAudioSink(session),
+                output_sample_rate=OPENAI_REALTIME_AUDIO_RATE_HZ,
+            )
+        else:
+            from app.core.agent_runtime import resolve_stt_runtime
+
+            flow_lang = None
+            if call_flow and isinstance(call_flow.settings, dict):
+                raw = call_flow.settings.get("sttLanguageCode") or call_flow.settings.get("stt_language_code")
+                if isinstance(raw, str) and raw.strip():
+                    flow_lang = raw.strip()
+
+            resolved_stt = _forced_browser_stt_runtime(
+                resolve_stt_runtime(agent, flow_language_code=flow_lang, db=db)
+            )
+
+            from app.voice.stt_pipeline import SttPipeline
+
+            stt_pipeline = SttPipeline.from_runtime_config(
+                resolved=resolved_stt,
+                on_interim=voice_orchestrator._on_interim,
+                on_final=voice_orchestrator._on_final,
+                call_session_id=handler.call_session_id,
+                agent_id=handler.agent_id,
+                event_bus=voice_orchestrator.stt_event_bus,
+            )
+            # Register onto VoiceOrchestrator so its shutdown() closes this
+            # session too (it only closes a pipeline it knows about).
+            voice_orchestrator._stt_pipeline = stt_pipeline
+            voice_orchestrator._stt_active = True
+
+            audio_subscriber = LiveKitAudioSubscriber(
+                room_name=room_name,
+                stt_pipeline=stt_pipeline,
+                output_sample_rate=_STT_INPUT_SAMPLE_RATE,
+            )
+
         audio_subscriber_task = asyncio.create_task(audio_subscriber.run())
 
         # From here on, the agent has actually joined and audio is flowing —

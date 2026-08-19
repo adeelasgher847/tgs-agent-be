@@ -93,6 +93,9 @@ class LlmSettings(BaseModel):
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="", validation_alias="OPENAI_BASE_URL")
     openai_api_version: str = Field(default="", validation_alias="OPENAI_API_VERSION")
+    openai_realtime_transcription_model: str = Field(
+        default="whisper-1", validation_alias="OPENAI_REALTIME_TRANSCRIPTION_MODEL"
+    )
     # Gemini / Vertex
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     google_application_credentials: str = Field(
@@ -158,6 +161,8 @@ class TtsSettings(BaseModel):
     provider: str = Field(default="elevenlabs", validation_alias="TTS_PROVIDER")
     api_key: str = Field(default="", validation_alias="TTS_API_KEY")
     rime_api_key: str = Field(default="", validation_alias="RIME_API_KEY")
+    hume_api_key: str = Field(default="", validation_alias="HUME_API_KEY")
+    hume_sample_rate_hz: int = Field(default=48000, validation_alias="HUME_TTS_SAMPLE_RATE_HZ")
     elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
     elevenlabs_encryption_key: str = Field(
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
@@ -449,9 +454,29 @@ class Settings(BaseSettings):
     DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
+    # Input-audio transcription model for OpenAI Realtime sessions (separate
+    # from the main gpt-realtime*/gpt-realtime-2 model itself). Defaults to
+    # whisper-1 — OpenAI's oldest, most universally-enabled transcription
+    # model — since newer options like gpt-4o-mini-transcribe require
+    # per-project access that isn't guaranteed to be enabled (confirmed via
+    # a real call: model_not_found for gpt-4o-mini-transcribe on a project
+    # that otherwise has full Realtime API access). Override per-environment
+    # if a project has access to a better model.
+    OPENAI_REALTIME_TRANSCRIPTION_MODEL: str = "whisper-1"
 
     # Rime Labs TTS Configuration
     RIME_API_KEY: str = ""
+
+    # Hume AI TTS Configuration
+    HUME_API_KEY: str = ""
+    # ASSUMED default — Hume's PCM streaming output sample rate is not
+    # documented publicly as of this integration (2026-08). 48000 Hz is a
+    # reasonable industry-standard guess for a modern neural TTS PCM stream,
+    # but MUST be verified against a real Hume account/API key before this
+    # goes to production traffic; override via env var if Hume support
+    # confirms a different value. Drives PCMStreamDownsampler's src_rate_hz
+    # when converting Hume's PCM16LE chunks down to mulaw 8kHz for Twilio.
+    HUME_TTS_SAMPLE_RATE_HZ: int = 48000
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
@@ -1077,6 +1102,7 @@ class Settings(BaseSettings):
             openai_api_key=self.OPENAI_API_KEY,
             openai_base_url=self.OPENAI_BASE_URL,
             openai_api_version=self.OPENAI_API_VERSION,
+            openai_realtime_transcription_model=self.OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             gemini_api_key=self.GEMINI_API_KEY,
             google_application_credentials=self.GOOGLE_APPLICATION_CREDENTIALS,
             google_cloud_project_id=self.GOOGLE_CLOUD_PROJECT_ID,
@@ -1101,6 +1127,8 @@ class Settings(BaseSettings):
             provider=self.TTS_PROVIDER,
             api_key=self.TTS_API_KEY,
             rime_api_key=self.RIME_API_KEY,
+            hume_api_key=self.HUME_API_KEY,
+            hume_sample_rate_hz=self.HUME_TTS_SAMPLE_RATE_HZ,
             elevenlabs_api_key=self.ELEVENLABS_API_KEY,
             elevenlabs_encryption_key=self.ELEVENLABS_ENCRYPTION_KEY,
             enable_audio_tags=self.ENABLE_ELEVENLABS_AUDIO_TAGS,

@@ -12,9 +12,12 @@ elif __name__ == "tests.conftest":
     sys.modules["conftest"] = sys.modules[__name__]
 
 
-# Rime TTS is validated at app startup; tests must not depend on a developer .env file.
+# Rime/Hume TTS are validated at app startup (module-level singleton
+# construction in rime_tts_service.py / hume_tts_service.py); tests must not
+# depend on a developer .env file.
 os.environ["RATE_LIMIT_ENABLED"] = "False"
 os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
+os.environ.setdefault("HUME_API_KEY", "test-hume-key-for-pytest")
 os.environ.setdefault(
     "ELEVENLABS_ENCRYPTION_KEY",
     "test-elevenlabs-encryption-key-for-pytest-only",

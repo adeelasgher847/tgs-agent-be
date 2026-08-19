@@ -85,6 +85,9 @@ alembic/versions/*.pyc
 # Local Claude Code subagent configs (personal dev workflow, not shared)
 .claude/agents/
 
+# Local-only Claude Code persona/approach file (personal dev workflow, not shared)
+.claude/Personality/
+
 # Mac
 .DS_Store
 

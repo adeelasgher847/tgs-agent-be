@@ -18999,6 +18999,7 @@ components:
       - rime
       - elevenlabs
       - elevenlabs_byo
+      - hume
       title: TtsProviderEnum
     TtsSettingsJsonSchema:
       properties:

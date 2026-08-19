@@ -38,6 +38,25 @@ ALLOWED_LLM_MODELS: Final[tuple[str, ...]] = (
     # Google Gemini — Gemini 3 family (new)
     "gemini-3-flash-preview",
     "gemini-3.1-flash-lite",
+    # Google Gemini — Live/native-audio speech-to-speech models (new). These
+    # are NOT text models — selecting one routes the whole call through a
+    # completely different pipeline (caller audio in, Gemini's native audio
+    # out, no external STT/TTS). See GEMINI_LIVE_MODELS below for the
+    # per-model auth/location config and is_gemini_live_native_audio_model()
+    # for the routing predicate. `infer_llm_provider` still returns "gemini"
+    # for these (they start with "gemini") — no change needed there.
+    "gemini-live-2.5-flash-native-audio",
+    "gemini-live-2.5-flash-preview-native-audio-09-2025",
+    "gemini-3.1-flash-live-preview",
+    # OpenAI — Realtime speech-to-speech native-audio models (new). Same
+    # "NOT a text model" caveat as the Gemini Live family above: selecting
+    # one of these routes the whole call through OpenAI's Realtime API
+    # (caller audio in, OpenAI's native audio out, no external STT/TTS). See
+    # OPENAI_REALTIME_MODELS below and is_openai_realtime_model() for the
+    # routing predicate. `infer_llm_provider` already returns "openai" for
+    # any "gpt"-prefixed model — no change needed there.
+    "gpt-realtime",
+    "gpt-realtime-2",
     # Anthropic — existing
     "claude-3-5-sonnet",
     "claude-3-haiku",
@@ -55,6 +74,84 @@ def is_allowed_llm_model(model: str) -> bool:
 def allowed_llm_models() -> list[str]:
     """Return a fresh list copy — safe to embed in JSON responses."""
     return list(ALLOWED_LLM_MODELS)
+
+
+#: Per-model auth/location config for the Gemini Live native-audio family.
+#: Confirmed live against the real API (2026-08-17) — each model has a
+#: *different* auth/location requirement, so this MUST stay a per-model
+#: table rather than collapsing to one global auth mode:
+#:
+#: - ``gemini-live-2.5-flash-native-audio`` / \
+#:   ``gemini-live-2.5-flash-preview-native-audio-09-2025``: Vertex AI / ADC,
+#:   regional ``us-central1`` only (confirmed NOT available on ``global`` —
+#:   the opposite restriction from the Gemini 3 text family in
+#:   ``vertex_gemini_service.py``'s ``_GLOBAL_ONLY_MODELS``).
+#: - ``gemini-3.1-flash-live-preview``: Gemini Developer API / API key
+#:   (``settings.GEMINI_API_KEY``) — confirmed NOT available on Vertex AI for
+#:   this project in any region (404 across 4 locations x 6 model-ID
+#:   spellings). This is a deliberate, scoped exception to this codebase's
+#:   otherwise Vertex/ADC-only convention for Gemini models — approved by the
+#:   user. The other two models must never read ``GEMINI_API_KEY``.
+GEMINI_LIVE_MODELS: Final[dict[str, dict[str, str | None]]] = {
+    "gemini-live-2.5-flash-native-audio": {"auth": "vertex", "location": "us-central1"},
+    "gemini-live-2.5-flash-preview-native-audio-09-2025": {
+        "auth": "vertex",
+        "location": "us-central1",
+    },
+    "gemini-3.1-flash-live-preview": {"auth": "api_key", "location": None},
+}
+
+
+def is_gemini_live_native_audio_model(model_name: str) -> bool:
+    """
+    Return True if ``model_name`` is one of the Gemini Live speech-to-speech
+    native-audio models (:data:`GEMINI_LIVE_MODELS`).
+
+    Exact-match check — these models require a completely different call
+    pipeline (caller audio in, Gemini's own native audio out, no external
+    STT/TTS), not just another text-generation ``gemini-*`` model routed
+    through the usual streaming-text pipeline. Do not loosen this to a
+    prefix/substring match: other ``gemini-*``/``gemini-live-*`` strings
+    that are not in the allow-list must not be silently treated as
+    native-audio.
+    """
+    return (model_name or "") in GEMINI_LIVE_MODELS
+
+
+#: Per-model config for the OpenAI Realtime speech-to-speech family.
+#: Confirmed against the installed openai==2.36.0 SDK's own generated types
+#: (openai.types.realtime.call_accept_params's model Literal enum) — see
+#: app/services/openai_realtime_service.py for the session wrapper.
+#:
+#: - ``gpt-realtime``: the original flagship Realtime model (GA Aug 2025).
+#:   No `reasoning` config — the Realtime API's reasoning_effort knob is
+#:   documented as only applying to reasoning-capable Realtime models.
+#: - ``gpt-realtime-2``: newer reasoning-capable generation. Capped to a low
+#:   reasoning effort by default (see openai_realtime_service.py's
+#:   _REASONING_EFFORT_BY_MODEL) for the same voice-turn-latency reason
+#:   gpt-5/gpt-5-mini's Chat Completions reasoning_effort is capped in
+#:   app/services/openai_service.py — an uncapped reasoning budget on a
+#:   live voice turn risks noticeable dead air before the model starts
+#:   speaking.
+#:
+#: Both models use plain API-key auth (settings.OPENAI_API_KEY via
+#: app.core.openai_client.get_async_openai_client) — no ephemeral-token
+#: dance, since this backend always proxies rather than handing a token to
+#: a browser/mobile client directly.
+OPENAI_REALTIME_MODELS: Final[tuple[str, ...]] = ("gpt-realtime", "gpt-realtime-2")
+
+
+def is_openai_realtime_model(model_name: str) -> bool:
+    """
+    Return True if ``model_name`` is one of the OpenAI Realtime
+    speech-to-speech native-audio models (:data:`OPENAI_REALTIME_MODELS`).
+
+    Exact-match check, mirroring is_gemini_live_native_audio_model()'s
+    reasoning — these models require a completely different call pipeline
+    (caller audio in, OpenAI's own native audio out, no external STT/TTS),
+    not just another text-generation ``gpt-*`` model.
+    """
+    return (model_name or "") in OPENAI_REALTIME_MODELS
 
 
 def infer_llm_provider(model_name: str) -> str:
