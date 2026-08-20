@@ -704,16 +704,20 @@ class Settings(BaseSettings):
     VOICE_TTS_STREAM_MIN_WORDS: int = 2
     # Twilio jitter buffer priming frames (20ms each) for low-latency voice output.
     VOICE_TTS_PRIME_FRAMES: int = 1
+    # Master switch for office ambient bed under TTS (Twilio path).
+    # Default OFF for all providers — the 8 kHz µ-law loop reads as TV-static /
+    # cable hiss on phone lines. Even agents with tts_settings_json.background_enabled
+    # true stay silent unless this is also true. Opt in only after a real listening
+    # pass with the target telephony path.
+    VOICE_BACKGROUND_AUDIO_ENABLED: bool = False
     # Phase 4C-2/4C-3: extra 0xFF silence frames (20ms each) appended after a
     # non-final TTS chunk that ends at a real sentence boundary, so
     # multi-sentence responses get a small human-like breath between
     # sentences. Shared by both transports (app.voice.tts_stream_mixin,
     # app.voice.livekit_browser_call_handler) — see HumanizationDecision.pacing.
-    # Set to 0 to fully disable (identical to pre-4C-2 behavior).
-    # Phase 4C-3: enabled at 3 frames (60ms) — code-level correctness only;
-    # this value has NOT been validated against real call audio (no live-call
-    # testing available in this environment). Revisit after real listening.
-    VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES: int = 3
+    # Default 0: silence pads between chunks can exaggerate hard joins / clicks
+    # on 8 kHz µ-law (Google, ElevenLabs, Rime). Set >0 only after listening.
+    VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES: int = 0
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
     # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
     # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback

@@ -171,7 +171,7 @@ async def test_realistic_multi_sentence_response_twilio_shaped_handler():
     real flush logic would), through the shared TtsPipeline with the actual
     live VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES default — no monkeypatch.
     """
-    assert settings.VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES == 3  # sanity on the live default
+    assert settings.VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES == 0  # sanity on the live default
 
     handler = _FakeHandler()
     handler._current_turn_user_text = "Can you help me with my account please"
@@ -220,8 +220,8 @@ async def test_realistic_multi_sentence_response_livekit_shaped_handler():
 async def test_disabled_humanization_yields_zero_pacing_even_with_live_default(monkeypatch):
     """
     VOICE_ENABLE_HUMANIZATION_ENGINE=False must still result in zero pacing
-    end-to-end, even though VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES now
-    defaults to 3 (not 0) — the humanization flag is the outer gate.
+    end-to-end — the humanization flag is the outer gate (pause frames
+    default is already 0; this proves the engine flag still short-circuits).
     """
     monkeypatch.setattr(settings, "VOICE_ENABLE_HUMANIZATION_ENGINE", False)
     handler = _FakeHandler()

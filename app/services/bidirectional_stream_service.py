@@ -17,7 +17,6 @@ from app.core.logger import logger
 from app.core.agent_runtime import resolve_tts_runtime
 from app.utils.tts_adapter import get_tts_adapter
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
-from app.utils.audio_utils import add_ambient_noise_to_mulaw
 
 
 def _resolve_tts_provider_slug(
@@ -51,13 +50,18 @@ async def generate_mulaw_tts(
         use_chirp3_hd: Use Chirp 3 HD model
         speaking_rate: Speech rate
         use_ssml: Whether text contains SSML markup
-        add_office_bg: Deprecated; ignored (kept for call-site compatibility).
+        add_office_bg: Deprecated; ignored for all providers (kept for call-site
+            compatibility). Synthetic / office ambient beds caused TV-static hiss
+            on 8 kHz µ-law; do not re-enable here.
     
     Note: Google TTS natively supports SSML. Text starting with <speak> is auto-detected.
     """
     # Skip empty text
     if not text or not text.strip():
         return b''
+
+    # Hard-ignore: never inject ambient noise regardless of caller flag / provider.
+    _ = add_office_bg
 
     try:
         # Cache key aligned with existing cache strategy (include ssml flag)
@@ -89,7 +93,6 @@ async def generate_mulaw_tts(
         cache_key = (
             generate_cache_key(tts_text, lang, f"{provider_slug}:{selected_voice}", use_chirp3_hd, "mulaw")
             + ("_ssml" if use_ssml else "")
-            + ("_officebg" if add_office_bg else "")
             + f"_sp{cache_speed:.2f}"
         )
 
@@ -149,9 +152,6 @@ async def generate_mulaw_tts(
                     settings_json=settings_json,
                 ),
             )
-
-        if add_office_bg:
-            audio_content = add_ambient_noise_to_mulaw(audio_content, noise_level=0.06)
 
         # Cache for instant reuse (especially useful for repeated words/phrases)
         audio_cache[cache_key] = audio_content

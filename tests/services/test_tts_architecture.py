@@ -300,7 +300,8 @@ def test_tts_router_lists_providers_and_voices(client, db):
             assert len(matching_voices) == 1
             assert matching_voices[0]["preview_audio_url"] == "https://cdn.example.com/voice_1.mp3"
 
-            # eleven-backgrounds endpoint removed; background defaults to office@0.4 automatically.
+            # eleven-backgrounds endpoint removed; ambient bed is opt-in via
+            # tts_settings_json.background_enabled (default off).
             bg_res = client.get("/api/v1/tts/eleven-backgrounds")
             assert bg_res.status_code == 404
     finally:

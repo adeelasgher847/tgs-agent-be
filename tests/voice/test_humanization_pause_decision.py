@@ -25,11 +25,10 @@ def _eligible_pacing() -> PacingHint:
     )
 
 
-# 1. Config default (Phase 4C-3: enabled at 3 frames / 60ms — code-level
-# correctness only, not validated against real call audio; see module
-# docstring in app/core/config.py).
-def test_config_default_is_three_frames():
-    assert settings.VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES == 3
+# 1. Config default: silence pads off (avoids clicky joins on 8 kHz µ-law
+# for Google / ElevenLabs / Rime). See app/core/config.py.
+def test_config_default_is_zero_frames():
+    assert settings.VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES == 0
 
 
 # 2. Config = 0 -> zero frames even for an otherwise-eligible chunk

@@ -77,21 +77,26 @@ class TtsStreamMixin:
 
     def _is_background_audio_enabled(self) -> bool:
         """
-        Enable ambient background only when:
-        - agent TTS provider is ElevenLabs
-        - tts_settings_json.background_enabled is not explicitly false
-        - tts_settings_json.background_profile is "office" (or omitted)
+        Enable ambient background only when *both* are opted in:
+        - settings.VOICE_BACKGROUND_AUDIO_ENABLED (process-wide, default False)
+        - tts_settings_json.background_enabled is true
+        - tts_settings_json.background_profile is "office"
+
+        Applies to every TTS provider (Google / ElevenLabs / Rime). Default is
+        OFF: the embedded office bed is an 8 kHz µ-law loop that reads as
+        continuous TV-static / cable hiss on phone lines. Agents that still
+        have background_enabled=true in the DB stay clean until the env flag
+        is flipped on.
         """
-        if not self.agent:
+        if not bool(getattr(settings, "VOICE_BACKGROUND_AUDIO_ENABLED", False)):
             return False
-        tts_provider_slug = resolve_tts_runtime(self.agent, db=getattr(self, "db", None)).adapter_slug
-        if tts_provider_slug != "elevenlabs":
+        if not self.agent:
             return False
 
         settings_json = dict(getattr(self.agent, "tts_settings_json", None) or {})
-        enabled_raw = settings_json.get("background_enabled", True)
+        enabled_raw = settings_json.get("background_enabled", False)
         if isinstance(enabled_raw, str):
-            enabled = enabled_raw.strip().lower() not in {"false", "0", "off", "no"}
+            enabled = enabled_raw.strip().lower() in {"true", "1", "on", "yes"}
         else:
             enabled = bool(enabled_raw)
         if not enabled:
@@ -124,7 +129,7 @@ class TtsStreamMixin:
         ElevenLabs, Rime) at the mulaw playback boundary.
 
         Distinct from `background_volume` which only affects the optional
-        office ambient bed (ElevenLabs profile).
+        office ambient bed (gated by VOICE_BACKGROUND_AUDIO_ENABLED).
         """
         if not self.agent:
             return 1.0
