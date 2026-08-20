@@ -508,8 +508,11 @@ def decrypt_ghl_token(
 
 # Tags Slack OAuth token ciphertext. New integration — no legacy pgcrypto
 # rows exist, so unlike HubSpot's decrypt_hubspot_token there is no
-# fallback path.
-_SLACK_AESGCM_PREFIX = "gcm1:"
+# fallback path. Deliberately distinct from the other providers' "gcm1:"
+# prefix (HubSpot/Salesforce/Calendly/GHL) so a ciphertext accidentally routed
+# to the wrong provider's decrypt_* function fails with a clear
+# "unrecognized format" error instead of a misleading "wrong key" error.
+_SLACK_AESGCM_PREFIX = "slack_gcm1:"
 
 
 def _slack_aes_key() -> bytes:

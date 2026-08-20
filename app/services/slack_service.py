@@ -60,6 +60,12 @@ PROVIDER = "slack"
 _MAX_RETRIES = 5
 _BASE_BACKOFF_SECONDS = 1.0
 
+# Caps the admin channel-picker fetch at 3 pages of 200 (600 channels) so a
+# workspace with thousands of channels can't turn GET /channels into a
+# multi-second blocking fan-out. The dashboard picker only needs a
+# reasonably-sized list to select from, not the full workspace inventory.
+_MAX_CHANNEL_LIST_PAGES = 3
+
 _STATE_PURPOSE = "slack_oauth_state"
 _STATE_TTL_MINUTES = 10
 
@@ -69,31 +75,52 @@ _MAX_ERROR_LEN = 500
 # ─── HTTP with backoff ────────────────────────────────────────────────────────
 
 
-async def _request_with_backoff(method: str, url: str, **kwargs) -> httpx.Response:
-    """Call Slack with exponential backoff on 429 (1s, 2s, 4s, 8s, 16s)."""
-    async with httpx.AsyncClient(timeout=20.0) as client:
-        attempt = 0
-        while True:
-            response = await client.request(method, url, **kwargs)
-            if response.status_code != 429 or attempt >= _MAX_RETRIES:
-                return response
+async def _request_with_backoff(
+    method: str,
+    url: str,
+    *,
+    client: httpx.AsyncClient | None = None,
+    **kwargs,
+) -> httpx.Response:
+    """Call Slack with exponential backoff on 429 (1s, 2s, 4s, 8s, 16s).
 
-            retry_after_header = response.headers.get("Retry-After")
-            wait_seconds = (
-                float(retry_after_header)
-                if retry_after_header
-                else _BASE_BACKOFF_SECONDS * (2**attempt)
-            )
-            logger.warning(
-                "Slack 429 on %s %s; retrying in %.1fs (attempt %d/%d)",
-                method,
-                url,
-                wait_seconds,
-                attempt + 1,
-                _MAX_RETRIES,
-            )
-            await asyncio.sleep(wait_seconds)
-            attempt += 1
+    Pass an existing ``client`` to reuse a connection across multiple calls
+    (e.g. paginated ``conversations.list`` requests); otherwise a short-lived
+    client is opened and closed for this single call.
+    """
+    if client is not None:
+        return await _request_with_backoff_using_client(client, method, url, **kwargs)
+    async with httpx.AsyncClient(timeout=20.0) as owned_client:
+        return await _request_with_backoff_using_client(
+            owned_client, method, url, **kwargs
+        )
+
+
+async def _request_with_backoff_using_client(
+    client: httpx.AsyncClient, method: str, url: str, **kwargs
+) -> httpx.Response:
+    attempt = 0
+    while True:
+        response = await client.request(method, url, **kwargs)
+        if response.status_code != 429 or attempt >= _MAX_RETRIES:
+            return response
+
+        retry_after_header = response.headers.get("Retry-After")
+        wait_seconds = (
+            float(retry_after_header)
+            if retry_after_header
+            else _BASE_BACKOFF_SECONDS * (2**attempt)
+        )
+        logger.warning(
+            "Slack 429 on %s %s; retrying in %.1fs (attempt %d/%d)",
+            method,
+            url,
+            wait_seconds,
+            attempt + 1,
+            _MAX_RETRIES,
+        )
+        await asyncio.sleep(wait_seconds)
+        attempt += 1
 
 
 # ─── OAuth state (signed, carries tenant_id through the redirect round-trip) ──
@@ -324,32 +351,38 @@ async def list_channels(db: Session, tenant_id: uuid.UUID) -> list[dict]:
 
     channels: list[dict] = []
     cursor: str | None = None
-    while True:
-        params = {
-            "types": "public_channel,private_channel",
-            "exclude_archived": "true",
-            "limit": "200",
-        }
-        if cursor:
-            params["cursor"] = cursor
+    page = 0
+    async with httpx.AsyncClient(timeout=20.0) as client:
+        while True:
+            params = {
+                "types": "public_channel,private_channel",
+                "exclude_archived": "true",
+                "limit": "200",
+            }
+            if cursor:
+                params["cursor"] = cursor
 
-        response = await _request_with_backoff(
-            "GET",
-            CONVERSATIONS_LIST_URL,
-            headers={"Authorization": f"Bearer {access_token}"},
-            params=params,
-        )
-        response.raise_for_status()
-        payload = response.json()
-        if not payload.get("ok"):
-            raise ValueError(f"Slack conversations.list failed: {payload.get('error')}")
+            response = await _request_with_backoff(
+                "GET",
+                CONVERSATIONS_LIST_URL,
+                client=client,
+                headers={"Authorization": f"Bearer {access_token}"},
+                params=params,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not payload.get("ok"):
+                raise ValueError(
+                    f"Slack conversations.list failed: {payload.get('error')}"
+                )
 
-        for ch in payload.get("channels") or []:
-            channels.append({"id": ch.get("id"), "name": ch.get("name")})
+            for ch in payload.get("channels") or []:
+                channels.append({"id": ch.get("id"), "name": ch.get("name")})
 
-        cursor = (payload.get("response_metadata") or {}).get("next_cursor") or None
-        if not cursor:
-            break
+            page += 1
+            cursor = (payload.get("response_metadata") or {}).get("next_cursor") or None
+            if not cursor or page >= _MAX_CHANNEL_LIST_PAGES:
+                break
 
     return channels
 

@@ -6,6 +6,7 @@ Handles call session management including creation, updates, and retrieval
 from sqlalchemy.orm import Session
 from app.models.call_session import CallSession
 from app.models.call_log import CallLog
+from app.models.call_flow import CallFlow
 from app.schemas.call_log import CallLogCreate
 from typing import List, Dict, Any
 import uuid
@@ -516,7 +517,13 @@ class CallSessionService:
                 # see app/services/slack_service.py::schedule_slack_summary.
                 if status == "completed" and not is_inbound_crm_sync_call:
                     try:
-                        call_flow = call_session.call_flow
+                        call_flow = (
+                            db.query(CallFlow)
+                            .filter(CallFlow.id == call_session.call_flow_id)
+                            .first()
+                            if call_session.call_flow_id
+                            else None
+                        )
                         if call_flow and call_flow.slack_summary_enabled:
                             from app.services.slack_service import (
                                 schedule_slack_summary,

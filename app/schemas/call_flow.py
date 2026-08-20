@@ -159,7 +159,8 @@ class PostCallActionsSettingsUpdate(BaseModel):
             "When true, a call summary is posted to a Slack channel after each completed "
             "call on this flow. Requires the workspace to have connected Slack (see "
             "`/api/v1/integrations/slack`). Falls back to the workspace's default channel "
-            "if `slack_channel_id` is not set."
+            "if `slack_channel_id` is not set. Has no effect on inbound CRM-sync calls "
+            "(mirrors `email_summary_enabled`'s behavior for that call type)."
         ),
     )
     slack_channel_id: str | None = Field(

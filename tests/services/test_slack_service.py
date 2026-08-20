@@ -208,7 +208,7 @@ class TestUpsertIntegration:
 
         assert row.workspace_id == _TENANT_ID
         assert row.provider == "slack"
-        assert row.access_token.startswith("gcm1:")
+        assert row.access_token.startswith("slack_gcm1:")
         assert row.extra_metadata["team_id"] == "T123"
         assert row.extra_metadata["team_name"] == "Acme Workspace"
         db.add.assert_called_once_with(row)
@@ -235,7 +235,7 @@ class TestUpsertIntegration:
         assert row.extra_metadata["team_name"] == "New Team Name"
         # Reconnect must not clobber an already-configured default channel.
         assert row.extra_metadata["default_channel_id"] == "C1"
-        assert row.access_token.startswith("gcm1:")
+        assert row.access_token.startswith("slack_gcm1:")
 
 
 class TestGetValidAccessToken:
@@ -525,6 +525,43 @@ class TestListChannels:
         assert [c["id"] for c in channels] == ["C1", "C2"]
         assert mock_request.await_count == 2
         assert mock_request.await_args_list[1].kwargs["params"]["cursor"] == "cursor-2"
+
+    @pytest.mark.anyio
+    async def test_pagination_stops_at_page_cap(self):
+        """Regression test: a workspace with far more channels than the page
+        cap must not turn GET /channels into an unbounded blocking fan-out —
+        list_channels stops after _MAX_CHANNEL_LIST_PAGES pages even though
+        the server keeps returning a next_cursor."""
+        db = MagicMock()
+
+        def _page(n: int) -> MagicMock:
+            resp = MagicMock()
+            resp.raise_for_status = MagicMock()
+            resp.json.return_value = {
+                "ok": True,
+                "channels": [{"id": f"C{n}", "name": f"chan-{n}"}],
+                "response_metadata": {"next_cursor": f"cursor-{n + 1}"},
+            }
+            return resp
+
+        # Server would keep paginating forever (always returns a next_cursor);
+        # only _MAX_CHANNEL_LIST_PAGES requests should ever be made.
+        pages = [_page(n) for n in range(1, slack_service._MAX_CHANNEL_LIST_PAGES + 2)]
+
+        with (
+            patch(
+                "app.services.slack_service.get_valid_access_token",
+                new=AsyncMock(return_value="xoxb-plain"),
+            ),
+            patch(
+                "app.services.slack_service._request_with_backoff",
+                new=AsyncMock(side_effect=pages),
+            ) as mock_request,
+        ):
+            channels = await slack_service.list_channels(db, _TENANT_ID)
+
+        assert mock_request.await_count == slack_service._MAX_CHANNEL_LIST_PAGES
+        assert len(channels) == slack_service._MAX_CHANNEL_LIST_PAGES
 
     @pytest.mark.anyio
     async def test_raises_when_not_connected(self):
@@ -1211,7 +1248,7 @@ class TestSlackTokenEncryption:
 
         db = MagicMock()
         ciphertext = encrypt_slack_token("xoxb-secret-token", db)
-        assert ciphertext.startswith("gcm1:")
+        assert ciphertext.startswith("slack_gcm1:")
         assert decrypt_slack_token(ciphertext, db) == "xoxb-secret-token"
 
     def test_decrypt_unrecognized_format_raises(self):
