@@ -77,17 +77,25 @@ def _fire_callback_enqueue(schedule_id: uuid.UUID, scheduled_at: datetime) -> No
 
 class CallSessionService:
     """Service class for handling call session operations"""
-    
-    def create_call_session(self, db: Session, user_id: uuid.UUID, agent_id: uuid.UUID,
-                           tenant_id: uuid.UUID, twilio_call_sid: str = None,
-                           from_number: str = None, to_number: str = None,
-                           call_type: str = "inbound", assistant_phone_number: str = None,
-                           customer_phone_number: str = None,
-                           session_id: uuid.UUID | None = None,
-                           status: str = "active") -> CallSession:
+
+    def create_call_session(
+        self,
+        db: Session,
+        user_id: uuid.UUID,
+        agent_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        twilio_call_sid: str = None,
+        from_number: str = None,
+        to_number: str = None,
+        call_type: str = "inbound",
+        assistant_phone_number: str = None,
+        customer_phone_number: str = None,
+        session_id: uuid.UUID | None = None,
+        status: str = "active",
+    ) -> CallSession:
         """
         Create a new call session and associated call log
-        
+
         Args:
             db: Database session
             user_id: User ID
@@ -99,11 +107,11 @@ class CallSessionService:
             call_type: Type of call (inbound, outbound, web)
             assistant_phone_number: Assistant's phone number
             customer_phone_number: Customer's phone number
-            
+
         Returns:
             CallSession object
         """
-        
+
         call_session = CallSession(
             id=session_id if session_id is not None else uuid.uuid4(),
             user_id=user_id,
@@ -118,30 +126,36 @@ class CallSessionService:
             assistant_phone_number=assistant_phone_number,
             customer_phone_number=customer_phone_number,
             call_transcript=[],
-            response_times=[]
+            response_times=[],
         )
-        
+
         db.add(call_session)
         db.commit()
         db.refresh(call_session)
-        
+
         # Create associated call log
         self._create_call_log_for_session(db, call_session)
-        
+
         # Broadcast call session created event
-        asyncio.create_task(self._broadcast_call_event(
-            str(call_session.id), 
-            "call_session_created", 
-            {
-                "call_session_id": str(call_session.id),
-                "status": call_session.status,
-                "call_type": call_session.call_type,
-                "start_time": call_session.start_time.isoformat() if call_session.start_time else None
-            }
-        ))
-        
+        asyncio.create_task(
+            self._broadcast_call_event(
+                str(call_session.id),
+                "call_session_created",
+                {
+                    "call_session_id": str(call_session.id),
+                    "status": call_session.status,
+                    "call_type": call_session.call_type,
+                    "start_time": (
+                        call_session.start_time.isoformat()
+                        if call_session.start_time
+                        else None
+                    ),
+                },
+            )
+        )
+
         return call_session
-    
+
     def _record_demo_link_usage(self, db: Session, call_session: CallSession) -> None:
         """
         Credit a finished call's duration against its originating demo link's
@@ -178,23 +192,32 @@ class CallSessionService:
             return
 
         from app.models.call_flow_demo_link import CallFlowDemoLink
-        from app.models.call_flow_demo_link_visitor_usage import CallFlowDemoLinkVisitorUsage
+        from app.models.call_flow_demo_link_visitor_usage import (
+            CallFlowDemoLinkVisitorUsage,
+        )
 
         try:
             demo_link_uuid = uuid.UUID(str(demo_link_id))
         except ValueError:
             logger.warning(
                 "Demo link usage accounting: malformed demo_link_id=%r session=%s",
-                demo_link_id, call_session.id,
+                demo_link_id,
+                call_session.id,
             )
             return
 
         minutes = Decimal(call_session.duration) / Decimal(60)
 
-        demo_link = db.query(CallFlowDemoLink).filter(CallFlowDemoLink.id == demo_link_uuid).first()
+        demo_link = (
+            db.query(CallFlowDemoLink)
+            .filter(CallFlowDemoLink.id == demo_link_uuid)
+            .first()
+        )
         if demo_link is None:
             return
-        demo_link.total_minutes_used = (demo_link.total_minutes_used or Decimal("0")) + minutes
+        demo_link.total_minutes_used = (
+            demo_link.total_minutes_used or Decimal("0")
+        ) + minutes
 
         visitor_usage = (
             db.query(CallFlowDemoLinkVisitorUsage)
@@ -205,19 +228,26 @@ class CallSessionService:
             .first()
         )
         if visitor_usage is not None:
-            visitor_usage.minutes_used = (visitor_usage.minutes_used or Decimal("0")) + minutes
+            visitor_usage.minutes_used = (
+                visitor_usage.minutes_used or Decimal("0")
+            ) + minutes
 
         db.commit()
         logger.info(
             "Demo link usage recorded demo_link_id=%s visitor_id=%s session=%s minutes=%s",
-            demo_link_id, visitor_id, call_session.id, minutes,
+            demo_link_id,
+            visitor_id,
+            call_session.id,
+            minutes,
         )
 
-    def _create_call_log_for_session(self, db: Session, call_session: CallSession) -> CallLog:
+    def _create_call_log_for_session(
+        self, db: Session, call_session: CallSession
+    ) -> CallLog:
         """Create a call log entry for a call session"""
         # Generate a shortened call ID for display (like in Vapi dashboard)
         call_id = str(call_session.id)[:8] + "..."
-        
+
         call_log_data = CallLogCreate(
             call_session_id=call_session.id,
             tenant_id=call_session.tenant_id,
@@ -226,23 +256,33 @@ class CallSessionService:
             call_type=call_session.call_type,
             assistant_phone_number=call_session.assistant_phone_number,
             customer_phone_number=call_session.customer_phone_number,
-            start_time=call_session.start_time
+            start_time=call_session.start_time,
         )
-        
+
         call_log = CallLog(**call_log_data.dict())
         db.add(call_log)
         db.commit()
         db.refresh(call_log)
-        
+
         return call_log
-    
-    def _update_call_log_for_session(self, db: Session, call_session: CallSession, 
-                                   ended_reason: str = None, success_evaluation: str = None,
-                                   cost: float = None, transferred: bool = None) -> CallLog | None:
+
+    def _update_call_log_for_session(
+        self,
+        db: Session,
+        call_session: CallSession,
+        ended_reason: str = None,
+        success_evaluation: str = None,
+        cost: float = None,
+        transferred: bool = None,
+    ) -> CallLog | None:
         """Update call log entry for a call session"""
         try:
-            call_log = db.query(CallLog).filter(CallLog.call_session_id == call_session.id).first()
-            
+            call_log = (
+                db.query(CallLog)
+                .filter(CallLog.call_session_id == call_session.id)
+                .first()
+            )
+
             if call_log:
                 if ended_reason:
                     call_log.ended_reason = ended_reason
@@ -256,50 +296,70 @@ class CallSessionService:
                     call_log.end_time = call_session.end_time
                 if call_session.duration:
                     call_log.duration = call_session.duration
-                
+
                 call_log.updated_at = datetime.utcnow()
                 db.commit()
                 db.refresh(call_log)
-            
+
             return call_log
 
         except Exception as e:
             db.rollback()
-            logger.error("DB error in _update_call_log_for_session (session=%s): %s", call_session.id, e, exc_info=True)
+            logger.error(
+                "DB error in _update_call_log_for_session (session=%s): %s",
+                call_session.id,
+                e,
+                exc_info=True,
+            )
             return None
-    
-    def get_call_session_by_id(self, db: Session, session_id: uuid.UUID) -> CallSession | None:
+
+    def get_call_session_by_id(
+        self, db: Session, session_id: uuid.UUID
+    ) -> CallSession | None:
         """
         Get call session by ID
-        
+
         Args:
             db: Database session
             session_id: Session ID (UUID)
-            
+
         Returns:
             CallSession object or None
         """
         return db.query(CallSession).filter(CallSession.id == session_id).first()
-    
-    def get_call_session_by_twilio_sid(self, db: Session, twilio_call_sid: str) -> CallSession | None:
+
+    def get_call_session_by_twilio_sid(
+        self, db: Session, twilio_call_sid: str
+    ) -> CallSession | None:
         """
         Get call session by Twilio call SID
-        
+
         Args:
             db: Database session
             twilio_call_sid: Twilio call SID
-            
+
         Returns:
             CallSession object or None
         """
-        return db.query(CallSession).filter(CallSession.twilio_call_sid == twilio_call_sid).first()
-    
-    def update_call_session_status(self, db: Session, session_id: uuid.UUID, status: str, 
-                                 ended_reason: str = None, success_evaluation: str = None,
-                                 cost: float = None, transferred: bool = None) -> CallSession | None:
+        return (
+            db.query(CallSession)
+            .filter(CallSession.twilio_call_sid == twilio_call_sid)
+            .first()
+        )
+
+    def update_call_session_status(
+        self,
+        db: Session,
+        session_id: uuid.UUID,
+        status: str,
+        ended_reason: str = None,
+        success_evaluation: str = None,
+        cost: float = None,
+        transferred: bool = None,
+    ) -> CallSession | None:
         """
         Update call session status and associated call log
-        
+
         Args:
             db: Database session
             session_id: Session ID (UUID)
@@ -307,7 +367,7 @@ class CallSessionService:
             ended_reason: Reason why call ended
             success_evaluation: Whether call was successful
             cost: Cost of the call
-            
+
         Returns:
             Updated CallSession object or None
         """
@@ -315,7 +375,7 @@ class CallSessionService:
             call_session = self.get_call_session_by_id(db, session_id)
             if call_session:
                 call_session.status = status
-                
+
                 if ended_reason:
                     call_session.ended_reason = ended_reason
                 if success_evaluation:
@@ -324,18 +384,25 @@ class CallSessionService:
                     call_session.cost = cost
                 if transferred is not None:
                     call_session.transferred = transferred
-                
+
                 if status in ["completed", "failed", "busy", "no_answer"]:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
-                        duration = (call_session.end_time - call_session.start_time).total_seconds()
+                        duration = (
+                            call_session.end_time - call_session.start_time
+                        ).total_seconds()
                         call_session.duration = int(duration)
 
                 db.commit()
                 db.refresh(call_session)
 
                 self._update_call_log_for_session(
-                    db, call_session, ended_reason, success_evaluation, cost, transferred
+                    db,
+                    call_session,
+                    ended_reason,
+                    success_evaluation,
+                    cost,
+                    transferred,
                 )
 
                 # Demo link minute accounting: a call session created via
@@ -344,16 +411,20 @@ class CallSessionService:
                 # (see app/routers/sdk.py::demo_call_token). On terminal status
                 # with a computed duration, credit that duration against the
                 # link's total budget and the visitor's per-user budget.
-                is_demo_link_call = isinstance(call_session.call_metadata, dict) and isinstance(
-                    call_session.call_metadata.get("demo_link"), dict
-                )
-                if status in ("completed", "failed", "busy", "no_answer") and call_session.duration:
+                is_demo_link_call = isinstance(
+                    call_session.call_metadata, dict
+                ) and isinstance(call_session.call_metadata.get("demo_link"), dict)
+                if (
+                    status in ("completed", "failed", "busy", "no_answer")
+                    and call_session.duration
+                ):
                     try:
                         self._record_demo_link_usage(db, call_session)
                     except Exception as demo_exc:  # pragma: no cover
                         logger.warning(
                             "Demo link usage accounting failed (non-critical) session=%s: %s",
-                            session_id, demo_exc,
+                            session_id,
+                            demo_exc,
                         )
 
                 is_inbound_crm_sync_call = (
@@ -365,7 +436,9 @@ class CallSessionService:
                     try:
                         schedule_inbound_crm_sync(call_session.id)
                     except Exception as sync_exc:  # pragma: no cover
-                        logger.warning("Inbound CRM schedule failed (non-critical): %s", sync_exc)
+                        logger.warning(
+                            "Inbound CRM schedule failed (non-critical): %s", sync_exc
+                        )
 
                 # Automatic call summary generation: run the LLM
                 # summary/sentiment/recommendations analysis once, right when
@@ -436,6 +509,28 @@ class CallSessionService:
                             email_exc,
                         )
 
+                # Post-call Slack summary ("Slack Summary" toggle on the call flow's
+                # post-call-actions settings). Per-call-flow opt-in — connecting Slack
+                # for the workspace (see WorkspaceIntegration, provider="slack") does
+                # not activate this for every call flow. Fire-and-forget (fail open) —
+                # see app/services/slack_service.py::schedule_slack_summary.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and call_flow.slack_summary_enabled:
+                            from app.services.slack_service import (
+                                schedule_slack_summary,
+                                tenant_has_slack_connected,
+                            )
+
+                            if tenant_has_slack_connected(db, call_session.tenant_id):
+                                schedule_slack_summary(call_session.id)
+                    except Exception as slack_exc:  # pragma: no cover
+                        logger.warning(
+                            "Slack summary schedule failed (non-critical): %s",
+                            slack_exc,
+                        )
+
                 # HubSpot post-call write-back: create a Call engagement with the
                 # transcript summary once the call has actually completed. Fire-and-forget
                 # (fail open) — see app/services/hubspot_service.py::schedule_hubspot_writeback.
@@ -453,7 +548,8 @@ class CallSessionService:
                             schedule_hubspot_writeback(call_session.id)
                     except Exception as hubspot_exc:  # pragma: no cover
                         logger.warning(
-                            "HubSpot write-back schedule failed (non-critical): %s", hubspot_exc
+                            "HubSpot write-back schedule failed (non-critical): %s",
+                            hubspot_exc,
                         )
 
                 # Salesforce post-call write-back: create a Task (Activity) with the
@@ -502,12 +598,19 @@ class CallSessionService:
                 # will re-submit it when the ARQ worker next starts.
                 if status in ("no_answer", "busy"):
                     try:
-                        from app.services.callback_scheduler_service import callback_scheduler_service
-                        cb_schedule = callback_scheduler_service.maybe_schedule_callback(
-                            db, call_session
+                        from app.services.callback_scheduler_service import (
+                            callback_scheduler_service,
+                        )
+
+                        cb_schedule = (
+                            callback_scheduler_service.maybe_schedule_callback(
+                                db, call_session
+                            )
                         )
                         if cb_schedule is not None:
-                            _fire_callback_enqueue(cb_schedule.id, cb_schedule.scheduled_at)
+                            _fire_callback_enqueue(
+                                cb_schedule.id, cb_schedule.scheduled_at
+                            )
                     except Exception as cb_exc:
                         logger.warning(
                             "Smart callback schedule failed (non-critical) session=%s: %s",
@@ -519,21 +622,33 @@ class CallSessionService:
 
         except Exception as e:
             db.rollback()
-            logger.error("DB error in update_call_session_status (session=%s status=%s): %s", session_id, status, e, exc_info=True)
+            logger.error(
+                "DB error in update_call_session_status (session=%s status=%s): %s",
+                session_id,
+                status,
+                e,
+                exc_info=True,
+            )
             return None
-    
-    def add_transcript_entry(self, db: Session, session_id: uuid.UUID, role: str, content: str, 
-                           response_time: float = None) -> CallSession | None:
+
+    def add_transcript_entry(
+        self,
+        db: Session,
+        session_id: uuid.UUID,
+        role: str,
+        content: str,
+        response_time: float = None,
+    ) -> CallSession | None:
         """
         Add a transcript entry to the call session
-        
+
         Args:
             db: Database session
             session_id: Session ID (UUID)
             role: Role (user or assistant)
             content: Message content
             response_time: Response time in seconds
-            
+
         Returns:
             Updated CallSession object or None
         """
@@ -542,103 +657,122 @@ class CallSessionService:
             # Initialize transcript if None
             if call_session.call_transcript is None:
                 call_session.call_transcript = []
-            
+
             # Add transcript entry
             transcript_entry = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "role": role,
-                "content": content
+                "content": content,
             }
             call_session.call_transcript.append(transcript_entry)
-            
+
             # Add response time if provided
             if response_time is not None:
                 if call_session.response_times is None:
                     call_session.response_times = []
-                
+
                 response_time_entry = {
                     "timestamp": datetime.utcnow().isoformat(),
-                    "response_time": response_time
+                    "response_time": response_time,
                 }
                 call_session.response_times.append(response_time_entry)
-            
+
             db.commit()
             db.refresh(call_session)
-        
+
         return call_session
-    
-    def get_call_sessions_by_user(self, db: Session, user_id: uuid.UUID, 
-                                 limit: int = 50) -> List[CallSession]:
+
+    def get_call_sessions_by_user(
+        self, db: Session, user_id: uuid.UUID, limit: int = 50
+    ) -> List[CallSession]:
         """
         Get call sessions for a specific user
-        
+
         Args:
             db: Database session
             user_id: User ID
             limit: Maximum number of results
-            
+
         Returns:
             List of CallSession objects
         """
-        return db.query(CallSession).filter(
-            CallSession.user_id == user_id
-        ).order_by(CallSession.created_at.desc()).limit(limit).all()
-    
-    def get_call_sessions_by_agent(self, db: Session, agent_id: uuid.UUID, 
-                                  limit: int = 50) -> List[CallSession]:
+        return (
+            db.query(CallSession)
+            .filter(CallSession.user_id == user_id)
+            .order_by(CallSession.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_call_sessions_by_agent(
+        self, db: Session, agent_id: uuid.UUID, limit: int = 50
+    ) -> List[CallSession]:
         """
         Get call sessions for a specific agent
-        
+
         Args:
             db: Database session
             agent_id: Agent ID
             limit: Maximum number of results
-            
+
         Returns:
             List of CallSession objects
         """
-        return db.query(CallSession).filter(
-            CallSession.agent_id == agent_id
-        ).order_by(CallSession.created_at.desc()).limit(limit).all()
-    
-    def get_call_sessions_by_tenant(self, db: Session, tenant_id: uuid.UUID, 
-                                   limit: int = 100) -> List[CallSession]:
+        return (
+            db.query(CallSession)
+            .filter(CallSession.agent_id == agent_id)
+            .order_by(CallSession.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_call_sessions_by_tenant(
+        self, db: Session, tenant_id: uuid.UUID, limit: int = 100
+    ) -> List[CallSession]:
         """
         Get call sessions for a specific tenant
-        
+
         Args:
             db: Database session
             tenant_id: Tenant ID
             limit: Maximum number of results
-            
+
         Returns:
             List of CallSession objects
         """
-        return db.query(CallSession).filter(
-            CallSession.tenant_id == tenant_id
-        ).order_by(CallSession.created_at.desc()).limit(limit).all()
-    
-    def get_call_session_stats(self, db: Session, session_id: uuid.UUID) -> Dict[str, Any]:
+        return (
+            db.query(CallSession)
+            .filter(CallSession.tenant_id == tenant_id)
+            .order_by(CallSession.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+
+    def get_call_session_stats(
+        self, db: Session, session_id: uuid.UUID
+    ) -> Dict[str, Any]:
         """
         Get statistics for a call session
-        
+
         Args:
             db: Database session
             session_id: Session ID (UUID)
-            
+
         Returns:
             Dictionary with call session statistics
         """
         call_session = self.get_call_session_by_id(db, session_id)
         if not call_session:
             return {}
-        
+
         # Calculate average response time
         avg_response_time = None
         if call_session.response_times:
-            total_time = sum(entry.get("response_time", 0) for entry in call_session.response_times)
+            total_time = sum(
+                entry.get("response_time", 0) for entry in call_session.response_times
+            )
             avg_response_time = total_time / len(call_session.response_times)
-        
+
         # Count messages by role
         user_messages = 0
         assistant_messages = 0
@@ -648,51 +782,70 @@ class CallSessionService:
                     user_messages += 1
                 elif entry.get("role") == "assistant":
                     assistant_messages += 1
-        
+
         return {
             "session_id": str(call_session.id),
             "status": call_session.status,
             "duration": call_session.duration,
-            "start_time": call_session.start_time.isoformat() if call_session.start_time else None,
-            "end_time": call_session.end_time.isoformat() if call_session.end_time else None,
-            "total_messages": len(call_session.call_transcript) if call_session.call_transcript else 0,
+            "start_time": (
+                call_session.start_time.isoformat() if call_session.start_time else None
+            ),
+            "end_time": (
+                call_session.end_time.isoformat() if call_session.end_time else None
+            ),
+            "total_messages": (
+                len(call_session.call_transcript) if call_session.call_transcript else 0
+            ),
             "user_messages": user_messages,
             "assistant_messages": assistant_messages,
             "average_response_time": avg_response_time,
-            "total_response_time_entries": len(call_session.response_times) if call_session.response_times else 0
+            "total_response_time_entries": (
+                len(call_session.response_times) if call_session.response_times else 0
+            ),
         }
-    
-    async def _broadcast_call_event(self, call_session_id: str, event_type: str, event_data: dict):
+
+    async def _broadcast_call_event(
+        self, call_session_id: str, event_type: str, event_data: dict
+    ):
         """Broadcast a call event to WebSocket connections"""
         try:
             from app.routers.general_websocket import broadcast_call_event
+
             await broadcast_call_event(call_session_id, event_type, event_data)
         except Exception as e:
             logger.error(f"Error broadcasting call event: {e}")
-    
-    async def _broadcast_status_update(self, call_session_id: str, status: str, metadata: dict = None):
+
+    async def _broadcast_status_update(
+        self, call_session_id: str, status: str, metadata: dict = None
+    ):
         """Broadcast call status update to WebSocket connections"""
         try:
             from app.routers.general_websocket import broadcast_call_status_update
+
             await broadcast_call_status_update(call_session_id, status, metadata)
         except Exception as e:
             logger.error(f"Error broadcasting status update: {e}")
-    
-    async def _broadcast_transcript_update(self, call_session_id: str, transcript: list, new_messages: list = None):
+
+    async def _broadcast_transcript_update(
+        self, call_session_id: str, transcript: list, new_messages: list = None
+    ):
         """Broadcast transcript update to WebSocket connections"""
         try:
             from app.routers.general_websocket import broadcast_transcript_update
+
             await broadcast_transcript_update(call_session_id, transcript, new_messages)
         except Exception as e:
             logger.error(f"Error broadcasting transcript update: {e}")
-    
+
     async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
         """Broadcast call metadata update to WebSocket connections"""
         try:
             from app.routers.general_websocket import broadcast_call_metadata_update
+
             await broadcast_call_metadata_update(call_session_id, metadata)
         except Exception as e:
             logger.error(f"Error broadcasting metadata update: {e}")
+
 
 # Global instance
 call_session_service = CallSessionService()

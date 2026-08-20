@@ -253,7 +253,9 @@ def _hubspot_aes_key() -> bytes:
     return hashlib.sha256(key.encode("utf-8")).digest()
 
 
-def encrypt_hubspot_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def encrypt_hubspot_token(
+    plaintext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Encrypt *plaintext* HubSpot OAuth token with AES-256-GCM.
 
     Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
@@ -286,7 +288,7 @@ def decrypt_hubspot_token(ciphertext: str, db: Session) -> str:
     if ciphertext.startswith(_HUBSPOT_AESGCM_PREFIX):
         key = _hubspot_aes_key()
         try:
-            raw = base64.b64decode(ciphertext[len(_HUBSPOT_AESGCM_PREFIX):])
+            raw = base64.b64decode(ciphertext[len(_HUBSPOT_AESGCM_PREFIX) :])
             nonce, body = raw[:12], raw[12:]
             return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
         except Exception as exc:
@@ -332,7 +334,9 @@ def _salesforce_aes_key() -> bytes:
     return hashlib.sha256(key.encode("utf-8")).digest()
 
 
-def encrypt_salesforce_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def encrypt_salesforce_token(
+    plaintext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Encrypt *plaintext* Salesforce OAuth token with AES-256-GCM.
 
     Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
@@ -344,10 +348,14 @@ def encrypt_salesforce_token(plaintext: str, db: Session) -> str:  # noqa: ARG00
     key = _salesforce_aes_key()
     nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
     ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
-    return _SALESFORCE_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+    return _SALESFORCE_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode(
+        "ascii"
+    )
 
 
-def decrypt_salesforce_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def decrypt_salesforce_token(
+    ciphertext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Decrypt a Salesforce OAuth token written by :func:`encrypt_salesforce_token`.
 
     Raises ``ValueError`` if ``SALESFORCE_TOKEN_ENCRYPTION_KEY`` is not configured,
@@ -360,7 +368,7 @@ def decrypt_salesforce_token(ciphertext: str, db: Session) -> str:  # noqa: ARG0
 
     key = _salesforce_aes_key()
     try:
-        raw = base64.b64decode(ciphertext[len(_SALESFORCE_AESGCM_PREFIX):])
+        raw = base64.b64decode(ciphertext[len(_SALESFORCE_AESGCM_PREFIX) :])
         nonce, body = raw[:12], raw[12:]
         return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
     except Exception as exc:
@@ -391,7 +399,9 @@ def _calendly_aes_key() -> bytes:
     return hashlib.sha256(key.encode("utf-8")).digest()
 
 
-def encrypt_calendly_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def encrypt_calendly_token(
+    plaintext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Encrypt *plaintext* Calendly OAuth token with AES-256-GCM.
 
     Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
@@ -403,10 +413,14 @@ def encrypt_calendly_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 
     key = _calendly_aes_key()
     nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
     ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
-    return _CALENDLY_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+    return _CALENDLY_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode(
+        "ascii"
+    )
 
 
-def decrypt_calendly_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def decrypt_calendly_token(
+    ciphertext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Decrypt a Calendly OAuth token written by :func:`encrypt_calendly_token`.
 
     Raises ``ValueError`` if ``CALENDLY_TOKEN_ENCRYPTION_KEY`` is not configured or
@@ -417,11 +431,13 @@ def decrypt_calendly_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001
         raise ValueError("ciphertext is empty")
 
     if not ciphertext.startswith(_CALENDLY_AESGCM_PREFIX):
-        raise ValueError("Unrecognized Calendly token ciphertext format (expected gcm1: prefix).")
+        raise ValueError(
+            "Unrecognized Calendly token ciphertext format (expected gcm1: prefix)."
+        )
 
     key = _calendly_aes_key()
     try:
-        raw = base64.b64decode(ciphertext[len(_CALENDLY_AESGCM_PREFIX):])
+        raw = base64.b64decode(ciphertext[len(_CALENDLY_AESGCM_PREFIX) :])
         nonce, body = raw[:12], raw[12:]
         return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
     except Exception as exc:
@@ -451,7 +467,9 @@ def _ghl_aes_key() -> bytes:
     return hashlib.sha256(key.encode("utf-8")).digest()
 
 
-def encrypt_ghl_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def encrypt_ghl_token(
+    plaintext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Encrypt *plaintext* GoHighLevel OAuth token with AES-256-GCM.
 
     Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
@@ -466,7 +484,9 @@ def encrypt_ghl_token(plaintext: str, db: Session) -> str:  # noqa: ARG001 - db 
     return _GHL_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
 
 
-def decrypt_ghl_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db kept for call-site parity
+def decrypt_ghl_token(
+    ciphertext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
     """Decrypt a GoHighLevel OAuth token written by :func:`encrypt_ghl_token`.
 
     Raises ``ValueError`` if ``GHL_TOKEN_ENCRYPTION_KEY`` is not configured,
@@ -479,11 +499,73 @@ def decrypt_ghl_token(ciphertext: str, db: Session) -> str:  # noqa: ARG001 - db
 
     key = _ghl_aes_key()
     try:
-        raw = base64.b64decode(ciphertext[len(_GHL_AESGCM_PREFIX):])
+        raw = base64.b64decode(ciphertext[len(_GHL_AESGCM_PREFIX) :])
         nonce, body = raw[:12], raw[12:]
         return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
     except Exception as exc:
         raise ValueError(f"GoHighLevel token decryption failed: {exc}") from exc
+
+
+# Tags Slack OAuth token ciphertext. New integration — no legacy pgcrypto
+# rows exist, so unlike HubSpot's decrypt_hubspot_token there is no
+# fallback path.
+_SLACK_AESGCM_PREFIX = "gcm1:"
+
+
+def _slack_aes_key() -> bytes:
+    """Derive a 32-byte AES-256 key from SLACK_TOKEN_ENCRYPTION_KEY.
+
+    SECURITY NOTE:
+      For secure AES-256-GCM encryption, SLACK_TOKEN_ENCRYPTION_KEY must be
+      configured as a randomly generated 32-byte secret (typically represented
+      as a 64-character hex string, e.g. generated via `secrets.token_hex(32)`).
+    """
+    key = settings.SLACK_TOKEN_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "SLACK_TOKEN_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt/decrypt Slack OAuth token."
+        )
+    return hashlib.sha256(key.encode("utf-8")).digest()
+
+
+def encrypt_slack_token(
+    plaintext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Encrypt *plaintext* Slack OAuth token with AES-256-GCM.
+
+    Performed in Python via ``cryptography`` (not pgcrypto SQL — OpenPGP symmetric
+    encryption has no GCM mode). ``db`` is accepted only for parity with the other
+    encrypt_* helpers in this module; it is unused here.
+
+    Raises ``ValueError`` if ``SLACK_TOKEN_ENCRYPTION_KEY`` is not configured.
+    """
+    key = _slack_aes_key()
+    nonce = os.urandom(12)  # 96-bit nonce, the standard size for AES-GCM
+    ciphertext = AESGCM(key).encrypt(nonce, plaintext.encode("utf-8"), None)
+    return _SLACK_AESGCM_PREFIX + base64.b64encode(nonce + ciphertext).decode("ascii")
+
+
+def decrypt_slack_token(
+    ciphertext: str, db: Session
+) -> str:  # noqa: ARG001 - db kept for call-site parity
+    """Decrypt a Slack OAuth token written by :func:`encrypt_slack_token`.
+
+    Raises ``ValueError`` if ``SLACK_TOKEN_ENCRYPTION_KEY`` is not configured,
+    the ciphertext is missing/corrupt, or was encrypted with a different key.
+    """
+    if not ciphertext:
+        raise ValueError("ciphertext is empty")
+    if not ciphertext.startswith(_SLACK_AESGCM_PREFIX):
+        raise ValueError("Unrecognized Slack token ciphertext format")
+
+    key = _slack_aes_key()
+    try:
+        raw = base64.b64decode(ciphertext[len(_SLACK_AESGCM_PREFIX) :])
+        nonce, body = raw[:12], raw[12:]
+        return AESGCM(key).decrypt(nonce, body, None).decode("utf-8")
+    except Exception as exc:
+        raise ValueError(f"Slack token decryption failed: {exc}") from exc
 
 
 def decrypt_stored_elevenlabs_key(
@@ -518,6 +600,7 @@ def decrypt_stored_elevenlabs_key(
 
     if is_legacy_jwt_ciphertext(ciphertext):
         from app.core.security import decrypt_api_key
+
         return decrypt_api_key(ciphertext)
 
     if not is_pgcrypto_ciphertext(ciphertext):

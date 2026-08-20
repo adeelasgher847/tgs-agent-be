@@ -18,6 +18,7 @@ Note: the caller memory settings path is deliberately NOT `/{flow_id}/settings` 
 that path is already registered by app.api.v2.routers.hipaa for the HIPAA
 compliance toggle, and reusing it here would silently shadow that endpoint.
 """
+
 from __future__ import annotations
 
 import uuid
@@ -112,7 +113,9 @@ def update_caller_memory_settings(
     db: Session = Depends(get_db),
 ) -> CallerMemorySettingsResponse:
     tenant_id = _tenant_id(principal)
-    result = call_flow_service.update_caller_memory_settings(db, flow_id, tenant_id, body)
+    result = call_flow_service.update_caller_memory_settings(
+        db, flow_id, tenant_id, body
+    )
 
     log_audit_event(
         db,
@@ -134,22 +137,27 @@ def update_caller_memory_settings(
     "/{flow_id}/post-call-actions-settings",
     response_model=PostCallActionsSettingsResponse,
     status_code=status.HTTP_200_OK,
-    summary="Configure post-call email summary actions on a call flow",
+    summary="Configure post-call email/Slack summary actions on a call flow",
     description=(
-        "Configures the two \"Post Call Actions\" toggles for this call flow:\n\n"
+        'Configures the "Post Call Actions" toggles for this call flow:\n\n'
         "- **Email Summary** (`email_summary_enabled` + `email_summary_recipients`): "
         "sends the call summary and extracted variables to an explicit list of "
         "recipient emails after each completed call.\n"
         "- **Summary to Business Owner** (`summary_to_business_owner_enabled`): sends "
         "the same email to the tenant's business owner (the workspace creator's "
         "account email) — there is no separate address field for this, the recipient "
-        "is resolved server-side.\n\n"
-        "Both toggles are independent and may be enabled together; recipients from "
-        "both sources are deduplicated before sending. The request body always fully "
-        "replaces all three fields (send the current values for any field you don't "
+        "is resolved server-side.\n"
+        "- **Slack Summary** (`slack_summary_enabled` + `slack_channel_id`/"
+        "`slack_channel_name`): posts the call summary and sentiment to a Slack channel "
+        "after each completed call. Requires the workspace to have connected Slack "
+        "first (see `/api/v1/integrations/slack`); falls back to the workspace's default "
+        "channel if `slack_channel_id` is not set.\n\n"
+        "All toggles are independent and may be enabled together; email recipients from "
+        "both email sources are deduplicated before sending. The request body always "
+        "fully replaces all fields (send the current values for any field you don't "
         "want to change). Sending is fire-and-forget after call completion — this "
-        "endpoint only updates the stored configuration; it does not send an email "
-        "itself. Requires admin rank."
+        "endpoint only updates the stored configuration; it does not send an email or "
+        "Slack message itself. Requires admin rank."
     ),
 )
 def update_post_call_actions_settings(
@@ -160,7 +168,9 @@ def update_post_call_actions_settings(
     db: Session = Depends(get_db),
 ) -> PostCallActionsSettingsResponse:
     tenant_id = _tenant_id(principal)
-    result = call_flow_service.update_post_call_actions_settings(db, flow_id, tenant_id, body)
+    result = call_flow_service.update_post_call_actions_settings(
+        db, flow_id, tenant_id, body
+    )
 
     log_audit_event(
         db,
@@ -173,6 +183,9 @@ def update_post_call_actions_settings(
             "email_summary_enabled": result.email_summary_enabled,
             "email_summary_recipients": result.email_summary_recipients,
             "summary_to_business_owner_enabled": result.summary_to_business_owner_enabled,
+            "slack_summary_enabled": result.slack_summary_enabled,
+            "slack_channel_id": result.slack_channel_id,
+            "slack_channel_name": result.slack_channel_name,
         },
         actor_user_id=principal.id,
     )

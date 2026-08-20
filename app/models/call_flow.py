@@ -52,6 +52,17 @@ class CallFlow(Base):
     email_summary_recipients = Column(JSONB, nullable=True, default=list)
     summary_to_business_owner_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
 
+    # Post Call Actions: post a call summary to a Slack channel after a call
+    # completes. Per-call-flow opt-in — a workspace connecting Slack (see
+    # WorkspaceIntegration, provider="slack") does not activate this for every
+    # call flow. If slack_channel_id is null, the send-time fallback is the
+    # workspace's default_channel_id in WorkspaceIntegration.extra_metadata.
+    slack_summary_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    slack_channel_id = Column(String(50), nullable=True)
+    # Denormalized display name of slack_channel_id, so the frontend doesn't
+    # need an extra Slack API round-trip to show the selected channel in the UI.
+    slack_channel_name = Column(String(255), nullable=True)
+
     # Post-Call Analysis: tenant-defined variables extracted from each completed
     # call via a dedicated LLM pass, independent of the fixed
     # summary/sentiment/recommendations fields computed by

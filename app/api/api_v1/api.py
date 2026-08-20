@@ -51,6 +51,7 @@ from app.routers.recordings import router as recordings_router
 from app.routers.integrations import router as integrations_router
 from app.routers.hubspot_integration import router as hubspot_integration_router
 from app.routers.salesforce_integration import router as salesforce_integration_router
+from app.routers.slack_integration import router as slack_integration_router
 from app.routers.ghl_integration import router as ghl_integration_router
 from app.routers.call_history import router as call_history_router
 from app.routers.call_history import batch_router as batch_call_metrics_router
@@ -65,8 +66,12 @@ api_router.include_router(api_keys.router, prefix="/api-keys", tags=["API Keys"]
 api_router.include_router(tenant.router, prefix="/tenants", tags=["tenants"])
 # Invite/allowed-domains sub-routes must be registered BEFORE workspace.router so
 # that their literal paths take priority over /workspace/{workspace_id}.
-api_router.include_router(workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"])
-api_router.include_router(allowed_domains.router, prefix="/workspace", tags=["Workspace — Allowed Domains"])
+api_router.include_router(
+    workspace_invites.router, prefix="/workspace", tags=["Workspace Invitations"]
+)
+api_router.include_router(
+    allowed_domains.router, prefix="/workspace", tags=["Workspace — Allowed Domains"]
+)
 api_router.include_router(sso_router, prefix="/workspace/sso", tags=["SSO"])
 api_router.include_router(workspace.router, prefix="/workspace", tags=["Workspace"])
 api_router.include_router(role.router, prefix="/roles", tags=["roles"])
@@ -86,28 +91,48 @@ api_router.include_router(
     tags=["Live Voice - Talk to Assistant"],
     include_in_schema=False,
 )
-api_router.include_router(phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"])
+api_router.include_router(
+    phone_numbers_router, prefix="/phone-numbers", tags=["Phone Numbers"]
+)
 api_router.include_router(telephony_router, prefix="/telephony", tags=["Telephony"])
 api_router.include_router(
     transfer_routes_router,
     prefix="/transfer-routes",
     tags=["Transfer routes"],
 )
-api_router.include_router(call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"])
+api_router.include_router(
+    call_sessions_router, prefix="/call-sessions", tags=["Call Sessions"]
+)
 api_router.include_router(call_logs_router, prefix="/call-logs", tags=["Call Logs"])
-api_router.include_router(general_websocket_router, prefix="/general", tags=["General WebSocket"])
-api_router.include_router(accept_invite.router, prefix="/accept-invite", tags=["accept-invite"])
+api_router.include_router(
+    general_websocket_router, prefix="/general", tags=["General WebSocket"]
+)
+api_router.include_router(
+    accept_invite.router, prefix="/accept-invite", tags=["accept-invite"]
+)
 api_router.include_router(billing.router, prefix="/billing", tags=["billing"])
 api_router.include_router(plan.router, prefix="/plans", tags=["plans"])
 api_router.include_router(dashboard_router, prefix="/dashboard", tags=["Dashboard"])
-api_router.include_router(provider.router, prefix="/providers", tags=["providers"], include_in_schema=True)
+api_router.include_router(
+    provider.router, prefix="/providers", tags=["providers"], include_in_schema=True
+)
 api_router.include_router(model.router, prefix="/models", tags=["models"])
-api_router.include_router(gemini.router, prefix="/gemini", tags=["gemini"], include_in_schema=False)
-api_router.include_router(openai.router, prefix="/openai", tags=["openai"], include_in_schema=False)
-api_router.include_router(tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False)
+api_router.include_router(
+    gemini.router, prefix="/gemini", tags=["gemini"], include_in_schema=False
+)
+api_router.include_router(
+    openai.router, prefix="/openai", tags=["openai"], include_in_schema=False
+)
+api_router.include_router(
+    tts_audio_router, prefix="/tts", tags=["Google TTS"], include_in_schema=False
+)
 api_router.include_router(tts_router, prefix="/tts", tags=["TTS"])
-api_router.include_router(internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"])
-api_router.include_router(internal_stt_router, prefix="/internal/stt", tags=["Internal STT"])
+api_router.include_router(
+    internal_tts_router, prefix="/internal/tts", tags=["Internal TTS"]
+)
+api_router.include_router(
+    internal_stt_router, prefix="/internal/stt", tags=["Internal STT"]
+)
 api_router.include_router(
     bidirectional_stream_router,
     prefix="/stream",
@@ -120,9 +145,13 @@ api_router.include_router(
     tags=["LiveKit Bridge"],
     include_in_schema=False,
 )
-api_router.include_router(scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"])
+api_router.include_router(
+    scheduled_calls_router, prefix="/schedule", tags=["Scheduled Calls"]
+)
 api_router.include_router(sdk_router, prefix="/sdk", tags=["Web SDK — Public"])
-api_router.include_router(crm_config_router, prefix="/crm-config", tags=["CRM Configuration"])
+api_router.include_router(
+    crm_config_router, prefix="/crm-config", tags=["CRM Configuration"]
+)
 api_router.include_router(
     clickup_oauth_router,
     prefix="/auth/clickup",
@@ -131,7 +160,9 @@ api_router.include_router(
 )
 api_router.include_router(knowledge_base_router, prefix="/kb", tags=["Knowledge Base"])
 api_router.include_router(calendar_router, prefix="/calendar", tags=["Calendar"])
-api_router.include_router(inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"])
+api_router.include_router(
+    inbound_crm_router, prefix="/inbound-crm", tags=["Inbound CRM — Call logs"]
+)
 api_router.include_router(
     job_description_router,
     prefix="/recruiting/job-descriptions",
@@ -159,8 +190,12 @@ api_router.include_router(
     prefix="/recruiting/dashboard",
     tags=["Recruiting Dashboard"],
 )
-api_router.include_router(recordings_router, prefix="/recordings", tags=["Call Recordings"])
-api_router.include_router(integrations_router, prefix="/integrations", tags=["Integrations"])
+api_router.include_router(
+    recordings_router, prefix="/recordings", tags=["Call Recordings"]
+)
+api_router.include_router(
+    integrations_router, prefix="/integrations", tags=["Integrations"]
+)
 api_router.include_router(
     hubspot_integration_router,
     prefix="/integrations/hubspot",
@@ -176,7 +211,20 @@ api_router.include_router(
     prefix="/integrations/leadconnector",
     tags=["GoHighLevel Integration"],
 )
-api_router.include_router(call_history_router, prefix="/calls", tags=["Call History Analytics"])
-api_router.include_router(batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"])
-api_router.include_router(payments_router, prefix="/payments", tags=["In-Call Payments"])
-api_router.include_router(amd_webhook_router, prefix="/webhooks/twilio", tags=["AMD Webhook"])
+api_router.include_router(
+    slack_integration_router,
+    prefix="/integrations/slack",
+    tags=["Slack Integration"],
+)
+api_router.include_router(
+    call_history_router, prefix="/calls", tags=["Call History Analytics"]
+)
+api_router.include_router(
+    batch_call_metrics_router, prefix="/batch-calls", tags=["Batch Call Analytics"]
+)
+api_router.include_router(
+    payments_router, prefix="/payments", tags=["In-Call Payments"]
+)
+api_router.include_router(
+    amd_webhook_router, prefix="/webhooks/twilio", tags=["AMD Webhook"]
+)

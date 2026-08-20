@@ -1,4 +1,5 @@
 """Call Flow service — ALL versioning and business logic lives here."""
+
 from __future__ import annotations
 
 import uuid
@@ -157,9 +158,7 @@ class CallFlowService:
 
         return version
 
-    def _prompt_changed(
-        self, db: Session, flow: CallFlow, new_prompt: str
-    ) -> bool:
+    def _prompt_changed(self, db: Session, flow: CallFlow, new_prompt: str) -> bool:
         """Return True if new_prompt text differs from the currently active version."""
         if flow.current_prompt_id is None:
             return True
@@ -189,7 +188,9 @@ class CallFlowService:
     def _flow_to_out(self, db: Session, flow: CallFlow) -> dict:
         pv_repo = PromptVersionRepository(db)
         versions = pv_repo.find_by_flow(flow.id, order_desc=True)
-        folder_ids = CallFlowRepository(db).find_folder_ids_map([flow.id]).get(flow.id, [])
+        folder_ids = (
+            CallFlowRepository(db).find_folder_ids_map([flow.id]).get(flow.id, [])
+        )
 
         # Full AgentOut on detail endpoints (POST 201, GET, PUT)
         agent_dict: dict | None = None
@@ -318,9 +319,7 @@ class CallFlowService:
             ).scalar_one_or_none()
         return self._flow_to_out(db, flow)
 
-    def get_flow(
-        self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID
-    ) -> dict:
+    def get_flow(self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID) -> dict:
         flow = self._get_flow_or_404(db, flow_id, tenant_id, load_relations=True)
         if flow.agent is None:
             flow.agent = db.execute(
@@ -395,7 +394,10 @@ class CallFlowService:
             if self._prompt_changed(db, flow, body.prompt):
                 # Protect the existing active version from pruning
                 version = self._insert_prompt_version(
-                    db, flow.id, body.prompt, body.notes,
+                    db,
+                    flow.id,
+                    body.prompt,
+                    body.notes,
                     current_prompt_id=flow.current_prompt_id,
                 )
                 scalar_updates["current_prompt_id"] = version.id
@@ -455,11 +457,13 @@ class CallFlowService:
 
         # 409 if any active call session is using this flow
         active = db.execute(
-            select(CallSession).where(
+            select(CallSession)
+            .where(
                 CallSession.call_flow_id == flow_id,
                 CallSession.tenant_id == tenant_id,
                 CallSession.status == "active",
-            ).limit(1)
+            )
+            .limit(1)
         ).scalar_one_or_none()
         if active is not None:
             raise HTTPException(
@@ -597,20 +601,20 @@ class CallFlowService:
     ) -> VariantMetrics:
         row = db.execute(
             select(
-                func.count().label('calls'),
-                func.sum(
-                    case((CallSession.status == 'completed', 1), else_=0)
-                ).label('completed'),
-                func.sum(
-                    case((CallSession.status == 'failed', 1), else_=0)
-                ).label('failed'),
-                func.avg(CallSession.duration).label('avg_duration'),
+                func.count().label("calls"),
+                func.sum(case((CallSession.status == "completed", 1), else_=0)).label(
+                    "completed"
+                ),
+                func.sum(case((CallSession.status == "failed", 1), else_=0)).label(
+                    "failed"
+                ),
+                func.avg(CallSession.duration).label("avg_duration"),
                 func.sum(
                     case((CallSession.transferred == True, 1), else_=0)  # noqa: E712
-                ).label('transferred'),
+                ).label("transferred"),
                 func.sum(
-                    case((CallSession.success_evaluation == 'success', 1), else_=0)
-                ).label('successes'),
+                    case((CallSession.success_evaluation == "success", 1), else_=0)
+                ).label("successes"),
             ).where(
                 CallSession.call_flow_id == flow_id,
                 CallSession.tenant_id == tenant_id,
@@ -636,7 +640,10 @@ class CallFlowService:
         Guardrail: fewer than 30 calls on either variant is always inconclusive,
         regardless of p-value — too few samples for the test to be meaningful.
         """
-        if calls_a < _AB_MIN_CALLS_FOR_SIGNIFICANCE or calls_b < _AB_MIN_CALLS_FOR_SIGNIFICANCE:
+        if (
+            calls_a < _AB_MIN_CALLS_FOR_SIGNIFICANCE
+            or calls_b < _AB_MIN_CALLS_FOR_SIGNIFICANCE
+        ):
             return False, "inconclusive"
 
         contingency = [
@@ -693,8 +700,13 @@ class CallFlowService:
             flow,
             {
                 "email_summary_enabled": body.email_summary_enabled,
-                "email_summary_recipients": [str(e) for e in body.email_summary_recipients],
+                "email_summary_recipients": [
+                    str(e) for e in body.email_summary_recipients
+                ],
                 "summary_to_business_owner_enabled": body.summary_to_business_owner_enabled,
+                "slack_summary_enabled": body.slack_summary_enabled,
+                "slack_channel_id": body.slack_channel_id,
+                "slack_channel_name": body.slack_channel_name,
             },
         )
         db.commit()
@@ -703,6 +715,9 @@ class CallFlowService:
             email_summary_enabled=flow.email_summary_enabled,
             email_summary_recipients=list(flow.email_summary_recipients or []),
             summary_to_business_owner_enabled=flow.summary_to_business_owner_enabled,
+            slack_summary_enabled=flow.slack_summary_enabled,
+            slack_channel_id=flow.slack_channel_id,
+            slack_channel_name=flow.slack_channel_name,
         )
 
     def update_post_call_analysis_settings(
@@ -770,7 +785,6 @@ class CallFlowService:
                 select(Agent).where(Agent.id == flow.agent_id)
             ).scalar_one_or_none()
         return self._flow_to_out(db, flow)
-
 
     # ── Visual Flow Editor ────────────────────────────────────────────────
 
