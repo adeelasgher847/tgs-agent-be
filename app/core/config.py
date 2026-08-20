@@ -162,7 +162,9 @@ class TtsSettings(BaseModel):
     api_key: str = Field(default="", validation_alias="TTS_API_KEY")
     rime_api_key: str = Field(default="", validation_alias="RIME_API_KEY")
     hume_api_key: str = Field(default="", validation_alias="HUME_API_KEY")
-    hume_sample_rate_hz: int = Field(default=48000, validation_alias="HUME_TTS_SAMPLE_RATE_HZ")
+    hume_sample_rate_hz: int = Field(
+        default=48000, validation_alias="HUME_TTS_SAMPLE_RATE_HZ"
+    )
     elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
     elevenlabs_encryption_key: str = Field(
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
@@ -211,6 +213,13 @@ class CrmSettings(BaseModel):
     ghl_redirect_uri: str = Field(default="", validation_alias="GHL_REDIRECT_URI")
     ghl_token_encryption_key: str = Field(
         default="", validation_alias="GHL_TOKEN_ENCRYPTION_KEY"
+    )
+    # Slack
+    slack_client_id: str = Field(default="", validation_alias="SLACK_CLIENT_ID")
+    slack_client_secret: str = Field(default="", validation_alias="SLACK_CLIENT_SECRET")
+    slack_redirect_uri: str = Field(default="", validation_alias="SLACK_REDIRECT_URI")
+    slack_token_encryption_key: str = Field(
+        default="", validation_alias="SLACK_TOKEN_ENCRYPTION_KEY"
     )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
@@ -547,6 +556,19 @@ class Settings(BaseSettings):
     GHL_TOKEN_ENCRYPTION_KEY: str = ""
     GHL_API_BASE_URL: str = "https://services.leadconnectorhq.com"
     GHL_API_VERSION: str = "2021-07-28"
+
+    # Slack post-call-summary OAuth (app/services/slack_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_slack_oauth_credentials).
+    SLACK_CLIENT_ID: str = ""
+    SLACK_CLIENT_SECRET: str = ""
+    SLACK_REDIRECT_URI: str = (
+        ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/slack/callback
+    )
+    # Symmetric encryption key for workspaceintegration.access_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    SLACK_TOKEN_ENCRYPTION_KEY: str = ""
 
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
@@ -1152,6 +1174,10 @@ class Settings(BaseSettings):
             ghl_client_secret=self.GHL_CLIENT_SECRET,
             ghl_redirect_uri=self.GHL_REDIRECT_URI,
             ghl_token_encryption_key=self.GHL_TOKEN_ENCRYPTION_KEY,
+            slack_client_id=self.SLACK_CLIENT_ID,
+            slack_client_secret=self.SLACK_CLIENT_SECRET,
+            slack_redirect_uri=self.SLACK_REDIRECT_URI,
+            slack_token_encryption_key=self.SLACK_TOKEN_ENCRYPTION_KEY,
             calendly_client_id=self.CALENDLY_CLIENT_ID,
             calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
             calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,

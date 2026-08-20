@@ -5,7 +5,14 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List
 
-from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    EmailStr,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from app.schemas.prompt_version import PromptVersionOut
 
@@ -51,7 +58,9 @@ class CallFlowCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=255)
     direction: DirectionEnum
     agent_id: uuid.UUID = Field(..., alias="agentId")
-    welcome_message_type: WelcomeMessageTypeEnum | None = Field(None, alias="welcomeMessageType")
+    welcome_message_type: WelcomeMessageTypeEnum | None = Field(
+        None, alias="welcomeMessageType"
+    )
     custom_welcome_message: str | None = Field(None, alias="customWelcomeMessage")
     prompt: str | None = None
     notes: str | None = None  # notes for the initial prompt version
@@ -70,7 +79,9 @@ class CallFlowUpdate(BaseModel):
     name: str | None = Field(None, min_length=1, max_length=255)
     direction: DirectionEnum | None = None
     agent_id: uuid.UUID | None = Field(None, alias="agentId")
-    welcome_message_type: WelcomeMessageTypeEnum | None = Field(None, alias="welcomeMessageType")
+    welcome_message_type: WelcomeMessageTypeEnum | None = Field(
+        None, alias="welcomeMessageType"
+    )
     custom_welcome_message: str | None = Field(None, alias="customWelcomeMessage")
     prompt: str | None = None
     notes: str | None = None  # notes for the new prompt version
@@ -142,6 +153,38 @@ class PostCallActionsSettingsUpdate(BaseModel):
             "field is needed for this recipient."
         ),
     )
+    slack_summary_enabled: bool = Field(
+        default=False,
+        description=(
+            "When true, a call summary is posted to a Slack channel after each completed "
+            "call on this flow. Requires the workspace to have connected Slack (see "
+            "`/api/v1/integrations/slack`). Falls back to the workspace's default channel "
+            "if `slack_channel_id` is not set. Has no effect on inbound CRM-sync calls "
+            "(mirrors `email_summary_enabled`'s behavior for that call type)."
+        ),
+    )
+    slack_channel_id: str | None = Field(
+        default=None,
+        max_length=50,
+        description=(
+            "Slack channel ID to post the summary to for this flow, overriding the "
+            "workspace default. Must be set together with `slack_channel_name`, or both "
+            "left null to fall back to the workspace default channel."
+        ),
+    )
+    slack_channel_name: str | None = Field(
+        default=None,
+        max_length=255,
+        description="Denormalized display name of `slack_channel_id`, for the dashboard UI.",
+    )
+
+    @model_validator(mode="after")
+    def validate_slack_channel_pair(self) -> "PostCallActionsSettingsUpdate":
+        if bool(self.slack_channel_id) != bool(self.slack_channel_name):
+            raise ValueError(
+                "slack_channel_id and slack_channel_name must both be set or both be null"
+            )
+        return self
 
 
 class PostCallActionsSettingsResponse(BaseModel):
@@ -150,6 +193,9 @@ class PostCallActionsSettingsResponse(BaseModel):
     email_summary_enabled: bool
     email_summary_recipients: List[str]
     summary_to_business_owner_enabled: bool
+    slack_summary_enabled: bool
+    slack_channel_id: str | None = None
+    slack_channel_name: str | None = None
 
 
 class PostCallAnalysisVariableSpec(BaseModel):
@@ -227,14 +273,26 @@ class CallFlowOut(BaseModel):
     agent_id: uuid.UUID = Field(..., serialization_alias="agentId")
     # Full AgentOut shape on detail endpoints; slim AgentRef on list
     agent: Dict[str, Any] | None = None
-    welcome_message_type: str | None = Field(None, serialization_alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, serialization_alias="customWelcomeMessage")
-    current_prompt_id: uuid.UUID | None = Field(None, serialization_alias="currentPromptId")
-    prompt_versions: List[PromptVersionOut] = Field(default_factory=list, serialization_alias="promptVersions")
+    welcome_message_type: str | None = Field(
+        None, serialization_alias="welcomeMessageType"
+    )
+    custom_welcome_message: str | None = Field(
+        None, serialization_alias="customWelcomeMessage"
+    )
+    current_prompt_id: uuid.UUID | None = Field(
+        None, serialization_alias="currentPromptId"
+    )
+    prompt_versions: List[PromptVersionOut] = Field(
+        default_factory=list, serialization_alias="promptVersions"
+    )
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
     settings: Dict[str, Any] | None = None
-    knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
-    folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
+    knowledge_base_ids: List[str] = Field(
+        default_factory=list, serialization_alias="knowledgeBaseIds"
+    )
+    folder_ids: List[uuid.UUID] = Field(
+        default_factory=list, serialization_alias="folderIds"
+    )
     public_access: bool = Field(False, serialization_alias="publicAccess")
     status: str = "active"
     created_at: datetime = Field(..., serialization_alias="createdAt")
@@ -251,13 +309,23 @@ class CallFlowListItem(BaseModel):
     direction: str
     agent_id: uuid.UUID = Field(..., serialization_alias="agentId")
     agent: AgentRef | None = None
-    welcome_message_type: str | None = Field(None, serialization_alias="welcomeMessageType")
-    custom_welcome_message: str | None = Field(None, serialization_alias="customWelcomeMessage")
-    current_prompt_id: uuid.UUID | None = Field(None, serialization_alias="currentPromptId")
+    welcome_message_type: str | None = Field(
+        None, serialization_alias="welcomeMessageType"
+    )
+    custom_welcome_message: str | None = Field(
+        None, serialization_alias="customWelcomeMessage"
+    )
+    current_prompt_id: uuid.UUID | None = Field(
+        None, serialization_alias="currentPromptId"
+    )
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
     settings: Dict[str, Any] | None = None
-    knowledge_base_ids: List[str] = Field(default_factory=list, serialization_alias="knowledgeBaseIds")
-    folder_ids: List[uuid.UUID] = Field(default_factory=list, serialization_alias="folderIds")
+    knowledge_base_ids: List[str] = Field(
+        default_factory=list, serialization_alias="knowledgeBaseIds"
+    )
+    folder_ids: List[uuid.UUID] = Field(
+        default_factory=list, serialization_alias="folderIds"
+    )
     public_access: bool = Field(False, serialization_alias="publicAccess")
     status: str = "active"
     created_at: datetime = Field(..., serialization_alias="createdAt")
@@ -297,7 +365,9 @@ class FlowDataResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
-    flow_data_compiled: Dict[str, Any] | None = Field(None, serialization_alias="flowDataCompiled")
+    flow_data_compiled: Dict[str, Any] | None = Field(
+        None, serialization_alias="flowDataCompiled"
+    )
     validation_errors: List[FlowValidationError] = Field(
         default_factory=list, serialization_alias="validationErrors"
     )
@@ -322,7 +392,9 @@ class FlowDataListItem(BaseModel):
     flow_id: uuid.UUID = Field(..., serialization_alias="flowId")
     name: str
     flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
-    flow_data_compiled: Dict[str, Any] | None = Field(None, serialization_alias="flowDataCompiled")
+    flow_data_compiled: Dict[str, Any] | None = Field(
+        None, serialization_alias="flowDataCompiled"
+    )
     updated_at: datetime | None = Field(None, serialization_alias="updatedAt")
 
 

@@ -7198,6 +7198,84 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v1/integrations/slack:
+    get:
+      tags:
+      - Slack Integration
+      summary: Slack Get Integration Status
+      description: Connection status and default channel for this workspace.
+      operationId: slack_get_integration_status_api_v1_integrations_slack_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SlackIntegrationStatusOut_'
+      security:
+      - HTTPBearer: []
+    delete:
+      tags:
+      - Slack Integration
+      summary: Slack Disconnect
+      description: Revoke the bot token at Slack and delete the workspaceintegration
+        row.
+      operationId: slack_disconnect_api_v1_integrations_slack_delete
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SlackDisconnectResponse_'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/slack/channels:
+    get:
+      tags:
+      - Slack Integration
+      summary: Slack List Channels
+      description: List the tenant's available Slack channels (public + private the
+        bot can see).
+      operationId: slack_list_channels_api_v1_integrations_slack_channels_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_list_SlackChannelOut__'
+      security:
+      - HTTPBearer: []
+  /api/v1/integrations/slack/channel:
+    put:
+      tags:
+      - Slack Integration
+      summary: Slack Set Channel
+      description: Set (or clear, by omitting both fields) the workspace's default
+        Slack channel.
+      operationId: slack_set_channel_api_v1_integrations_slack_channel_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SlackSetChannelRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_SlackIntegrationStatusOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/calls/history:
     get:
       tags:
@@ -8569,8 +8647,8 @@ paths:
     put:
       tags:
       - A/B Prompt Testing
-      summary: Configure post-call email summary actions on a call flow
-      description: 'Configures the two "Post Call Actions" toggles for this call flow:
+      summary: Configure post-call email/Slack summary actions on a call flow
+      description: 'Configures the "Post Call Actions" toggles for this call flow:
 
 
         - **Email Summary** (`email_summary_enabled` + `email_summary_recipients`):
@@ -8582,13 +8660,19 @@ paths:
         email) — there is no separate address field for this, the recipient is resolved
         server-side.
 
+        - **Slack Summary** (`slack_summary_enabled` + `slack_channel_id`/`slack_channel_name`):
+        posts the call summary and sentiment to a Slack channel after each completed
+        call. Requires the workspace to have connected Slack first (see `/api/v1/integrations/slack`);
+        falls back to the workspace''s default channel if `slack_channel_id` is not
+        set.
 
-        Both toggles are independent and may be enabled together; recipients from
-        both sources are deduplicated before sending. The request body always fully
-        replaces all three fields (send the current values for any field you don''t
-        want to change). Sending is fire-and-forget after call completion — this endpoint
-        only updates the stored configuration; it does not send an email itself. Requires
-        admin rank.'
+
+        All toggles are independent and may be enabled together; email recipients
+        from both email sources are deduplicated before sending. The request body
+        always fully replaces all fields (send the current values for any field you
+        don''t want to change). Sending is fire-and-forget after call completion —
+        this endpoint only updates the stored configuration; it does not send an email
+        or Slack message itself. Requires admin rank.'
       operationId: update_post_call_actions_settings_api_v2_flows__flow_id__post_call_actions_settings_put
       security:
       - HTTPBearer: []
@@ -14929,11 +15013,21 @@ components:
         summary_to_business_owner_enabled:
           type: boolean
           title: Summary To Business Owner Enabled
+        slack_summary_enabled:
+          type: boolean
+          title: Slack Summary Enabled
+        slack_channel_id:
+          type: string
+          nullable: true
+        slack_channel_name:
+          type: string
+          nullable: true
       type: object
       required:
       - email_summary_enabled
       - email_summary_recipients
       - summary_to_business_owner_enabled
+      - slack_summary_enabled
       title: PostCallActionsSettingsResponse
     PostCallActionsSettingsUpdate:
       properties:
@@ -14960,6 +15054,24 @@ components:
           description: When true, the same post-call summary email is also sent to
             the tenant's business owner (the workspace creator's account email) —
             no separate email field is needed for this recipient.
+        slack_summary_enabled:
+          type: boolean
+          title: Slack Summary Enabled
+          description: When true, a call summary is posted to a Slack channel after
+            each completed call on this flow. Requires the workspace to have connected
+            Slack (see `/api/v1/integrations/slack`). Falls back to the workspace's
+            default channel if `slack_channel_id` is not set. Has no effect on inbound
+            CRM-sync calls (mirrors `email_summary_enabled`'s behavior for that call
+            type).
+          default: false
+        slack_channel_id:
+          type: string
+          maxLength: 50
+          nullable: true
+        slack_channel_name:
+          type: string
+          maxLength: 255
+          nullable: true
       additionalProperties: false
       type: object
       required:
@@ -16396,6 +16508,64 @@ components:
       - crm_type
       - message
       title: SingleCallResponse
+    SlackChannelOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        name:
+          type: string
+          title: Name
+      type: object
+      required:
+      - id
+      - name
+      title: SlackChannelOut
+    SlackDisconnectResponse:
+      properties:
+        disconnected:
+          type: boolean
+          title: Disconnected
+        provider:
+          type: string
+          title: Provider
+          default: slack
+      type: object
+      required:
+      - disconnected
+      title: SlackDisconnectResponse
+    SlackIntegrationStatusOut:
+      properties:
+        connected:
+          type: boolean
+          title: Connected
+        connected_at:
+          type: string
+          format: date-time
+          nullable: true
+        team_name:
+          type: string
+          nullable: true
+        default_channel_id:
+          type: string
+          nullable: true
+        default_channel_name:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - connected
+      title: SlackIntegrationStatusOut
+    SlackSetChannelRequest:
+      properties:
+        channel_id:
+          type: string
+          nullable: true
+        channel_name:
+          type: string
+          nullable: true
+      type: object
+      title: SlackSetChannelRequest
     SsoConfigOut:
       properties:
         id:
@@ -18058,6 +18228,38 @@ components:
       required:
       - data
       title: SuccessResponse[SingleCallResponse]
+    SuccessResponse_SlackDisconnectResponse_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackDisconnectResponse'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SlackDisconnectResponse]
+    SuccessResponse_SlackIntegrationStatusOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/SlackIntegrationStatusOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[SlackIntegrationStatusOut]
     SuccessResponse_TTSProviderListOut_:
       properties:
         data:
@@ -18459,6 +18661,25 @@ components:
       required:
       - data
       title: SuccessResponse[list[ResumeListItem]]
+    SuccessResponse_list_SlackChannelOut__:
+      properties:
+        data:
+          items:
+            $ref: '#/components/schemas/SlackChannelOut'
+          type: array
+          title: Data
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[list[SlackChannelOut]]
     SuccessResponse_list_TenantMember__:
       properties:
         data:

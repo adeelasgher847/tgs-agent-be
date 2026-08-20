@@ -1,4 +1,15 @@
-from sqlalchemy import Column, String, Text, DateTime, Integer, ForeignKey, Boolean, Index, CheckConstraint, Numeric
+from sqlalchemy import (
+    Column,
+    String,
+    Text,
+    DateTime,
+    Integer,
+    ForeignKey,
+    Boolean,
+    Index,
+    CheckConstraint,
+    Numeric,
+)
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -18,7 +29,9 @@ class CallFlow(Base):
     # Circular FK to promptversion — use_alter defers constraint creation
     current_prompt_id = Column(
         UUID(as_uuid=True),
-        ForeignKey("promptversion.id", use_alter=True, name="fk_callflow_current_prompt"),
+        ForeignKey(
+            "promptversion.id", use_alter=True, name="fk_callflow_current_prompt"
+        ),
         nullable=True,
     )
     flow_data = Column(JSONB, nullable=True)
@@ -28,7 +41,9 @@ class CallFlow(Base):
     knowledge_base_ids = Column(JSONB, nullable=True, default=list)
 
     # A/B prompt testing
-    ab_test_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    ab_test_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     ab_prompt_a_id = Column(
         UUID(as_uuid=True),
         ForeignKey("promptversion.id", use_alter=True, name="fk_callflow_ab_prompt_a"),
@@ -40,34 +55,74 @@ class CallFlow(Base):
         nullable=True,
     )
     # Fraction of calls routed to variant A (0.10-0.90)
-    ab_split_ratio = Column(Numeric(3, 2), default=0.50, nullable=False, server_default="0.50")
+    ab_split_ratio = Column(
+        Numeric(3, 2), default=0.50, nullable=False, server_default="0.50"
+    )
 
     # Cross-session caller memory: inject summaries of a caller's past calls into the prompt
-    caller_memory_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
-    caller_memory_window = Column(Integer, default=3, nullable=False, server_default="3")
+    caller_memory_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    caller_memory_window = Column(
+        Integer, default=3, nullable=False, server_default="3"
+    )
 
     # Post Call Actions: email a call summary and/or notify the tenant's business
     # owner (is_creator user) after a call completes
-    email_summary_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    email_summary_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     email_summary_recipients = Column(JSONB, nullable=True, default=list)
-    summary_to_business_owner_enabled = Column(Boolean, default=False, nullable=False, server_default="false")
+    summary_to_business_owner_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
+    # Post Call Actions: post a call summary to a Slack channel after a call
+    # completes. Per-call-flow opt-in — a workspace connecting Slack (see
+    # WorkspaceIntegration, provider="slack") does not activate this for every
+    # call flow. If slack_channel_id is null, the send-time fallback is the
+    # workspace's default_channel_id in WorkspaceIntegration.extra_metadata.
+    # Has no effect on inbound CRM-sync calls — mirrors email_summary_enabled's
+    # behavior for that call type (see call_session_service.py's post-call hooks).
+    slack_summary_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    slack_channel_id = Column(String(50), nullable=True)
+    # Denormalized display name of slack_channel_id, so the frontend doesn't
+    # need an extra Slack API round-trip to show the selected channel in the UI.
+    slack_channel_name = Column(String(255), nullable=True)
 
     # Post-Call Analysis: tenant-defined variables extracted from each completed
     # call via a dedicated LLM pass, independent of the fixed
     # summary/sentiment/recommendations fields computed by
     # voice_analysis_service.analyze_call_transcript. Empty list = feature off;
     # the automatic call-summary generation is unaffected either way.
-    post_call_analysis_variables = Column(JSONB, nullable=False, default=list, server_default="'[]'::jsonb")
+    post_call_analysis_variables = Column(
+        JSONB, nullable=False, default=list, server_default="'[]'::jsonb"
+    )
     post_call_analysis_model = Column(String(100), nullable=True)
 
-    hipaa_compliance = Column(Boolean, default=False, nullable=False, server_default="false")
-    public_access = Column(Boolean, default=False, nullable=False, server_default="false")
+    hipaa_compliance = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    public_access = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
     # "active" flows can be used to initiate outbound calls; "inactive" ones are rejected
     # at dispatch time (see voice_call_service.initiate_call) without being deleted.
-    status = Column(String(20), default="active", nullable=False, server_default="active")
+    status = Column(
+        String(20), default="active", nullable=False, server_default="active"
+    )
     is_deleted = Column(Boolean, default=False, nullable=False, server_default="false")
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=True,
+    )
 
     # Relationships
     tenant = relationship("Tenant")
