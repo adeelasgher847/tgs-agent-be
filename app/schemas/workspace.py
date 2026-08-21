@@ -53,8 +53,8 @@ class WorkspaceOut(_WorkspaceBase):
         if v is None:
             return 0.0
         if isinstance(v, Decimal):
-            return float(v)
-        return float(v)
+            return round(float(v), 2)
+        return round(float(v), 2)
 
 
 class BrandingConfigUpsert(BaseModel):

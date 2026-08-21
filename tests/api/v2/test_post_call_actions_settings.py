@@ -10,6 +10,7 @@ Coverage:
   - A successful update fires an audit event with the expected shape
   - The response echoes back the persisted three-field shape
 """
+
 from __future__ import annotations
 
 import uuid
@@ -33,7 +34,9 @@ def _build_app(db_override, principal, *, forbidden=False):
     if forbidden:
 
         def _raise_forbidden():
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+            )
 
         mini.dependency_overrides[require_admin_or_api_key] = _raise_forbidden
     else:
@@ -272,6 +275,212 @@ class TestUpdatePostCallActionsSettings:
         assert flow.email_summary_enabled is False
         assert flow.summary_to_business_owner_enabled is False
 
+    def test_enables_slack_summary_with_channel_override(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": "C123",
+                "slack_channel_name": "sales-calls",
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["slack_summary_enabled"] is True
+        assert body["slack_channel_id"] == "C123"
+        assert body["slack_channel_name"] == "sales-calls"
+
+        db.refresh(flow)
+        assert flow.slack_summary_enabled is True
+        assert flow.slack_channel_id == "C123"
+        assert flow.slack_channel_name == "sales-calls"
+
+    def test_slack_summary_defaults_to_disabled_with_no_channel_override(
+        self, db, workspace, flow
+    ):
+        """When slack_summary_enabled/channel fields are omitted entirely,
+        the flow should round-trip to the documented defaults (disabled, no
+        override — falls back to the workspace default channel at send time)."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["slack_summary_enabled"] is False
+        assert body["slack_channel_id"] is None
+        assert body["slack_channel_name"] is None
+
+    def test_slack_channel_id_without_name_rejected(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": "C123",
+                "slack_channel_name": None,
+            },
+        )
+
+        assert resp.status_code == 400
+
+    def test_slack_channel_name_without_id_rejected(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": None,
+                "slack_channel_name": "sales-calls",
+            },
+        )
+
+        assert resp.status_code == 400
+
+    def test_disabling_slack_summary_clears_channel_override(self, db, workspace, flow):
+        """A previously-set channel override must be clearable independently
+        of the email settings on the same request."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": "C123",
+                "slack_channel_name": "sales-calls",
+            },
+        )
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": False,
+                "slack_channel_id": None,
+                "slack_channel_name": None,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["slack_summary_enabled"] is False
+        assert body["slack_channel_id"] is None
+        assert body["slack_channel_name"] is None
+
+    def test_two_flows_in_same_tenant_have_independent_slack_settings(
+        self, db, workspace, agent, flow
+    ):
+        """Agent/call-flow-specific config: a second call flow in the same
+        tenant must be able to enable Slack with a different channel without
+        affecting the first flow."""
+        from app.models.call_flow import CallFlow
+
+        other_flow = CallFlow(
+            tenant_id=workspace.id,
+            agent_id=agent.id,
+            name="Second Flow",
+            direction="inbound",
+        )
+        db.add(other_flow)
+        db.commit()
+        db.refresh(other_flow)
+
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": "C-FLOW-1",
+                "slack_channel_name": "flow-one-channel",
+            },
+        )
+        client.put(
+            f"/flows/{other_flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": False,
+            },
+        )
+
+        db.refresh(flow)
+        db.refresh(other_flow)
+        assert flow.slack_summary_enabled is True
+        assert flow.slack_channel_id == "C-FLOW-1"
+        assert other_flow.slack_summary_enabled is False
+        assert other_flow.slack_channel_id is None
+
+    def test_flow_from_other_tenant_cannot_toggle_slack_settings(self, db, flow):
+        """Tenant isolation: a principal from another tenant must not be able
+        to change this flow's Slack settings."""
+        from app.models.tenant import Tenant
+
+        other_tenant = Tenant(
+            name=f"OtherSlackWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_slack_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        principal = _admin_principal(other_tenant.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-actions-settings",
+            json={
+                "email_summary_enabled": False,
+                "email_summary_recipients": [],
+                "summary_to_business_owner_enabled": False,
+                "slack_summary_enabled": True,
+                "slack_channel_id": "C123",
+                "slack_channel_name": "sales-calls",
+            },
+        )
+
+        assert resp.status_code == 404
+        db.refresh(flow)
+        assert flow.slack_summary_enabled is False
+        assert flow.slack_channel_id is None
+
     def test_update_fires_audit_event(self, db, workspace, flow):
         principal = _admin_principal(workspace.id)
         client = _build_app(db, principal)
@@ -296,5 +505,8 @@ class TestUpdatePostCallActionsSettings:
             "email_summary_enabled": True,
             "email_summary_recipients": ["owner@example.com"],
             "summary_to_business_owner_enabled": True,
+            "slack_summary_enabled": False,
+            "slack_channel_id": None,
+            "slack_channel_name": None,
         }
         assert kwargs["actor_user_id"] == principal.id

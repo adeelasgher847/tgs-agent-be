@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -30,7 +31,7 @@ def create_app() -> FastAPI:
     from app.utils.arq_pool import init_arq_pool
     from app.utils.rate_limiter import init_rate_limiter
     from app.core.config import settings
-    from app.core.secret_manager import get_rime_api_key
+    from app.core.secret_manager import get_hume_api_key, get_rime_api_key
     from app.core.shutdown import graceful_shutdown
     from app.core.exception_handlers import register_exception_handlers
     from app.middleware.api_key_middleware import ApiKeyMiddleware
@@ -85,6 +86,52 @@ def create_app() -> FastAPI:
             else:
                 logger.warning("Rime TTS not configured: %s — fine if TTS_PROVIDER is not 'rime'", exc)
 
+        try:
+            get_hume_api_key()
+            logger.info("Hume TTS API key configured")
+            # HUME_TTS_SAMPLE_RATE_HZ's default (48000) is an ASSUMED value,
+            # not confirmed against Hume's public docs -- if the actual
+            # stream rate differs, PCMStreamDownsampler downsamples at the
+            # wrong ratio and every Twilio call using Hume produces
+            # silently garbled (pitch-shifted/distorted) audio with no
+            # runtime error. Surface this loudly at startup so operators
+            # verify against a real Hume account before production traffic.
+            logger.warning(
+                "Hume TTS sample rate is assumed to be %d Hz (unverified against "
+                "Hume's public docs) — confirm against a real Hume account before "
+                "production traffic. Override via HUME_TTS_SAMPLE_RATE_HZ if different.",
+                settings.HUME_TTS_SAMPLE_RATE_HZ,
+            )
+        except (ValueError, RuntimeError) as exc:
+            # Hume is opt-in (not seeded as an always-available platform default
+            # the way Rime is) — only hard-fail startup when it's actually the
+            # configured default provider. Mirrors the Rime check above.
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production") and settings.TTS_PROVIDER == "hume":
+                logger.error("Hume TTS misconfigured: %s", exc)
+                raise
+            else:
+                logger.warning("Hume TTS not configured: %s — fine if TTS_PROVIDER is not 'hume'", exc)
+
+        try:
+            from app.services.tts_catalog_service import tts_catalog_service
+
+            tts_catalog_service.verify_xai_api_key_configured()
+            logger.info("xAI TTS API key configured")
+        except ValueError as exc:
+            # xAI TTS is opt-in (not seeded as an always-available platform
+            # default the way Rime is) — only hard-fail startup when it's
+            # actually the configured default provider. Mirrors the Hume
+            # check above. Unlike Hume/Rime, the key is read directly via
+            # settings.XAI_API_KEY (matching xai_grok_stt_service.py's
+            # existing xAI STT integration), not app.core.secret_manager.
+            env = settings.ENVIRONMENT.lower()
+            if env in ("staging", "production") and settings.TTS_PROVIDER == "xai":
+                logger.error("xAI TTS misconfigured: %s", exc)
+                raise
+            else:
+                logger.warning("xAI TTS not configured: %s — fine if TTS_PROVIDER is not 'xai'", exc)
+
         if settings.LIVEKIT_ENABLED:
             from app.core.secret_manager import get_livekit_credentials
 
@@ -102,6 +149,39 @@ def create_app() -> FastAPI:
                         "or add LIVEKIT_URL/LIVEKIT_API_KEY/LIVEKIT_API_SECRET to .env",
                         exc,
                     )
+
+        # Fire-and-forget warm-up of the cached RAG/KB embedding client so the
+        # *first* live-call KB retrieval on this worker doesn't pay TCP/TLS
+        # handshake + one-time import/CA-bundle/DNS cold-start cost against the
+        # RAG_KB_RETRIEVAL_TIMEOUT_SEC budget. Deliberately not awaited — must
+        # never delay startup/first-request readiness. Runs once per Uvicorn
+        # worker process (each has its own lifespan + event loop).
+        #
+        # Gated to staging/production (mirrors the LiveKit/Rime checks above)
+        # so `uvicorn --reload` in local dev and the pytest suite (ENVIRONMENT
+        # defaults to "development") never fire a real, billed OpenAI request
+        # merely from importing/starting the app — this is a latency
+        # optimization for production traffic, not something dev/test
+        # environments need or should pay for.
+        if settings.ENVIRONMENT.lower() in ("staging", "production"):
+            try:
+                from app.services.embedding_service import warm_embedding_client
+
+                # asyncio.create_task() only keeps a weak reference to the Task
+                # internally — with no strong reference held anywhere, the task
+                # is eligible for GC at its first suspension point (the `await
+                # loop.run_in_executor(...)` inside warm_embedding_client) and
+                # CPython can silently drop it before completion, with nothing
+                # awaiting/logging the loss. Hold a strong reference on
+                # app.state for the task's lifetime and discard it on
+                # completion (success or failure) so this doesn't leak.
+                if not hasattr(app.state, "_warmup_tasks"):
+                    app.state._warmup_tasks = set()
+                warmup_task = asyncio.create_task(warm_embedding_client())
+                app.state._warmup_tasks.add(warmup_task)
+                warmup_task.add_done_callback(app.state._warmup_tasks.discard)
+            except Exception as exc:
+                logger.warning("Failed to schedule RAG embedding client warm-up: %s", exc)
 
         if settings.API_DOCS_ENABLED:
             if settings.API_DOCS_USERNAME and settings.API_DOCS_PASSWORD:

@@ -328,7 +328,7 @@ class RecruitmentDashboardService:
             email=user.email,
             tenant_id=tenant_id,
             tenant_name=tenant.name,
-            credits=float(tenant.credits or 0),
+            credits=round(float(tenant.credits or 0), 2),
         )
 
         return RecruitmentDashboardData(

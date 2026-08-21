@@ -114,6 +114,35 @@ _CAPABILITIES: Dict[str, TTSProviderCapabilities] = {
         supports_pause_control=False,  # reduceLatency=True actively trims inter-sentence silence
         supports_streaming_session=False,  # no persistent streaming-input protocol for Rime here
     ),
+    # HumeTTSAdapter.async_stream_synthesize (app/utils/tts_adapter.py)
+    "hume": TTSProviderCapabilities(
+        provider_slug="hume",
+        supports_streaming=True,  # sync stream_synthesize explicitly raises NotImplementedError
+        supports_ssml=False,  # Hume's WebSocket protocol has no SSML concept — plain text only
+        supports_speaking_rate=True,  # settings_json["speed"] -> Hume's native "speed" param (0.5-2.0)
+        supports_pitch=False,  # no pitch parameter in the Hume WS payload
+        supports_stability_control=False,  # Hume's prosody knob is "description" (free-text acting
+        # instructions), a structurally different mechanism from ElevenLabs' numeric
+        # stability/similarity_boost — build_voice_settings_overlay() is explicitly scoped
+        # to the numeric path and is not wired to Hume's description field
+        supports_native_expressive_tags=False,  # bracket tags are stripped for non-ElevenLabs providers
+        supports_pause_control=False,  # no native break/pause param used
+        supports_streaming_session=False,  # one-shot WS request per chunk, not a persistent session
+    ),
+    # XaiTTSAdapter.async_stream_synthesize (app/utils/tts_adapter.py)
+    "xai": TTSProviderCapabilities(
+        provider_slug="xai",
+        supports_streaming=True,  # sync stream_synthesize explicitly raises NotImplementedError
+        supports_ssml=False,  # xAI's WebSocket protocol has no SSML concept — plain text.delta only
+        supports_speaking_rate=True,  # settings_json["speed"] -> xAI's native "speed" query param (0.7-1.5)
+        supports_pitch=False,  # no pitch parameter documented for xAI's TTS WebSocket
+        supports_stability_control=False,  # no stability/similarity_boost-style numeric knob documented
+        supports_native_expressive_tags=False,  # bracket tags are stripped for non-ElevenLabs providers
+        supports_pause_control=False,  # no native break/pause param used
+        supports_streaming_session=False,  # one-shot WS request per chunk, not a persistent session
+        # (text.clear/audio.clear exist for a future persistent-session mode
+        # but are unused by this integration — see xai_tts_service.py)
+    ),
 }
 
 

@@ -93,6 +93,9 @@ class LlmSettings(BaseModel):
     openai_api_key: str = Field(default="", validation_alias="OPENAI_API_KEY")
     openai_base_url: str = Field(default="", validation_alias="OPENAI_BASE_URL")
     openai_api_version: str = Field(default="", validation_alias="OPENAI_API_VERSION")
+    openai_realtime_transcription_model: str = Field(
+        default="whisper-1", validation_alias="OPENAI_REALTIME_TRANSCRIPTION_MODEL"
+    )
     # Gemini / Vertex
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     google_application_credentials: str = Field(
@@ -158,6 +161,10 @@ class TtsSettings(BaseModel):
     provider: str = Field(default="elevenlabs", validation_alias="TTS_PROVIDER")
     api_key: str = Field(default="", validation_alias="TTS_API_KEY")
     rime_api_key: str = Field(default="", validation_alias="RIME_API_KEY")
+    hume_api_key: str = Field(default="", validation_alias="HUME_API_KEY")
+    hume_sample_rate_hz: int = Field(
+        default=48000, validation_alias="HUME_TTS_SAMPLE_RATE_HZ"
+    )
     elevenlabs_api_key: str = Field(default="", validation_alias="ELEVENLABS_API_KEY")
     elevenlabs_encryption_key: str = Field(
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
@@ -206,6 +213,13 @@ class CrmSettings(BaseModel):
     ghl_redirect_uri: str = Field(default="", validation_alias="GHL_REDIRECT_URI")
     ghl_token_encryption_key: str = Field(
         default="", validation_alias="GHL_TOKEN_ENCRYPTION_KEY"
+    )
+    # Slack
+    slack_client_id: str = Field(default="", validation_alias="SLACK_CLIENT_ID")
+    slack_client_secret: str = Field(default="", validation_alias="SLACK_CLIENT_SECRET")
+    slack_redirect_uri: str = Field(default="", validation_alias="SLACK_REDIRECT_URI")
+    slack_token_encryption_key: str = Field(
+        default="", validation_alias="SLACK_TOKEN_ENCRYPTION_KEY"
     )
     # Calendly
     calendly_client_id: str = Field(default="", validation_alias="CALENDLY_CLIENT_ID")
@@ -449,9 +463,29 @@ class Settings(BaseSettings):
     DEFAULT_LLM_PROVIDER: str = "gemini"
     # OpenAI Configuration
     OPENAI_API_KEY: str = ""
+    # Input-audio transcription model for OpenAI Realtime sessions (separate
+    # from the main gpt-realtime*/gpt-realtime-2 model itself). Defaults to
+    # whisper-1 — OpenAI's oldest, most universally-enabled transcription
+    # model — since newer options like gpt-4o-mini-transcribe require
+    # per-project access that isn't guaranteed to be enabled (confirmed via
+    # a real call: model_not_found for gpt-4o-mini-transcribe on a project
+    # that otherwise has full Realtime API access). Override per-environment
+    # if a project has access to a better model.
+    OPENAI_REALTIME_TRANSCRIPTION_MODEL: str = "whisper-1"
 
     # Rime Labs TTS Configuration
     RIME_API_KEY: str = ""
+
+    # Hume AI TTS Configuration
+    HUME_API_KEY: str = ""
+    # ASSUMED default — Hume's PCM streaming output sample rate is not
+    # documented publicly as of this integration (2026-08). 48000 Hz is a
+    # reasonable industry-standard guess for a modern neural TTS PCM stream,
+    # but MUST be verified against a real Hume account/API key before this
+    # goes to production traffic; override via env var if Hume support
+    # confirms a different value. Drives PCMStreamDownsampler's src_rate_hz
+    # when converting Hume's PCM16LE chunks down to mulaw 8kHz for Twilio.
+    HUME_TTS_SAMPLE_RATE_HZ: int = 48000
 
     # ElevenLabs Configuration
     ELEVENLABS_API_KEY: str = ""
@@ -523,6 +557,19 @@ class Settings(BaseSettings):
     GHL_API_BASE_URL: str = "https://services.leadconnectorhq.com"
     GHL_API_VERSION: str = "2021-07-28"
 
+    # Slack post-call-summary OAuth (app/services/slack_service.py).
+    # client_id/client_secret kept here as local-dev fallbacks only — in
+    # staging/production they are read from Secret Manager (see
+    # app/core/secret_manager.py::get_slack_oauth_credentials).
+    SLACK_CLIENT_ID: str = ""
+    SLACK_CLIENT_SECRET: str = ""
+    SLACK_REDIRECT_URI: str = (
+        ""  # defaults to {WEBHOOK_BASE_URL}/api/v1/integrations/slack/callback
+    )
+    # Symmetric encryption key for workspaceintegration.access_token
+    # (AES-256-GCM) — same scheme as HUBSPOT_TOKEN_ENCRYPTION_KEY above.
+    SLACK_TOKEN_ENCRYPTION_KEY: str = ""
+
     # Calendly calendar OAuth (app/services/calendly_service.py).
     CALENDLY_CLIENT_ID: str = ""
     CALENDLY_CLIENT_SECRET: str = ""
@@ -550,6 +597,74 @@ class Settings(BaseSettings):
     # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
     GOOGLE_STT_SAMPLE_RATE: int = 8000
     GOOGLE_STT_ENCODING: str = "MULAW"  # Twilio's audio encoding
+
+    # Speechmatics Speech-to-Text (optional provider — native VAD/end-of-utterance)
+    SPEECHMATICS_API_KEY: str = ""
+    # Leave blank to use the speechmatics-rt SDK default (wss://eu2.rt.speechmatics.com/v2)
+    SPEECHMATICS_RT_URL: str = ""
+    SPEECHMATICS_STT_MODEL: str = "enhanced"  # "enhanced" | "standard"
+    SPEECHMATICS_STT_LANGUAGE: str = "en"
+    # Silence (seconds) before Speechmatics' server-side EndOfUtterance fires.
+    # Range 0-2s per Speechmatics docs; must stay below SPEECHMATICS_MAX_DELAY.
+    SPEECHMATICS_EOT_SILENCE_TRIGGER_SEC: float = 0.5
+    # Max seconds of latency Speechmatics may take to finalize a transcript segment.
+    SPEECHMATICS_MAX_DELAY_SEC: float = 2.0
+
+    # ElevenLabs Scribe v2 Realtime STT — reuses ELEVENLABS_API_KEY (TTS, below)
+    # rather than a separate key; same ElevenLabs account for both.
+    ELEVENLABS_SCRIBE_MODEL: str = "scribe_v2_realtime"
+    ELEVENLABS_SCRIBE_LANGUAGE: str = "en"
+    # Native server-side VAD/commit-strategy tuning (commit_strategy="vad").
+    # Ranges per ElevenLabs docs: silence_threshold 0.3-3.0s, vad_threshold 0.1-0.9,
+    # min_speech/min_silence_duration_ms 50-2000ms.
+    ELEVENLABS_SCRIBE_VAD_SILENCE_THRESHOLD_SECS: float = 1.5
+    ELEVENLABS_SCRIBE_VAD_THRESHOLD: float = 0.4
+    ELEVENLABS_SCRIBE_MIN_SPEECH_DURATION_MS: int = 100
+    ELEVENLABS_SCRIBE_MIN_SILENCE_DURATION_MS: int = 100
+
+    # xAI Grok Speech-to-Text (wss://api.x.ai/v1/stt) — dedicated key, no
+    # existing xAI credential to reuse.
+    XAI_API_KEY: str = ""
+    XAI_STT_LANGUAGE: str = "en"
+    # Silence (ms) before a turn-boundary check fires. Low by design (xAI
+    # default is 10ms) -- Smart Turn's ML judgment, not raw silence duration,
+    # is what actually governs speech_final; see below.
+    XAI_STT_ENDPOINTING_MS: int = 10
+    # Native server-side turn detection: Smart Turn ML model demotes false-
+    # positive silence boundaries (mid-sentence pauses, dictating numbers) to
+    # chunk-final instead of firing speech_final. Threshold range 0.0-1.0;
+    # 0.5 = "balanced" per xAI's own docs.
+    XAI_STT_SMART_TURN_THRESHOLD: float = 0.5
+    # Safety net: force speech_final after this many ms of silence regardless
+    # of Smart Turn confidence, so a session can't hang indefinitely. Range 1-5000ms.
+    XAI_STT_SMART_TURN_TIMEOUT_MS: int = 3000
+
+    # AssemblyAI Universal-Streaming STT (wss://streaming.assemblyai.com/v3/ws)
+    # — dedicated key, no existing AssemblyAI credential to reuse.
+    ASSEMBLYAI_API_KEY: str = ""
+    # No `language` query param exists on this API -- language is baked into
+    # the speech_model choice (english vs multilingual variants). Kept only
+    # for interface parity/logging, same rationale as xAI's unused `model`.
+    ASSEMBLYAI_STT_LANGUAGE: str = "en"
+    # Only universal-streaming-multilingual is seeded in the sttmodel catalog
+    # (product decision -- AssemblyAI also offers universal-3-5-pro and
+    # universal-streaming-english, deliberately not offered here).
+    ASSEMBLYAI_STT_SPEECH_MODEL: str = "universal-streaming-multilingual"
+    # Silence (ms) before AssemblyAI's native end-of-turn detection considers
+    # a turn boundary. Range 50-10000ms per docs; no vendor-documented default
+    # -- 400ms chosen empirically as a conservative responsiveness/false-positive
+    # tradeoff, not a measured value. Revisit if end-of-turn detection feels
+    # too eager or too laggy in production.
+    ASSEMBLYAI_STT_MIN_TURN_SILENCE_MS: int = 400
+    # Vendor default per docs; same 50-10000ms range as min_turn_silence.
+    ASSEMBLYAI_STT_MAX_TURN_SILENCE_MS: int = 1536
+    # Vendor default per docs. Range 0.0-1.0. Applies to the Universal
+    # English/Multilingual model family (this deployment's only model).
+    ASSEMBLYAI_STT_END_OF_TURN_CONFIDENCE_THRESHOLD: float = 0.4
+    # Vendor default for the Universal-family models per docs. Range 0.0-1.0.
+    ASSEMBLYAI_STT_VAD_THRESHOLD: float = 0.4
+    # Whether finalized Turn transcripts are punctuation/cased-formatted.
+    ASSEMBLYAI_STT_FORMAT_TURNS: bool = True
 
     # Deepgram Speech-to-Text (replaces Google STT for streaming + batch)
     DEEPGRAM_API_KEY: str = ""
@@ -800,7 +915,12 @@ class Settings(BaseSettings):
     # Similarity floor (0-1, higher = more similar) shared by both the Twilio path
     # (rag_context.py) and the LiveKit path (kb_retrieval_service._query_single_kb,
     # which returns 1 - cosine_distance as `score` — same direction/semantics).
-    RAG_SCORE_THRESHOLD: float = 0.4
+    # Lowered from 0.4 -> 0.2 based on production telemetry showing relevant KB
+    # matches were being filtered out at 0.4. 0.2 is a deliberately low floor --
+    # verify with recall/precision metrics before lowering further. Irrelevant
+    # results at this threshold risk degrading LLM answer quality (hallucination
+    # risk) more than returning no KB context would.
+    RAG_SCORE_THRESHOLD: float = 0.2
     # Hard cap for the size of the rendered context block injected into prompts.
     # This is character-based (approx). For token-accurate sizing, you would need a tokenizer.
     RAG_MAX_CONTEXT_CHARS: int = 6000
@@ -812,12 +932,17 @@ class Settings(BaseSettings):
     # LiveKit/browser-call path (kb_retrieval_service via ConversationOrchestrator)
     # budget — distinct from RAG_RETRIEVAL_TIMEOUT_SEC (Twilio's bidirectional_stream
     # path) so tuning one never silently changes the other's latency contract.
-    # Observed embedding+vector-search samples were 271-450ms; 450ms left ~0ms
-    # margin and caused frequent false-positive timeouts (falling back to "no KB
-    # context" even when a result was about to arrive). 700ms keeps meaningful
-    # headroom over the observed p_max while staying well under ~1s, the point at
-    # which voice-call silence becomes perceptible to callers.
-    RAG_KB_RETRIEVAL_TIMEOUT_SEC: float = 0.7
+    # Originally set to 0.7s from local/CI samples of 271-450ms. Production
+    # diagnostics on the live EC2 deployment (2026-08-16) showed this environment's
+    # actual baseline round-trip + inference time to OpenAI's /v1/embeddings
+    # endpoint is itself 270-510ms with real variance (confirmed via raw httpx
+    # calls bypassing app code entirely), leaving ~0ms margin at 0.7s and causing
+    # frequent false-positive timeouts — KB context dropped even when a result was
+    # about to arrive. Raised to 1.2s to give this real-world baseline enough
+    # headroom while staying under the ~1.5-2s range where voice-call silence
+    # becomes clearly perceptible to callers. Revisit if p95 KB latency data
+    # (once available) suggests a tighter or looser value.
+    RAG_KB_RETRIEVAL_TIMEOUT_SEC: float = 1.2
     # Slow-path budget: cap cumulative waits for RAG/KB on a turn.
     VOICE_SLOWPATH_BUDGET_SEC: float = 0.55
     # How long we wait for an in-flight RAG prefetch before failing open.
@@ -999,6 +1124,7 @@ class Settings(BaseSettings):
             openai_api_key=self.OPENAI_API_KEY,
             openai_base_url=self.OPENAI_BASE_URL,
             openai_api_version=self.OPENAI_API_VERSION,
+            openai_realtime_transcription_model=self.OPENAI_REALTIME_TRANSCRIPTION_MODEL,
             gemini_api_key=self.GEMINI_API_KEY,
             google_application_credentials=self.GOOGLE_APPLICATION_CREDENTIALS,
             google_cloud_project_id=self.GOOGLE_CLOUD_PROJECT_ID,
@@ -1023,6 +1149,8 @@ class Settings(BaseSettings):
             provider=self.TTS_PROVIDER,
             api_key=self.TTS_API_KEY,
             rime_api_key=self.RIME_API_KEY,
+            hume_api_key=self.HUME_API_KEY,
+            hume_sample_rate_hz=self.HUME_TTS_SAMPLE_RATE_HZ,
             elevenlabs_api_key=self.ELEVENLABS_API_KEY,
             elevenlabs_encryption_key=self.ELEVENLABS_ENCRYPTION_KEY,
             enable_audio_tags=self.ENABLE_ELEVENLABS_AUDIO_TAGS,
@@ -1046,6 +1174,10 @@ class Settings(BaseSettings):
             ghl_client_secret=self.GHL_CLIENT_SECRET,
             ghl_redirect_uri=self.GHL_REDIRECT_URI,
             ghl_token_encryption_key=self.GHL_TOKEN_ENCRYPTION_KEY,
+            slack_client_id=self.SLACK_CLIENT_ID,
+            slack_client_secret=self.SLACK_CLIENT_SECRET,
+            slack_redirect_uri=self.SLACK_REDIRECT_URI,
+            slack_token_encryption_key=self.SLACK_TOKEN_ENCRYPTION_KEY,
             calendly_client_id=self.CALENDLY_CLIENT_ID,
             calendly_client_secret=self.CALENDLY_CLIENT_SECRET,
             calendly_redirect_uri=self.CALENDLY_REDIRECT_URI,

@@ -45,6 +45,22 @@ class VoiceTurnMetrics:
         if self.turn_first_tts_queued_mono is None:
             self.turn_first_tts_queued_mono = time.perf_counter()
 
+    def mark_live_first_audio(self) -> None:
+        """
+        Gemini Live (speech-to-speech native-audio) marker: collapses what
+        would otherwise be two separate markers (mark_llm_first_token +
+        mark_first_tts_queued) into one "first audio byte from Gemini"
+        event, since there is no discrete LLM-token / TTS-queue boundary in
+        this path. Approximate turn-boundary detection is fine here (see
+        VoiceOrchestrator._on_gemini_live_audio_chunk) — reuses the same two
+        underlying fields so existing log_turn_summary/get_slo_breaches
+        consumers keep working without a native-audio-aware branch.
+        """
+        if self.turn_llm_first_token_mono is None:
+            self.turn_llm_first_token_mono = time.perf_counter()
+        if self.turn_first_tts_queued_mono is None:
+            self.turn_first_tts_queued_mono = time.perf_counter()
+
     def log_turn_summary(
         self,
         log: Any,

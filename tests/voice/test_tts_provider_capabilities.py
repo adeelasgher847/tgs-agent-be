@@ -138,6 +138,39 @@ def test_rime_overlay_stays_empty_even_with_stability_hint():
 
 
 # ---------------------------------------------------------------------------
+# Hume
+# ---------------------------------------------------------------------------
+
+
+def test_hume_supported_capabilities():
+    caps = get_capabilities("hume")
+    assert caps.provider_slug == "hume"
+    assert caps.supports_streaming is True
+    assert caps.supports_speaking_rate is True
+
+
+def test_hume_unsupported_expressive_controls_remain_unsupported():
+    caps = get_capabilities("hume")
+    assert caps.supports_stability_control is False
+    assert caps.supports_pitch is False
+    assert caps.supports_ssml is False
+    assert caps.supports_native_expressive_tags is False
+    assert caps.supports_pause_control is False
+
+
+def test_hume_overlay_stays_empty_even_with_stability_hint():
+    """Hume's prosody knob is the free-text "description" field, structurally
+    distinct from ElevenLabs' numeric stability hint — build_voice_settings_overlay
+    is explicitly scoped to the numeric path and must not touch Hume."""
+    decision = analyze_response(
+        "Got it, one moment.",
+        user_text="This is unacceptable, I want a refund now",
+    )
+    overlay = build_voice_settings_overlay("hume", decision)
+    assert overlay == {}
+
+
+# ---------------------------------------------------------------------------
 # General / fallback safety
 # ---------------------------------------------------------------------------
 

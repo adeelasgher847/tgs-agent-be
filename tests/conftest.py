@@ -12,9 +12,12 @@ elif __name__ == "tests.conftest":
     sys.modules["conftest"] = sys.modules[__name__]
 
 
-# Rime TTS is validated at app startup; tests must not depend on a developer .env file.
+# Rime/Hume TTS are validated at app startup (module-level singleton
+# construction in rime_tts_service.py / hume_tts_service.py); tests must not
+# depend on a developer .env file.
 os.environ["RATE_LIMIT_ENABLED"] = "False"
 os.environ.setdefault("RIME_API_KEY", "test-rime-key-for-pytest")
+os.environ.setdefault("HUME_API_KEY", "test-hume-key-for-pytest")
 os.environ.setdefault(
     "ELEVENLABS_ENCRYPTION_KEY",
     "test-elevenlabs-encryption-key-for-pytest-only",
@@ -26,6 +29,10 @@ os.environ.setdefault(
 os.environ.setdefault(
     "HUBSPOT_TOKEN_ENCRYPTION_KEY",
     "test-hubspot-encryption-key-for-pytest-only",
+)
+os.environ.setdefault(
+    "SLACK_TOKEN_ENCRYPTION_KEY",
+    "test-slack-encryption-key-for-pytest-only",
 )
 
 # Mock google submodules recursively to avoid ImportError in unit tests.
@@ -83,10 +90,10 @@ from app.models.user import User
 from app.models.role import Role
 from app.models.tenant import Tenant
 
-
 # ---------------------------------------------------------------------------
 # Custom markers
 # ---------------------------------------------------------------------------
+
 
 def pytest_configure(config):
     config.addinivalue_line(
@@ -152,13 +159,13 @@ def override_get_db():
 @pytest.fixture(autouse=True)
 def _configure_rate_limiting(request):
     from app.core.config import settings
+
     # Enable rate limiting only for files that specifically test rate limits
     if (
         hasattr(request, "module")
         and request.module
         and any(
-            x in request.module.__name__
-            for x in ("rate_limit", "sprint1_integration")
+            x in request.module.__name__ for x in ("rate_limit", "sprint1_integration")
         )
     ):
         prev = settings.RATE_LIMIT_ENABLED
@@ -171,8 +178,8 @@ def _configure_rate_limiting(request):
         yield
 
 
-
 from app.api.deps import get_db
+
 app.dependency_overrides[get_db] = override_get_db
 
 
@@ -239,52 +246,154 @@ def db():
         db.add_all([openai_p, gemini_p, groq_p])
         db.commit()
 
-        db.add_all([
-            Model(provider_id=openai_p.id, model_name="gpt-4o-mini", archive=False),
-            Model(provider_id=openai_p.id, model_name="gpt-4o", archive=False),
-            Model(provider_id=openai_p.id, model_name="gpt-4.1", archive=False),
-            Model(provider_id=openai_p.id, model_name="gpt-4.1-mini", archive=False),
-            Model(provider_id=openai_p.id, model_name="gpt-4-turbo", archive=False),
-            Model(provider_id=gemini_p.id, model_name="gemini-2.5-flash", archive=False),
-            Model(provider_id=gemini_p.id, model_name="gemini-2.0-flash-001", archive=False),
-            Model(provider_id=gemini_p.id, model_name="gemini-2.0-flash", archive=False),
-            Model(provider_id=gemini_p.id, model_name="gemini-1.5-pro", archive=False),
-            Model(provider_id=gemini_p.id, model_name="gemini-1.5-flash", archive=False),
-            Model(provider_id=gemini_p.id, model_name="claude-3-5-sonnet", archive=False),
-            Model(provider_id=gemini_p.id, model_name="claude-3-haiku", archive=False),
-            Model(provider_id=groq_p.id, model_name="llama-3.1-70b-versatile", archive=False),
-            Model(provider_id=groq_p.id, model_name="llama-3.1-8b-instant", archive=False),
-        ])
+        db.add_all(
+            [
+                Model(provider_id=openai_p.id, model_name="gpt-4o-mini", archive=False),
+                Model(provider_id=openai_p.id, model_name="gpt-4o", archive=False),
+                Model(provider_id=openai_p.id, model_name="gpt-4.1", archive=False),
+                Model(
+                    provider_id=openai_p.id, model_name="gpt-4.1-mini", archive=False
+                ),
+                Model(provider_id=openai_p.id, model_name="gpt-4-turbo", archive=False),
+                Model(
+                    provider_id=gemini_p.id,
+                    model_name="gemini-2.5-flash",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=gemini_p.id,
+                    model_name="gemini-2.0-flash-001",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=gemini_p.id,
+                    model_name="gemini-2.0-flash",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=gemini_p.id, model_name="gemini-1.5-pro", archive=False
+                ),
+                Model(
+                    provider_id=gemini_p.id,
+                    model_name="gemini-1.5-flash",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=gemini_p.id,
+                    model_name="claude-3-5-sonnet",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=gemini_p.id, model_name="claude-3-haiku", archive=False
+                ),
+                Model(
+                    provider_id=groq_p.id,
+                    model_name="llama-3.1-70b-versatile",
+                    archive=False,
+                ),
+                Model(
+                    provider_id=groq_p.id,
+                    model_name="llama-3.1-8b-instant",
+                    archive=False,
+                ),
+            ]
+        )
         db.commit()
 
         # Seed STT Providers and Models
-        stt_deepgram = STTProvider(slug="deepgram", display_name="Deepgram", is_active=True)
-        stt_google = STTProvider(slug="google", display_name="Google Cloud STT", is_active=True)
+        stt_deepgram = STTProvider(
+            slug="deepgram", display_name="Deepgram", is_active=True
+        )
+        stt_google = STTProvider(
+            slug="google", display_name="Google Cloud STT", is_active=True
+        )
         db.add_all([stt_deepgram, stt_google])
         db.commit()
 
-        db.add_all([
-            STTModel(provider_id=stt_deepgram.id, external_model_id="nova-3", display_name="Nova-3", language_code="en", is_active=True),
-            STTModel(provider_id=stt_google.id, external_model_id="chirp-3", display_name="Chirp-3", language_code="en", is_active=True),
-        ])
+        db.add_all(
+            [
+                STTModel(
+                    provider_id=stt_deepgram.id,
+                    external_model_id="nova-3",
+                    display_name="Nova-3",
+                    language_code="en",
+                    is_active=True,
+                ),
+                STTModel(
+                    provider_id=stt_google.id,
+                    external_model_id="chirp-3",
+                    display_name="Chirp-3",
+                    language_code="en",
+                    is_active=True,
+                ),
+            ]
+        )
         db.commit()
 
         # Seed TTS Providers and Voices
-        tts_eleven = TTSProvider(slug="elevenlabs", display_name="ElevenLabs", is_active=True)
+        tts_eleven = TTSProvider(
+            slug="elevenlabs", display_name="ElevenLabs", is_active=True
+        )
         tts_rime = TTSProvider(slug="rime", display_name="Rime", is_active=True)
-        tts_cartesia = TTSProvider(slug="cartesia", display_name="Cartesia", is_active=True)
+        tts_cartesia = TTSProvider(
+            slug="cartesia", display_name="Cartesia", is_active=True
+        )
         db.add_all([tts_eleven, tts_rime, tts_cartesia])
         db.commit()
 
-        db.add_all([
-            TTSVoice(provider_id=tts_eleven.id, external_voice_id="21m00Tcm4TlvDq8ikWAM", display_name="Rachel", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_eleven.id, external_voice_id="voice-1", display_name="Voice 1", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_eleven.id, external_voice_id="EXAVITQu4vr4xnSDxMaL", display_name="Rachel 2", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_eleven.id, external_voice_id="vY", display_name="Voice Y", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_eleven.id, external_voice_id="vZ", display_name="Voice Z", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_rime.id, external_voice_id="rime-voice-1", display_name="Rime Voice 1", language_code="en", is_active=True),
-            TTSVoice(provider_id=tts_cartesia.id, external_voice_id="cartesia-voice-1", display_name="Cartesia Voice 1", language_code="en", is_active=True),
-        ])
+        db.add_all(
+            [
+                TTSVoice(
+                    provider_id=tts_eleven.id,
+                    external_voice_id="21m00Tcm4TlvDq8ikWAM",
+                    display_name="Rachel",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_eleven.id,
+                    external_voice_id="voice-1",
+                    display_name="Voice 1",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_eleven.id,
+                    external_voice_id="EXAVITQu4vr4xnSDxMaL",
+                    display_name="Rachel 2",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_eleven.id,
+                    external_voice_id="vY",
+                    display_name="Voice Y",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_eleven.id,
+                    external_voice_id="vZ",
+                    display_name="Voice Z",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_rime.id,
+                    external_voice_id="rime-voice-1",
+                    display_name="Rime Voice 1",
+                    language_code="en",
+                    is_active=True,
+                ),
+                TTSVoice(
+                    provider_id=tts_cartesia.id,
+                    external_voice_id="cartesia-voice-1",
+                    display_name="Cartesia Voice 1",
+                    language_code="en",
+                    is_active=True,
+                ),
+            ]
+        )
         db.commit()
 
         yield db
@@ -325,6 +434,7 @@ def pg_engine():
         pytest.skip("TEST_DATABASE_URL not set")
 
     import uuid as _uuid
+
     schema = f"test_sprint1_{os.getpid()}_{_uuid.uuid4().hex[:6]}"
     _pg_test_schema = schema
 
@@ -431,6 +541,7 @@ def pg_client(pg_engine, pg_auth_middleware, pg_session_factory):
     The ``get_db`` override is applied only within this fixture's scope
     and does not affect the SQLite unit-test override.
     """
+
     def _pg_get_db():
         db = pg_session_factory()
         try:

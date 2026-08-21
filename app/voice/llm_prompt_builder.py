@@ -13,13 +13,13 @@ def _load_vertex_models():
     global _Content, _Part
     if _Content is None:
         try:
-            from vertexai.generative_models import Content, Part
+            from google.genai import types
         except ImportError as exc:
             raise ImportError(
-                "google-cloud-aiplatform is required for build_vertex_contents. "
+                "google-genai is required for build_vertex_contents. "
                 "Add it to requirements.txt."
             ) from exc
-        _Content, _Part = Content, Part
+        _Content, _Part = types.Content, types.Part
     return _Content, _Part
 
 
@@ -82,7 +82,7 @@ def build_vertex_contents(
     Maps (role, text) tuples:  "client" → "user",  "agent" → "model".
     Prunes to max_turns pairs. kb_context is appended to the current user turn.
 
-    Returns a list of vertexai.generative_models.Content objects.
+    Returns a list of google.genai.types.Content objects.
     """
     Content, Part = _load_vertex_models()
 
@@ -92,13 +92,13 @@ def build_vertex_contents(
         if not text:
             continue
         vertex_role = "user" if role == "client" else "model"
-        contents.append(Content(role=vertex_role, parts=[Part.from_text(text)]))
+        contents.append(Content(role=vertex_role, parts=[Part.from_text(text=text)]))
 
     user_text = caller_transcript or ""
     if kb_context:
         user_text = f"{user_text}\n\n[CONTEXT]\n{kb_context}"
 
     if user_text:
-        contents.append(Content(role="user", parts=[Part.from_text(user_text)]))
+        contents.append(Content(role="user", parts=[Part.from_text(text=user_text)]))
 
     return contents

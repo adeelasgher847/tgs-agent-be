@@ -4,6 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ---
 
+## Local persona file
+
+If `.claude/Personality/SOUL.md` exists, read it before starting work. It's a
+local-only, gitignored file (`.claude/Personality/`, never pushed to GitHub)
+where the maintainer records how they want Claude to approach this specific
+codebase — mindset, priorities, and working style — as a complement to the
+concrete rules below. It is not a substitute for anything in this file: the
+architecture, conventions, and agent-routing rules here still apply in full:
+`SOUL.md` shapes judgment calls, it doesn't override documented behavior. If
+it's absent, proceed as normal; it's optional per-developer, not shared
+project configuration.
+
+---
+
 ## Knowledge base vault
 
 A local-only Obsidian vault documenting this backend lives adjacent to this repo at `../tgs-agent-be-vault/` (i.e. `/Users/mc/tgs-agent-be-vault/`), sibling to `tgs-agent-be/`. Start at `00 Home/Home.md`.
@@ -320,6 +334,8 @@ Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
 | `OPENAI_API_KEY` | LLM | |
 | `DEEPGRAM_API_KEY` | STT | |
 | `ELEVENLABS_ENCRYPTION_KEY` | TTS | pgp_sym_encrypt for BYO keys |
+| `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` | Slack integration | OAuth v2 app credentials; local-dev fallback, Secret Manager in staging/production (`app/core/secret_manager.py::get_slack_oauth_credentials`) |
+| `SLACK_TOKEN_ENCRYPTION_KEY` | Slack integration | AES-256-GCM key for the stored `workspaceintegration` bot token |
 | `PINECONE_API_KEY` / `PINECONE_INDEX_HOST` | RAG | |
 | `API_DOCS_USERNAME` / `API_DOCS_PASSWORD` | Docs | HTTP Basic for `/api/docs` |
 | `ENVIRONMENT` | | `development` / `staging` / `production` |

@@ -48,8 +48,12 @@ def _fetch_from_secret_manager(secret_id: str) -> str | None:
 @lru_cache(maxsize=1)
 def _load_production_credentials() -> Tuple[str, str]:
     """Fetch real Twilio credentials from Secret Manager (cached after first call)."""
-    sid = _fetch_from_secret_manager("TWILIO_ACCOUNT_SID") or settings.TWILIO_ACCOUNT_SID
-    token = _fetch_from_secret_manager("TWILIO_AUTH_TOKEN") or settings.TWILIO_AUTH_TOKEN
+    sid = (
+        _fetch_from_secret_manager("TWILIO_ACCOUNT_SID") or settings.TWILIO_ACCOUNT_SID
+    )
+    token = (
+        _fetch_from_secret_manager("TWILIO_AUTH_TOKEN") or settings.TWILIO_AUTH_TOKEN
+    )
     if not sid or not token:
         raise RuntimeError(
             "Twilio credentials unavailable. Set GCP_PROJECT_ID and Secret Manager secrets "
@@ -101,7 +105,9 @@ def _load_livekit_production_credentials() -> tuple[str, str, str]:
     """Fetch LiveKit credentials from Secret Manager (cached after first call)."""
     url = _fetch_from_secret_manager("LIVEKIT_URL") or settings.LIVEKIT_URL
     api_key = _fetch_from_secret_manager("LIVEKIT_API_KEY") or settings.LIVEKIT_API_KEY
-    api_secret = _fetch_from_secret_manager("LIVEKIT_API_SECRET") or settings.LIVEKIT_API_SECRET
+    api_secret = (
+        _fetch_from_secret_manager("LIVEKIT_API_SECRET") or settings.LIVEKIT_API_SECRET
+    )
     if not url or not api_key or not api_secret:
         raise RuntimeError(
             "LiveKit credentials unavailable. Set GCP_PROJECT_ID and Secret Manager secrets "
@@ -182,10 +188,52 @@ def get_rime_api_key() -> str:
 
 
 @lru_cache(maxsize=1)
+def get_hume_api_key() -> str:
+    """
+    Return the Hume AI TTS API key appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager (secret name: HUME_API_KEY), with
+      env-var fallback so deployments that set the var directly still work.
+    - development → plain env-var / .env value.
+
+    Raises ValueError (development) or RuntimeError (staging/production) if no
+    key is available so callers fail at startup rather than sending unauthenticated
+    requests mid-call.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        secret_key = _fetch_from_secret_manager("HUME_API_KEY")
+        if secret_key:
+            return secret_key
+        # Fall back to env var (covers deployments that inject the var via CI/CD).
+        env_key = getattr(settings, "HUME_API_KEY", "") or ""
+        if env_key.strip():
+            return env_key.strip()
+        raise RuntimeError(
+            f"HUME_API_KEY unavailable in {env}. "
+            "Set it in GCP Secret Manager (secret: HUME_API_KEY) or as an env var."
+        )
+
+    # development — plain env var / .env
+    env_key = getattr(settings, "HUME_API_KEY", "") or ""
+    if not env_key.strip():
+        raise ValueError(
+            "HUME_API_KEY is not set. Add it to your .env file for local development."
+        )
+    return env_key.strip()
+
+
+@lru_cache(maxsize=1)
 def _load_hubspot_production_credentials() -> Tuple[str, str]:
     """Fetch HubSpot OAuth app credentials from Secret Manager (cached after first call)."""
-    client_id = _fetch_from_secret_manager("HUBSPOT_CLIENT_ID") or settings.HUBSPOT_CLIENT_ID
-    client_secret = _fetch_from_secret_manager("HUBSPOT_CLIENT_SECRET") or settings.HUBSPOT_CLIENT_SECRET
+    client_id = (
+        _fetch_from_secret_manager("HUBSPOT_CLIENT_ID") or settings.HUBSPOT_CLIENT_ID
+    )
+    client_secret = (
+        _fetch_from_secret_manager("HUBSPOT_CLIENT_SECRET")
+        or settings.HUBSPOT_CLIENT_SECRET
+    )
     if not client_id or not client_secret:
         raise RuntimeError(
             "HubSpot OAuth credentials unavailable. Set GCP_PROJECT_ID and Secret Manager "
@@ -222,9 +270,13 @@ def get_hubspot_oauth_credentials() -> Tuple[str, str]:
 @lru_cache(maxsize=1)
 def _load_salesforce_production_credentials() -> Tuple[str, str]:
     """Fetch Salesforce Connected App credentials from Secret Manager (cached after first call)."""
-    client_id = _fetch_from_secret_manager("SALESFORCE_CLIENT_ID") or settings.SALESFORCE_CLIENT_ID
+    client_id = (
+        _fetch_from_secret_manager("SALESFORCE_CLIENT_ID")
+        or settings.SALESFORCE_CLIENT_ID
+    )
     client_secret = (
-        _fetch_from_secret_manager("SALESFORCE_CLIENT_SECRET") or settings.SALESFORCE_CLIENT_SECRET
+        _fetch_from_secret_manager("SALESFORCE_CLIENT_SECRET")
+        or settings.SALESFORCE_CLIENT_SECRET
     )
     if not client_id or not client_secret:
         raise RuntimeError(
@@ -260,10 +312,55 @@ def get_salesforce_oauth_credentials() -> Tuple[str, str]:
 
 
 @lru_cache(maxsize=1)
+def _load_slack_production_credentials() -> Tuple[str, str]:
+    """Fetch Slack OAuth app credentials from Secret Manager (cached after first call)."""
+    client_id = (
+        _fetch_from_secret_manager("SLACK_CLIENT_ID") or settings.SLACK_CLIENT_ID
+    )
+    client_secret = (
+        _fetch_from_secret_manager("SLACK_CLIENT_SECRET")
+        or settings.SLACK_CLIENT_SECRET
+    )
+    if not client_id or not client_secret:
+        raise RuntimeError(
+            "Slack OAuth credentials unavailable. Set GCP_PROJECT_ID and Secret Manager "
+            "secrets (SLACK_CLIENT_ID, SLACK_CLIENT_SECRET) or the equivalent env vars."
+        )
+    return client_id, client_secret
+
+
+def get_slack_oauth_credentials() -> Tuple[str, str]:
+    """
+    Return (client_id, client_secret) appropriate for the current environment.
+
+    - production/staging → GCP Secret Manager with env-var fallback
+    - development         → env-var / .env values
+
+    Raises RuntimeError in staging/production when credentials are absent,
+    ValueError in development.
+    """
+    env = settings.ENVIRONMENT.lower()
+
+    if env in ("production", "staging"):
+        return _load_slack_production_credentials()
+
+    client_id = settings.SLACK_CLIENT_ID
+    client_secret = settings.SLACK_CLIENT_SECRET
+    if not client_id or not client_secret:
+        raise ValueError(
+            "Slack OAuth credentials not configured. Set SLACK_CLIENT_ID and "
+            "SLACK_CLIENT_SECRET in your .env file for local development."
+        )
+    return client_id, client_secret
+
+
+@lru_cache(maxsize=1)
 def _load_ghl_production_credentials() -> Tuple[str, str]:
     """Fetch GoHighLevel OAuth app credentials from Secret Manager (cached after first call)."""
     client_id = _fetch_from_secret_manager("GHL_CLIENT_ID") or settings.GHL_CLIENT_ID
-    client_secret = _fetch_from_secret_manager("GHL_CLIENT_SECRET") or settings.GHL_CLIENT_SECRET
+    client_secret = (
+        _fetch_from_secret_manager("GHL_CLIENT_SECRET") or settings.GHL_CLIENT_SECRET
+    )
     if not client_id or not client_secret:
         raise RuntimeError(
             "GoHighLevel OAuth credentials unavailable. Set GCP_PROJECT_ID and Secret Manager "
@@ -325,10 +422,12 @@ def get_sso_encryption_key() -> bytes:
     if env in ("production", "staging"):
         key_str = _fetch_from_secret_manager("SSO_ENCRYPTION_KEY")
         if not key_str:
-            raise RuntimeError(f"SSO_ENCRYPTION_KEY not found in Secret Manager for env {env}")
+            raise RuntimeError(
+                f"SSO_ENCRYPTION_KEY not found in Secret Manager for env {env}"
+            )
     else:
         key_str = getattr(settings, "SSO_ENCRYPTION_KEY", "") or ""
         if not key_str:
             raise ValueError("SSO_ENCRYPTION_KEY not configured in .env")
-            
+
     return key_str.encode("utf-8")

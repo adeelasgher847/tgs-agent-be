@@ -39,6 +39,8 @@ class TtsProviderEnum(str, Enum):
     rime = "rime"
     elevenlabs = "elevenlabs"
     elevenlabs_byo = "elevenlabs_byo"
+    hume = "hume"
+    xai = "xai"
 
 
 class AgentStatusEnum(str, Enum):
@@ -66,6 +68,9 @@ class SttProviderEnum(str, Enum):
     deepgram = "deepgram"
     google = "google"
     elevenlabs = "elevenlabs"
+    speechmatics = "speechmatics"
+    xai = "xai"
+    assemblyai = "assemblyai"
 
 
 class SttModelSchema(BaseModel):

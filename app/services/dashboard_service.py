@@ -36,10 +36,10 @@ class DashboardService:
         credits = credit_service.get_tenant_credits(db, tenant_id)
 
         return DashboardSummary(
-            monthly_spent=float(metrics.total_cost or 0),
+            monthly_spent=round(float(metrics.total_cost or 0)),
             monthly_calls=metrics.total_calls,
             success_rate_percent=metrics.success_rate_percent,
-            credits=credits,
+            credits=round(credits, 2),
             recent_call_flows=self._get_recent_call_flows(db, tenant_id),
             recent_knowledge_bases=self._get_recent_knowledge_bases(db, tenant_id),
             recent_calls=self._get_recent_calls(db, tenant_id),
