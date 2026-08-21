@@ -39,7 +39,7 @@ class DashboardRecentCallItem(BaseModel):
 class DashboardSummary(BaseModel):
     """All data needed to render the dashboard home view in a single response."""
 
-    monthly_spent: float
+    monthly_spent: int
     monthly_calls: int
     success_rate_percent: float | None
     credits: float

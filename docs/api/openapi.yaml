@@ -12536,7 +12536,7 @@ components:
     DashboardSummary:
       properties:
         monthly_spent:
-          type: number
+          type: integer
           title: Monthly Spent
         monthly_calls:
           type: integer

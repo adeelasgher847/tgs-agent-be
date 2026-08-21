@@ -192,7 +192,7 @@ def test_dashboard_happy_path_with_real_data(client, db, any_user_id):
     data = body["data"]
 
     assert data["monthly_calls"] == 2
-    assert data["monthly_spent"] == pytest.approx(3.75)
+    assert data["monthly_spent"] == 4  # 1.5 + 2.25 = 3.75, rounded to 0 dp
     assert data["credits"] == pytest.approx(42.5)
 
     flow_ids = [f["id"] for f in data["recent_call_flows"]]
