@@ -2,7 +2,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from app.schemas.tenant import TenantCreate
+from app.schemas.tenant import TenantCreate, TenantPlanOut
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
 from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
@@ -558,3 +558,121 @@ def get_payment_history(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error: {str(e)}"
         )
+
+
+@router.post("/plans/start-checkout", response_model=SuccessResponse[dict])
+def start_core_plan_checkout(
+    stripe_price_id: str,
+    current_user: User = Depends(get_current_user_jwt),
+    owner_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Start a Stripe subscription-mode checkout session for a tenant-level core-product
+    plan (Studio / Agency). Mirrors `crm_config.py`'s `start_plan_checkout` but is
+    tenant-scoped (metadata carries `tenant_id`, `crm_type` is always empty).
+    """
+    from app.models.plan import Plan
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    plan = db.query(Plan).filter(Plan.stripe_price_id == stripe_price_id, Plan.crm_type.is_(None)).first()
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Core plan not found for the given stripe_price_id"
+        )
+
+    import stripe
+    stripe.api_key = settings.STRIPE_SECRET_KEY
+
+    if not tenant.stripe_customer_id:
+        stripe_customer_id = StripeService.create_customer(
+            tenant=tenant,
+            email=current_user.email,
+            user=current_user
+        )
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
+
+    tenant_id_str = str(current_user.current_tenant_id)
+    success_url = f"{settings.FRONTEND_URL}/payment/success?tenant_id={tenant_id_str}&session_id={{CHECKOUT_SESSION_ID}}"
+    cancel_url = f"{settings.FRONTEND_URL}/payment/cancel?tenant_id={tenant_id_str}"
+
+    if not plan.stripe_price_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Plan has no Stripe price ID configured for recurring billing"
+        )
+
+    try:
+        checkout_session = stripe.checkout.Session.create(
+            customer=stripe_customer_id,
+            success_url=success_url,
+            cancel_url=cancel_url,
+            mode="subscription",
+            line_items=[{
+                "price": plan.stripe_price_id,
+                "quantity": 1
+            }],
+            metadata={
+                "tenant_id": tenant_id_str,
+                "user_id": str(current_user.id),
+                "purchase_type": "plan_purchase",
+                "plan_id": str(plan.id),
+                "crm_type": ""
+            }
+        )
+        return create_success_response(
+            {"session_id": checkout_session.id, "url": checkout_session.url},
+            "Checkout session created successfully"
+        )
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
+
+
+@router.get("/plan", response_model=TenantPlanOut)
+def get_tenant_plan(
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db),
+):
+    """Current core-product plan + entitlements for the caller's active tenant."""
+    from app.models.plan import Plan
+    from app.services.billing_service import BillingService
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    subscription = BillingService.get_workspace_subscription(db, tenant.id)
+    plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first() if subscription else None
+
+    _, used_this_cycle, remaining = BillingService.get_included_minutes_status(db, tenant.id)
+
+    return TenantPlanOut(
+        plan_name=plan.name if plan else None,
+        display_name=plan.display_name if plan else None,
+        included_minutes=plan.included_minutes if plan else None,
+        minutes_used_this_cycle=used_this_cycle,
+        minutes_remaining=remaining,
+        monthly_credits=plan.monthly_credits if plan else None,
+        free_phone_numbers=plan.free_phone_numbers if plan else None,
+        max_subaccounts=plan.max_subaccounts if plan else None,
+        features=plan.features if plan and plan.features else [],
+        credits_balance=tenant.credits or 0,
+    )

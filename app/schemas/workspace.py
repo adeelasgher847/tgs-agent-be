@@ -94,11 +94,42 @@ class PricingConfigUpsert(BaseModel):
     markup_percent: Decimal = Field(..., ge=0, le=500)
 
 
+class SurchargeInfoOut(BaseModel):
+    """A single named per-minute surcharge that can stack on top of the base
+    per-minute rate (see app.services.credit_service.SURCHARGE_CATALOG).
+
+    This is the full catalog of surcharges the platform knows how to apply —
+    not necessarily all active for every agent/call — since these endpoints
+    are workspace-scoped rather than agent-scoped. `applies_when` documents
+    the condition that activates it for a given call.
+    """
+    key: str
+    label: str
+    rate_per_minute: Decimal
+    applies_when: str
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+_SURCHARGE_FIELD_DESCRIPTION = (
+    "Full catalog of per-minute surcharges the platform knows how to apply "
+    "(e.g. OpenAI Realtime, ElevenLabs voice) — this is NOT the list of "
+    "surcharges currently being charged on any specific call or agent. "
+    "Whether a given surcharge is actually active depends on that agent's "
+    "model/TTS configuration at call time; these endpoints are "
+    "workspace-scoped, not agent- or call-scoped, so this field only "
+    "advertises what CAN stack on top of the base per-minute rate."
+)
+
+
 class PricingConfigOut(BaseModel):
     """Response shape for pricing config"""
     per_minute_rate: Decimal
     markup_percent: Decimal
     effective_client_rate: Decimal
+    available_surcharges: list[SurchargeInfoOut] = Field(
+        default_factory=list, description=_SURCHARGE_FIELD_DESCRIPTION
+    )
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -109,6 +140,9 @@ class WorkspaceUsageOut(BaseModel):
     minutes_included: Decimal | None = None
     overage_minutes: Decimal
     overage_cost: Decimal
+    available_surcharges: list[SurchargeInfoOut] = Field(
+        default_factory=list, description=_SURCHARGE_FIELD_DESCRIPTION
+    )
 
 class SubAccountCreate(BaseModel):
     name: str = Field(..., min_length=3, max_length=50)

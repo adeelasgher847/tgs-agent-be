@@ -262,6 +262,12 @@ class CrmSettings(BaseModel):
         default="", validation_alias="STRIPE_PRICE_ID_FREE"
     )
     stripe_price_id_pro: str = Field(default="", validation_alias="STRIPE_PRICE_ID_PRO")
+    stripe_price_id_studio: str = Field(
+        default="", validation_alias="STRIPE_PRICE_ID_STUDIO"
+    )
+    stripe_price_id_agency: str = Field(
+        default="", validation_alias="STRIPE_PRICE_ID_AGENCY"
+    )
     payment_page_base_url: str = Field(
         default="https://pay.yourdomain.com", validation_alias="PAYMENT_PAGE_BASE_URL"
     )
@@ -843,6 +849,8 @@ class Settings(BaseSettings):
     )
     STRIPE_PRICE_ID_FREE: str = ""
     STRIPE_PRICE_ID_PRO: str = ""
+    STRIPE_PRICE_ID_STUDIO: str = ""
+    STRIPE_PRICE_ID_AGENCY: str = ""
 
     # In-call payment page URL — returned to the agent as the caller-facing payment link.
     # Format: "{PAYMENT_PAGE_BASE_URL}/pay/{payment_intent_id}?client_secret={client_secret}"
@@ -1194,6 +1202,8 @@ class Settings(BaseSettings):
             stripe_incall_webhook_secret=self.STRIPE_INCALL_WEBHOOK_SECRET,
             stripe_price_id_free=self.STRIPE_PRICE_ID_FREE,
             stripe_price_id_pro=self.STRIPE_PRICE_ID_PRO,
+            stripe_price_id_studio=self.STRIPE_PRICE_ID_STUDIO,
+            stripe_price_id_agency=self.STRIPE_PRICE_ID_AGENCY,
             payment_page_base_url=self.PAYMENT_PAGE_BASE_URL,
             free_plan_agent_limit=self.FREE_PLAN_AGENT_LIMIT,
             free_plan_monthly_calls=self.FREE_PLAN_MONTHLY_CALLS,

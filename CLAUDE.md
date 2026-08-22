@@ -346,3 +346,5 @@ Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
 | `OTEL_TRACING_ENABLED` | Observability | Default `false`; enable to export spans via OTLP |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Observability | Default `http://localhost:4317` |
 | `OTEL_SERVICE_NAME` | Observability | Default `tgs-agent-be` |
+| `STRIPE_PRICE_ID_STUDIO` | Billing | Stripe Price ID for the Studio core-product plan ($99/mo, 100 included minutes) |
+| `STRIPE_PRICE_ID_AGENCY` | Billing | Stripe Price ID for the Agency core-product plan ($299/mo, 300 included minutes) |

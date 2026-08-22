@@ -592,6 +592,58 @@ paths:
               schema: {}
       security:
       - HTTPBearer: []
+  /api/v1/tenants/plans/start-checkout:
+    post:
+      tags:
+      - tenants
+      summary: Start Core Plan Checkout
+      description: 'Start a Stripe subscription-mode checkout session for a tenant-level
+        core-product
+
+        plan (Studio / Agency). Mirrors `crm_config.py`''s `start_plan_checkout` but
+        is
+
+        tenant-scoped (metadata carries `tenant_id`, `crm_type` is always empty).'
+      operationId: start_core_plan_checkout_api_v1_tenants_plans_start_checkout_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: stripe_price_id
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Stripe Price Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_dict_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/tenants/plan:
+    get:
+      tags:
+      - tenants
+      summary: Get Tenant Plan
+      description: Current core-product plan + entitlements for the caller's active
+        tenant.
+      operationId: get_tenant_plan_api_v1_tenants_plan_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TenantPlanOut'
+      security:
+      - HTTPBearer: []
   /api/v1/workspace/invite:
     post:
       tags:
@@ -15150,6 +15202,18 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Effective Client Rate
+        available_surcharges:
+          items:
+            $ref: '#/components/schemas/SurchargeInfoOut'
+          type: array
+          title: Available Surcharges
+          description: Full catalog of per-minute surcharges the platform knows how
+            to apply (e.g. OpenAI Realtime, ElevenLabs voice) — this is NOT the list
+            of surcharges currently being charged on any specific call or agent. Whether
+            a given surcharge is actually active depends on that agent's model/TTS
+            configuration at call time; these endpoints are workspace-scoped, not
+            agent- or call-scoped, so this field only advertises what CAN stack on
+            top of the base per-minute rate.
       type: object
       required:
       - per_minute_rate
@@ -18699,6 +18763,41 @@ components:
       required:
       - data
       title: SuccessResponse[list[TenantMember]]
+    SurchargeInfoOut:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        rate_per_minute:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Rate Per Minute
+        applies_when:
+          type: string
+          title: Applies When
+      type: object
+      required:
+      - key
+      - label
+      - rate_per_minute
+      - applies_when
+      title: SurchargeInfoOut
+      description: 'A single named per-minute surcharge that can stack on top of the
+        base
+
+        per-minute rate (see app.services.credit_service.SURCHARGE_CATALOG).
+
+
+        This is the full catalog of surcharges the platform knows how to apply —
+
+        not necessarily all active for every agent/call — since these endpoints
+
+        are workspace-scoped rather than agent-scoped. `applies_when` documents
+
+        the condition that activates it for a given call.'
     SwitchTenantRequest:
       properties:
         tenant_id:
@@ -19046,6 +19145,51 @@ components:
       - join_date
       - created_at
       title: TenantMember
+    TenantPlanOut:
+      properties:
+        plan_name:
+          type: string
+          nullable: true
+        display_name:
+          type: string
+          nullable: true
+        included_minutes:
+          type: integer
+          nullable: true
+        minutes_used_this_cycle:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Minutes Used This Cycle
+        minutes_remaining:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Minutes Remaining
+        monthly_credits:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        free_phone_numbers:
+          type: integer
+          nullable: true
+        max_subaccounts:
+          type: integer
+          nullable: true
+        features:
+          items:
+            type: string
+          type: array
+          title: Features
+        credits_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Credits Balance
+      type: object
+      required:
+      - minutes_used_this_cycle
+      - minutes_remaining
+      - credits_balance
+      title: TenantPlanOut
+      description: Response shape for GET /api/v1/tenants/plan — current plan + entitlements.
     TokenResponse:
       properties:
         access_token:
@@ -19721,6 +19865,18 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Overage Cost
+        available_surcharges:
+          items:
+            $ref: '#/components/schemas/SurchargeInfoOut'
+          type: array
+          title: Available Surcharges
+          description: Full catalog of per-minute surcharges the platform knows how
+            to apply (e.g. OpenAI Realtime, ElevenLabs voice) — this is NOT the list
+            of surcharges currently being charged on any specific call or agent. Whether
+            a given surcharge is actually active depends on that agent's model/TTS
+            configuration at call time; these endpoints are workspace-scoped, not
+            agent- or call-scoped, so this field only advertises what CAN stack on
+            top of the base per-minute rate.
       type: object
       required:
       - minutes_used_this_cycle
