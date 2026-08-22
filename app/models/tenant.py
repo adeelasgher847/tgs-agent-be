@@ -47,6 +47,7 @@ class Tenant(Base):
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     pricing_config = relationship("PricingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     usage_record = relationship("UsageRecord", back_populates="tenant", cascade="all, delete-orphan")
+    core_subscriptions = relationship("Subscription", back_populates="tenant")
     sso_config = relationship("SsoConfig", uselist=False, back_populates="workspace", cascade="all, delete-orphan")
 
     __table_args__ = (

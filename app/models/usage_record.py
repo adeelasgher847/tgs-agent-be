@@ -11,6 +11,7 @@ class UsageRecord(Base):
     workspace_id = Column(UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="CASCADE"), nullable=False)
     call_id = Column(UUID(as_uuid=True), ForeignKey("callsession.id", ondelete="SET NULL"), nullable=True)
     billable_minutes = Column(Numeric(10, 2), nullable=False)
+    credits_charged = Column(Numeric(10, 4), nullable=False, server_default="0")  # credits deducted; 0 within plan's free allowance
     recorded_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
     deleted_at = Column(DateTime(timezone=True), nullable=True)
 
