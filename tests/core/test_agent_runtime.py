@@ -121,6 +121,9 @@ def test_resolve_tts_runtime_ticket_elevenlabs():
     assert runtime.adapter_slug == "elevenlabs"
     assert runtime.voice_external_id == "voice-abc"
     assert runtime.used_ticket_tts is True
+    # Platform ElevenLabs (raw slug "11labs", not "11labs_byo") must NOT be
+    # flagged as BYO — the ElevenLabs surcharge applies to this call.
+    assert runtime.is_byo_elevenlabs is False
 
 
 def _byo_agent(ciphertext: str = "enc") -> MagicMock:
@@ -149,6 +152,23 @@ def test_resolve_tts_runtime_byo_injects_api_key_pgcrypto():
 
     assert runtime.settings_json.get("elevenlabs_api_key") == "xi-pgcrypto-key"
     mock_dec.assert_called_once_with("jA0ECQMCpgcrypto_base64==", db=mock_db)
+    # BYO ElevenLabs with a usable stored key: adapter_slug still collapses
+    # to "elevenlabs", but is_byo_elevenlabs must be True so the platform
+    # surcharge (app.services.credit_service) is exempted.
+    assert runtime.adapter_slug == "elevenlabs"
+    assert runtime.is_byo_elevenlabs is True
+
+
+def test_resolve_tts_runtime_byo_slug_without_stored_key_not_flagged_byo():
+    """BYO slug ("11labs_byo") with NO stored encrypted key is not a usable
+    BYO configuration — must not be exempted from the surcharge."""
+    agent = _byo_agent(ciphertext=None)
+    agent.encrypted_elevenlabs_api_key = None
+
+    runtime = resolve_tts_runtime(agent, db=MagicMock())
+
+    assert runtime.adapter_slug == "elevenlabs"
+    assert runtime.is_byo_elevenlabs is False
 
 
 def test_resolve_tts_runtime_byo_injects_api_key_jwt_legacy():

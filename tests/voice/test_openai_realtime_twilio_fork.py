@@ -403,6 +403,50 @@ class TestPreSessionFallback:
         assert orch._openai_realtime_setup_failed is True
         h._full_shutdown.assert_called_once()
 
+    def test_fallback_persists_flag_on_call_metadata_for_credit_billing(self):
+        """Fix #4: the fallback must persist a flag on
+        CallSession.call_metadata so credit_service's out-of-process billing
+        tick (which re-queries CallSession every 10s and has no reference to
+        this orchestrator instance) can stop billing the realtime surcharge
+        and start evaluating the ElevenLabs surcharge for the rest of the
+        call."""
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        call_session = MagicMock()
+        call_session.call_metadata = {"existing_key": "kept"}
+        h.call_session = call_session
+        h.db = MagicMock()
+
+        asyncio.run(orch._fallback_to_legacy_pipeline_openai(h, reason="pre-session boom"))
+
+        assert orch._is_openai_realtime is False
+        assert call_session.call_metadata["existing_key"] == "kept"
+        fallback_meta = call_session.call_metadata["openai_realtime_fallback"]
+        assert fallback_meta["fell_back"] is True
+        assert fallback_meta["reason"] == "pre-session boom"
+        assert "at" in fallback_meta
+        h.db.commit.assert_called_once()
+
+    def test_fallback_write_failure_does_not_raise(self):
+        """A DB error while persisting the fallback flag must not blow up the
+        call — it's a best-effort billing-accuracy signal, not a correctness
+        requirement for the call itself."""
+        h = _fake_handler(llm_model=NATIVE_AUDIO_MODEL)
+        orch = VoiceOrchestrator(h)
+
+        call_session = MagicMock()
+        call_session.call_metadata = {}
+        h.call_session = call_session
+        h.db = MagicMock()
+        h.db.commit.side_effect = RuntimeError("db down")
+
+        # Must not raise.
+        asyncio.run(orch._fallback_to_legacy_pipeline_openai(h, reason="boom"))
+
+        assert orch._is_openai_realtime is False
+        h._full_shutdown.assert_not_awaited()
+
 
 class TestMidCallError:
     def test_mid_call_error_ends_call_gracefully(self):

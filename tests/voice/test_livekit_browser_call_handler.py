@@ -829,6 +829,106 @@ class TestRunLiveKitBrowserCall:
         mock_stop_rec.assert_awaited_once_with(call_session_id, None)
 
     @pytest.mark.asyncio
+    async def test_max_call_duration_cap_force_ends_and_finalizes_with_reason(self):
+        """
+        If the caller/room never signals _stop_event (e.g. a dead network
+        with no disconnect event ever firing), the hard max-duration safety
+        cap must still force the call through the normal finally cleanup —
+        including actually disconnecting the publisher's LiveKit room
+        connection — and finalize the call_session as "completed" with a
+        distinct, identifiable ended_reason instead of hanging forever.
+        """
+        call_session_id = uuid.uuid4()
+        call_session = MagicMock()
+        call_session.id = call_session_id
+        call_session.call_flow_id = None
+        call_session.call_metadata = {}
+        agent = MagicMock()
+        agent.id = uuid.uuid4()
+        agent.stt_provider_slug = None
+        agent.stt_model_id = None
+
+        mock_db = MagicMock()
+
+        publisher_instance = MagicMock()
+        publisher_instance.connect = AsyncMock(return_value=True)
+        publisher_instance.disconnect = AsyncMock()
+        publisher_instance._room = MagicMock()
+
+        mock_subscriber_instance = MagicMock()
+        mock_subscriber_instance.run = AsyncMock()
+        mock_subscriber_instance.stop = AsyncMock()
+
+        mock_vo_instance = MagicMock()
+        mock_vo_instance.shutdown = AsyncMock()
+        mock_vo_instance.stt_event_bus = MagicMock()
+        mock_vo_instance._on_interim = AsyncMock()
+        mock_vo_instance._on_final = AsyncMock()
+        mock_vo_instance._is_gemini_live = False
+        mock_vo_instance._is_openai_realtime = False
+
+        async def _greet_but_never_stop(self, *_args, **_kwargs):
+            # Unlike the happy-path test, this never sets _stop_event —
+            # simulates the caller's tab/network dying without any
+            # participant_disconnected/disconnected room event ever firing.
+            return None
+
+        with patch("app.voice.livekit_browser_call_handler.settings") as mock_settings, \
+             patch("app.voice.livekit_browser_call_handler._MAX_CALL_DURATION_SEC", 0.01), \
+             patch("app.db.session.SessionLocal", return_value=mock_db), \
+             patch(
+                 "app.voice.livekit_browser_call_handler._load_browser_call_context",
+                 new=AsyncMock(return_value=(call_session, agent, None)),
+             ), \
+             patch("app.voice.voice_orchestrator.VoiceOrchestrator", return_value=mock_vo_instance), \
+             patch(
+                 "app.voice.livekit_browser_call_handler._LiveKitAgentAudioPublisher",
+                 return_value=publisher_instance,
+             ), \
+             patch("app.core.agent_runtime.resolve_stt_runtime") as mock_resolve_stt, \
+             patch("app.voice.stt_pipeline.SttPipeline.from_runtime_config", return_value=MagicMock()), \
+             patch(
+                 "app.voice.livekit_audio_subscriber.LiveKitAudioSubscriber",
+                 return_value=mock_subscriber_instance,
+             ), \
+             patch("app.services.call_session_service.call_session_service") as mock_svc, \
+             patch(
+                 "app.voice.livekit_browser_call_handler._start_browser_call_recording",
+                 new=AsyncMock(return_value=None),
+             ), \
+             patch(
+                 "app.voice.livekit_browser_call_handler._stop_browser_call_recording",
+                 new=AsyncMock(),
+             ), \
+             patch.object(
+                 LiveKitBrowserCallHandler,
+                 "generate_and_stream_response",
+                 new=_greet_but_never_stop,
+             ):
+            mock_settings.LIVEKIT_ENABLED = True
+            mock_resolve_stt.return_value = ResolvedSttRuntime(
+                provider_slug="deepgram",
+                model_id="nova-3",
+                language_code="en",
+                sample_rate_hz=8000,
+                encoding="MULAW",
+                silence_threshold_ms=1500,
+                api_config={},
+            )
+
+            await asyncio.wait_for(run_livekit_browser_call(call_session_id), timeout=5.0)
+
+        # The cap must actually force-end the call, not just stop waiting:
+        # the publisher's LiveKit room connection is disconnected via the
+        # same finally-block path used for a normal disconnect.
+        publisher_instance.disconnect.assert_awaited_once()
+        mock_vo_instance.shutdown.assert_awaited_once()
+        mock_svc.update_call_session_status.assert_called_once_with(
+            mock_db, call_session_id, "completed", ended_reason="max_duration_exceeded"
+        )
+        mock_db.close.assert_called_once()
+
+    @pytest.mark.asyncio
     async def test_agent_join_failure_is_caught_not_raised(self):
         """An exception anywhere in the join/conversation loop must never
         propagate out as an unhandled background-task exception."""

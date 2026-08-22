@@ -50,6 +50,16 @@ def _agent(*, status: str = "ready"):
     ag.name = "Test Agent"
     ag.status = status
     ag.model = MagicMock(model_name="gpt-4o")
+    # Explicit (non-MagicMock) TTS fields so resolve_tts_runtime(agent, db=...)
+    # — invoked for the surcharge gate in voice_call_service.initiate_call —
+    # resolves safely to the "google" default instead of tripping over
+    # arbitrary MagicMock attribute access (dict(MagicMock()), .lower(), etc.).
+    ag.tts_settings_json = {}
+    ag.tts_provider_slug = None
+    ag.tts_language = None
+    ag.tts_voice_external_id = None
+    ag.tts_provider = None
+    ag.language = "en"
     return ag
 
 
@@ -117,6 +127,7 @@ async def _run(
     twilio_make_call=None,
     call_session_obj=None,
     phone_obj=None,
+    credit_check_result=(True, 100, 10, "ok"),
 ):
     from app.services.voice_call_service import initiate_call
 
@@ -150,7 +161,7 @@ async def _run(
         ),
         patch(
             "app.services.voice_call_service.credit_service",
-            MagicMock(has_sufficient_credits=MagicMock(return_value=(True, 100, 10))),
+            MagicMock(has_sufficient_credits=MagicMock(return_value=credit_check_result)),
         ),
         patch(
             "app.services.voice_call_service.call_session_service",
@@ -313,6 +324,54 @@ class TestAgentNotReady:
 
 
 # ---------------------------------------------------------------------------
+# Test: insufficient credits — surcharge-specific decline messaging
+# ---------------------------------------------------------------------------
+
+
+class TestInsufficientCreditsDeclineMessaging:
+    @pytest.mark.asyncio
+    async def test_generic_insufficient_credits_returns_402(self):
+        req = _request()
+        result, _, twilio_call, _ = await _run(
+            req,
+            credit_check_result=(
+                False, 0.0, 0.0,
+                "blocked: no included minutes remaining and no credit balance",
+            ),
+        )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_402_PAYMENT_REQUIRED
+        twilio_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_surcharge_specific_decline_reason_is_in_response_detail(self):
+        """A surcharge-driven decline (included minutes remain, but a
+        positive credit balance is required for the active surcharge) must be
+        diagnosable from the error response — not indistinguishable from the
+        generic "no minutes, no credits" rejection."""
+        import json
+
+        req = _request()
+        reason = (
+            "blocked: ElevenLabs voice surcharge requires a positive credit "
+            "balance (included minutes remain, but surcharges are never "
+            "waived by the allowance)"
+        )
+        result, _, _, _ = await _run(
+            req,
+            credit_check_result=(False, 0.0, 0.0, reason),
+        )
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_402_PAYMENT_REQUIRED
+        body = json.loads(result.body)
+        assert body["error"]["code"] == "insufficient_credits"
+        assert "ElevenLabs" in body["error"]["message"]
+        assert reason in body["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
 # Test: concurrent outbound limit
 # ---------------------------------------------------------------------------
 
@@ -435,7 +494,7 @@ class TestLivekitRoomCreationFailure:
             ),
             patch(
                 "app.services.voice_call_service.credit_service",
-                MagicMock(has_sufficient_credits=MagicMock(return_value=(True, 100, 10))),
+                MagicMock(has_sufficient_credits=MagicMock(return_value=(True, 100, 10, "ok"))),
             ),
             patch("app.services.voice_call_service.call_session_service", mock_css),
             patch(
