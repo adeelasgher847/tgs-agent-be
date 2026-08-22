@@ -89,6 +89,21 @@ _STT_INPUT_ENCODING = "LINEAR16"
 _GREETING_DELAY_SEC = 0.6
 _TURN_TIMEOUT_SEC = 25.0
 
+# Hard safety cap on total call duration. This is a new mechanism (no
+# equivalent exists on the Twilio path or anywhere else in the codebase as of
+# this writing) added specifically because this loop now bills the tenant's
+# plan-included-minutes/credits via credit_service for every second the call
+# is held open (see the credit-monitoring block in run_livekit_browser_call).
+# Per the module docstring / Voice Pipeline vault notes, there is no reliable
+# end-of-call signal for a browser-only LiveKit call if the visitor's network
+# dies or the tab closes ungracefully — only participant_disconnected/
+# disconnected room events, which never fire in that failure mode. Without
+# this cap a dead connection could bill indefinitely. This is orthogonal to
+# (and does not replace) CallFlowDemoLink.per_user_limit_minutes /
+# total_budget_minutes, which are tenant-configured usage budgets enforced
+# elsewhere — this is a fixed, code-level upper bound on any single call.
+_MAX_CALL_DURATION_SEC = 1800.0
+
 # asyncio.Task objects are only weakly referenced by the event loop (see the
 # asyncio docs' explicit warning) — a fire-and-forget asyncio.create_task()
 # with no other reference is eligible for GC at any point. For a short burst
@@ -1334,6 +1349,10 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
     # trigger CRM write-back scheduling for a call nothing ever happened on.
     agent_joined = False
     recording_egress_id: str | None = None
+    # Set only when the hard max-duration cap fires, so the finally block can
+    # record a distinct, identifiable ended_reason instead of the generic
+    # "completed" it uses for a normal caller/room disconnect.
+    forced_end_reason: str | None = None
 
     try:
         call_session, agent, call_flow = await _load_browser_call_context(db, call_session_id)
@@ -1518,12 +1537,42 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
             call_session.start_time = datetime.now(timezone.utc)
         db.commit()
 
+        # 🎯 START CREDIT MONITORING - demo/browser calls bill the demo link's
+        # owning tenant through the same plan-aware credit system as real calls.
+        try:
+            from app.services.credit_service import credit_service
+
+            if str(call_session.id) not in credit_service._active_monitors:
+                asyncio.create_task(credit_service.start_credit_monitoring(
+                    db=db,
+                    call_session_id=call_session.id,
+                    tenant_id=call_session.tenant_id,
+                    agent_id=call_session.agent_id
+                ))
+        except Exception as e:
+            logger.debug("[LiveKitBrowserCall] Could not start credit monitoring: %s", e)
+
         await asyncio.sleep(_GREETING_DELAY_SEC)
         if not handler._stop_event.is_set():
             await handler.generate_and_stream_response("", 1.0, is_greeting=True)
 
-        # ── Hold the call until the caller/room disconnects ─────────────────
-        await handler._stop_event.wait()
+        # ── Hold the call until the caller/room disconnects, or until the ──
+        # hard max-duration safety cap trips (see _MAX_CALL_DURATION_SEC).
+        try:
+            await asyncio.wait_for(handler._stop_event.wait(), timeout=_MAX_CALL_DURATION_SEC)
+        except asyncio.TimeoutError:
+            forced_end_reason = "max_duration_exceeded"
+            logger.warning(
+                "[LiveKitBrowserCall] hard max-call-duration cap (%.0fs) reached — "
+                "force-ending call room=%s call_session=%s",
+                _MAX_CALL_DURATION_SEC, room_name, call_session_id,
+            )
+            # Mirrors the participant/room-disconnect handlers above: signal
+            # the stop event and fall through to the shared finally cleanup
+            # below (recording teardown, audio subscriber stop, publisher
+            # disconnect — which actually drops the agent's LiveKit
+            # connection/room — credit-monitor stop, and status finalize).
+            handler._stop_event.set()
 
     except Exception as exc:
         logger.error(
@@ -1562,12 +1611,32 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
             except Exception as exc:
                 logger.debug("[LiveKitBrowserCall] publisher disconnect failed: %s", exc)
 
+        if agent_joined:
+            try:
+                from app.services.credit_service import credit_service
+
+                credit_service.stop_credit_monitoring(call_session_id)
+                logger.info(
+                    "[LiveKitBrowserCall] Stopped credit monitoring for call session %s",
+                    call_session_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[LiveKitBrowserCall] failed to stop credit monitoring call_session=%s: %s",
+                    call_session_id, exc,
+                )
+
         if call_session is not None:
             try:
                 from app.services.call_session_service import call_session_service
 
                 if agent_joined:
-                    call_session_service.update_call_session_status(db, call_session_id, "completed")
+                    if forced_end_reason:
+                        call_session_service.update_call_session_status(
+                            db, call_session_id, "completed", ended_reason=forced_end_reason
+                        )
+                    else:
+                        call_session_service.update_call_session_status(db, call_session_id, "completed")
                 else:
                     call_session_service.update_call_session_status(
                         db, call_session_id, "failed", ended_reason="agent_join_failed"

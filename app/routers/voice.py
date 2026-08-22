@@ -7,6 +7,7 @@ import uuid
 import requests
 import asyncio
 
+from app.core.agent_runtime import resolve_tts_runtime
 from app.core.logger import logger
 from app.api.deps import get_db, require_tenant, get_optional_tenant_user
 from app.schemas.twilio import CallInitiateRequest, CallInitiateResponse
@@ -231,19 +232,23 @@ async def handle_incoming_call(
             )
 
         model_name = inbound_agent.model.model_name
-        has_sufficient, current_credits, required_credits = credit_service.has_sufficient_credits(
+        inbound_tts_runtime = resolve_tts_runtime(inbound_agent, db=db)
+        tts_provider_slug = inbound_tts_runtime.adapter_slug
+        has_sufficient, current_credits, required_credits, decline_reason = credit_service.has_sufficient_credits(
             db=db,
             tenant_id=phone_number.tenant_id,
             model_name=model_name,
-            estimated_minutes=1,
+            tts_provider_slug=tts_provider_slug,
+            is_byo_elevenlabs=inbound_tts_runtime.is_byo_elevenlabs,
         )
         if not has_sufficient:
             logger.warning(
-                "Inbound credit check failed for tenant %s: current=%s required=%s model=%s",
+                "Inbound credit check failed for tenant %s: current=%s required=%s model=%s reason=%s",
                 phone_number.tenant_id,
                 current_credits,
                 required_credits,
                 model_name,
+                decline_reason,
             )
             return _fallback_twiml(
                 "Sorry, this service is currently unavailable. Please try again later."

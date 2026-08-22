@@ -91,6 +91,15 @@ class ResolvedTtsRuntime:
     language: str
     settings_json: dict[str, Any]
     used_ticket_tts: bool
+    # True only when the agent's raw ticket TTS slug is "11labs_byo" AND a
+    # usable BYO ElevenLabs key is actually stored — i.e. the platform incurs
+    # zero ElevenLabs cost for this call. `adapter_slug` alone can't express
+    # this: both platform ElevenLabs ("11labs") and BYO ElevenLabs
+    # ("11labs_byo") collapse to the same adapter_slug "elevenlabs". Callers
+    # that need to gate the ElevenLabs surcharge (see
+    # app.services.credit_service.get_active_surcharges) must consult this
+    # flag, not adapter_slug.
+    is_byo_elevenlabs: bool = False
 
 
 def _decrypt_stored_api_key(
@@ -289,6 +298,7 @@ def resolve_tts_runtime(
         voice_id = agent.tts_voice_external_id
         if agent.tts_language:
             language = agent.tts_language
+        is_byo_elevenlabs = slug == "11labs_byo" and bool(agent.encrypted_elevenlabs_api_key)
         if slug == "11labs_byo" and agent.encrypted_elevenlabs_api_key:
             try:
                 from app.core.db_encryption import decrypt_stored_elevenlabs_key
@@ -325,6 +335,7 @@ def resolve_tts_runtime(
             language=language,
             settings_json=settings,
             used_ticket_tts=True,
+            is_byo_elevenlabs=is_byo_elevenlabs,
         )
 
     legacy_provider = getattr(agent, "tts_provider", None)
