@@ -213,24 +213,24 @@ class BillingService:
                     "message": "Plan subscription updated. No credits added for plan purchase."
                 }
 
-            # Credit purchase: add credits to tenant
-            credits_to_add = 0
+            # Credit purchase: add credits to tenant. 1 credit = $1.
+            credits_to_add = Decimal("0")
             amount_total_cents = session["amount_total"] or 0
-            amount_dollars = float(amount_total_cents) / 100.0
+            amount_dollars = Decimal(amount_total_cents) / Decimal("100")
             if purchase_type == 'credit_purchase':
-                credits_to_add = int(amount_dollars * 10)
+                credits_to_add = amount_dollars
 
             if credits_to_add > 0:
                 tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
                 if tenant:
-                    tenant.credits = (tenant.credits or 0) + credits_to_add
+                    tenant.credits = (tenant.credits or Decimal("0")) + credits_to_add
                     tenant.status = 'active'
                     logger.info(f"Added {credits_to_add} credits to tenant {tenant_id} (credit_purchase)")
 
             db.commit()
             return {
                 "status": "success",
-                "credits_added": credits_to_add,
+                "credits_added": float(credits_to_add),
                 "purchase_type": purchase_type
             }
         except Exception as e:

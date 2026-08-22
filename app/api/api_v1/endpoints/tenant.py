@@ -236,7 +236,7 @@ def start_credit_checkout_session(
 ):
     """
     Start Stripe checkout session for one-time credit purchase (pay as you go).
-    $1 = 10 credits. User can buy any amount of credits.
+    $1 = 1 credit. User can buy any amount of credits.
     """
     if not current_user.current_tenant_id:
         raise HTTPException(

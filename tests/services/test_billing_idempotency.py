@@ -56,11 +56,11 @@ def test_sync_payment_credits_once(mock_retrieve, db, tenant):
     second = BillingService.sync_payment_status(db, "cs_test_123", "evt_2")
 
     assert first["status"] == "success"
-    assert first["credits_added"] == 100
+    assert first["credits_added"] == 10
     assert second["status"] == "already_processed"
 
     db.refresh(tenant)
-    assert tenant.credits == Decimal("200")
+    assert tenant.credits == Decimal("110")
 
     rows = db.query(StripeCheckoutFulfillment).filter(
         StripeCheckoutFulfillment.checkout_session_id == "cs_test_123"
