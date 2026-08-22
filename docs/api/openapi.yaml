@@ -490,7 +490,7 @@ paths:
       description: 'Start Stripe checkout session for one-time credit purchase (pay
         as you go).
 
-        $1 = 10 credits. User can buy any amount of credits.'
+        $1 = 1 credit. Minimum purchase is $5.'
       operationId: start_credit_checkout_session_api_v1_tenants_start_credit_checkout_session_post
       security:
       - HTTPBearer: []
