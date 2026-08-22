@@ -236,8 +236,13 @@ def start_credit_checkout_session(
 ):
     """
     Start Stripe checkout session for one-time credit purchase (pay as you go).
-    $1 = 1 credit. User can buy any amount of credits.
+    $1 = 1 credit. Minimum purchase is $5.
     """
+    if amount < 5:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Minimum credit purchase is $5"
+        )
     if not current_user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
