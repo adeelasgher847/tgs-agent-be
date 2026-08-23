@@ -154,6 +154,53 @@ require_member = require_readonly
 require_member_or_admin = require_readonly
 
 
+def require_workspace_owner(
+    user: User = Depends(require_user_tenant),
+    db: Session = Depends(get_db),
+) -> User:
+    """Workspace *creator* only — gates cross-sub-account billing/reporting
+    endpoints that must stay invisible even to an `admin` who isn't the
+    original creator, and to any user (including that sub-account's own
+    creator) operating from a sub-account's own tenant context.
+
+    This is deliberately separate from `_require_rank`/`has_rank`: `is_creator`
+    is a per-membership boolean on `user_tenant_association`, not a rung on
+    the admin>manager>config_only>read_only ladder, so there's no "required"
+    rank to compare against — it's checked directly.
+
+    Also rejects outright (403) when `current_tenant_id` is itself a
+    sub-account (`Tenant.parent_workspace_id is not None`) so this dependency
+    alone is sufficient for any future family-scoped endpoint — a caller
+    can't get "owner-gated" without also getting "must be a family root",
+    rather than relying on every route handler to separately re-check that
+    (see `_workspace_family` in workspace.py, which re-derives the same
+    invariant as defense-in-depth, not as the sole enforcement point).
+    """
+    if not user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No tenant selected. Please set a current tenant.",
+        )
+    row = db.execute(
+        user_tenant_association.select().where(
+            user_tenant_association.c.user_id == user.id,
+            user_tenant_association.c.tenant_id == user.current_tenant_id,
+        )
+    ).first()
+    if row is None:
+        raise _not_a_member()
+    if not row.is_creator:
+        role_name = role_service.get_membership_role_name(db, user.id, user.current_tenant_id)
+        raise _forbidden("owner", role_name)
+    tenant = db.query(Tenant).filter(Tenant.id == user.current_tenant_id).first()
+    if tenant is not None and tenant.parent_workspace_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner-only reporting is only available from the master workspace, not a sub-account.",
+        )
+    return _attach_tenants(user, db)
+
+
 def require_active_subscription(
     user: User = Depends(require_user_tenant),
     db: Session = Depends(get_db),

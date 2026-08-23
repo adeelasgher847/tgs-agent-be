@@ -12,7 +12,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text as sa_text
 import uuid
 
 from app.db.base_class import Base
@@ -98,7 +98,15 @@ class CallFlow(Base):
     # voice_analysis_service.analyze_call_transcript. Empty list = feature off;
     # the automatic call-summary generation is unaffected either way.
     post_call_analysis_variables = Column(
-        JSONB, nullable=False, default=list, server_default="'[]'::jsonb"
+        # No explicit `::jsonb` cast here (unlike the Alembic migration for
+        # this column) — Postgres infers the cast from the column's own type
+        # in a DEFAULT clause, and omitting it keeps this portable to the
+        # SQLite dialect used by the unit-test suite (SQLite's parser does
+        # not understand `::` cast syntax at all).
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa_text("'[]'"),
     )
     post_call_analysis_model = Column(String(100), nullable=True)
 

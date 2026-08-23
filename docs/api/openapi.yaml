@@ -644,6 +644,137 @@ paths:
                 $ref: '#/components/schemas/TenantPlanOut'
       security:
       - HTTPBearer: []
+  /api/v1/tenants/billing/portal-session:
+    post:
+      tags:
+      - tenants
+      summary: Create Billing Portal Session
+      description: 'Create a Stripe billing-portal session for the caller''s current
+        tenant.
+
+
+        Lets the tenant manage payment methods and view Stripe-hosted invoices
+
+        through Stripe''s own hosted portal (the "Manage Subscription" button).
+
+
+        Admin-only (not `require_billing`): Stripe''s default billing-portal
+
+        configuration commonly lets the customer cancel the subscription
+
+        directly through the hosted portal UI, which would let a billing_only
+
+        user bypass the admin-only /plan/cancel gate below.'
+      operationId: create_billing_portal_session_api_v1_tenants_billing_portal_session_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_BillingPortalSessionOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/tenants/plan/cancel:
+    post:
+      tags:
+      - tenants
+      summary: Cancel Tenant Plan
+      description: 'Cancel the tenant''s active core-plan subscription at the end
+        of the
+
+        current billing period (the tenant keeps access through what''s already
+
+        paid for). The "Cancel Plan" button.'
+      operationId: cancel_tenant_plan_api_v1_tenants_plan_cancel_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_CancelPlanOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/tenants/billing/invoices:
+    get:
+      tags:
+      - tenants
+      summary: Get Tenant Invoices
+      description: 'Return the tenant''s Stripe invoice history (date, invoice number,
+
+        description, amount, status, hosted PDF download URL).'
+      operationId: get_tenant_invoices_api_v1_tenants_billing_invoices_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_InvoiceListOut_'
+      security:
+      - HTTPBearer: []
+  /api/v1/tenants/billing/auto-recharge:
+    get:
+      tags:
+      - tenants
+      summary: Get Auto Recharge Settings
+      description: 'Current wallet auto-recharge configuration for the caller''s active
+        tenant
+
+        (min-balance threshold, recharge amount, saved payment method, cooldown
+
+        state). Returns sensible defaults (enabled=false) when no config row
+
+        exists yet, rather than 404ing — most tenants won''t have configured this.'
+      operationId: get_auto_recharge_settings_api_v1_tenants_billing_auto_recharge_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_AutoRechargeSettingsOut_'
+      security:
+      - HTTPBearer: []
+    put:
+      tags:
+      - tenants
+      summary: Upsert Auto Recharge Settings
+      description: 'Create or update wallet auto-recharge settings for the caller''s
+        active
+
+        tenant. When `stripe_payment_method_id` is provided, it must belong to
+
+        this tenant''s own Stripe customer — verified against Stripe''s own
+
+        payment-method listing so a tenant can''t point auto-recharge at an
+
+        arbitrary/other-customer''s saved card. `min_balance`/`recharge_amount`
+
+        bounds are enforced at the schema level (`AutoRechargeSettingsUpsert`).'
+      operationId: upsert_auto_recharge_settings_api_v1_tenants_billing_auto_recharge_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoRechargeSettingsUpsert'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_AutoRechargeSettingsOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v1/workspace/invite:
     post:
       tags:
@@ -9040,6 +9171,213 @@ paths:
                 $ref: '#/components/schemas/WorkspaceUsageOut'
       security:
       - HTTPBearer: []
+  /api/v2/workspace/usage/breakdown:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Usage Breakdown
+      description: 'Agency billing-dashboard breakdown: spend per workspace (parent
+        +
+
+        direct sub-accounts) for the current billing period. Owner-only —
+
+        `period` is a placeholder for a future selector; only ''this_month'' is
+
+        supported today.'
+      operationId: get_workspace_usage_breakdown_api_v2_workspace_usage_breakdown_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: period
+        in: query
+        required: false
+        schema:
+          type: string
+          default: this_month
+          title: Period
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WorkspaceUsageBreakdownOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/usage/breakdown.csv:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Usage Breakdown Csv
+      operationId: get_workspace_usage_breakdown_csv_api_v2_workspace_usage_breakdown_csv_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: period
+        in: query
+        required: false
+        schema:
+          type: string
+          default: this_month
+          title: Period
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/usage/recent-activity:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Recent Activity
+      description: 'Last 10 spend transactions across the parent tenant + its direct
+
+        sub-accounts. Owner-only.'
+      operationId: get_workspace_recent_activity_api_v2_workspace_usage_recent_activity_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecentActivityOut'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/usage/minutes-by-month:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Minutes By Month
+      description: 'Minutes/calls/cost for the last 3 calendar months (current + 2
+        prior),
+
+        aggregated across the parent tenant + its direct sub-accounts. Owner-only.'
+      operationId: get_workspace_minutes_by_month_api_v2_workspace_usage_minutes_by_month_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MinutesByMonthOut'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/usage/minutes-by-month.csv:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Workspace Minutes By Month Csv
+      operationId: get_workspace_minutes_by_month_csv_api_v2_workspace_usage_minutes_by_month_csv_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/sub-accounts/{sub_account_id}/wallet-sharing:
+    put:
+      tags:
+      - Workspace Settings
+      summary: Update Sub Account Wallet Sharing
+      description: 'Toggle whether `sub_account_id` draws call credits from the caller''s
+
+        (parent) wallet ("Using master wallet") or its own ("Using own wallet").
+
+        `sub_account_id` must be a direct sub-account of the caller''s current
+
+        tenant — never trusted without that check.'
+      operationId: update_sub_account_wallet_sharing_api_v2_workspace_sub_accounts__sub_account_id__wallet_sharing_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sub_account_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Sub Account Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WalletSharingUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkedWorkspaceOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/auto-link-new-workspaces:
+    put:
+      tags:
+      - Workspace Settings
+      summary: Update Auto Link New Workspaces
+      description: 'Toggle the caller''s own (parent/agency) `auto_link_new_workspaces`
+        —
+
+        when on, newly created sub-accounts default to wallet-sharing-on.'
+      operationId: update_auto_link_new_workspaces_api_v2_workspace_auto_link_new_workspaces_put
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AutoLinkNewWorkspacesUpdate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AutoLinkNewWorkspacesUpdate'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/workspace/linked-workspaces:
+    get:
+      tags:
+      - Workspace Settings
+      summary: Get Linked Workspaces
+      description: 'Parent workspace + its direct sub-accounts, with branding/wallet-sharing
+
+        status for the "Linked Workspaces" modal.'
+      operationId: get_linked_workspaces_api_v2_workspace_linked_workspaces_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LinkedWorkspacesOut'
+      security:
+      - HTTPBearer: []
   /api/v2/workspace/members/{user_id}/role:
     put:
       tags:
@@ -10476,6 +10814,75 @@ components:
       - ip_address
       - user_agent
       title: AuditEventOut
+    AutoLinkNewWorkspacesUpdate:
+      properties:
+        auto_link_new_workspaces:
+          type: boolean
+          title: Auto Link New Workspaces
+      type: object
+      required:
+      - auto_link_new_workspaces
+      title: AutoLinkNewWorkspacesUpdate
+      description: Request body for PUT /api/v2/workspace/auto-link-new-workspaces
+    AutoRechargeSettingsOut:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+        min_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Min Balance
+        recharge_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Recharge Amount
+        stripe_payment_method_id:
+          type: string
+          nullable: true
+        last_triggered_at:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - enabled
+      - min_balance
+      - recharge_amount
+      title: AutoRechargeSettingsOut
+      description: Response shape for GET /api/v1/tenants/billing/auto-recharge.
+    AutoRechargeSettingsUpsert:
+      properties:
+        enabled:
+          type: boolean
+          title: Enabled
+          description: When true, requires `stripe_payment_method_id` to also be set
+            — auto-recharge can never be enabled without a saved payment method to
+            charge off-session.
+        min_balance:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Min Balance
+        recharge_amount:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Recharge Amount
+        stripe_payment_method_id:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - enabled
+      - min_balance
+      - recharge_amount
+      title: AutoRechargeSettingsUpsert
+      description: Request body for PUT /api/v1/tenants/billing/auto-recharge.
     BatchCallMetrics:
       properties:
         total_batches:
@@ -10665,6 +11072,16 @@ components:
       - percent_complete
       title: BatchJobProgress
       description: Live progress snapshot for GET /batch-calls/{batch_id}/progress.
+    BillingPortalSessionOut:
+      properties:
+        url:
+          type: string
+          title: Url
+      type: object
+      required:
+      - url
+      title: BillingPortalSessionOut
+      description: Response shape for POST /api/v1/tenants/billing/portal-session.
     BindNumberRequest:
       properties:
         number_id:
@@ -12395,6 +12812,24 @@ components:
       - caller_memory_window
       title: CallerMemorySettingsUpdate
       description: Request body for ``PUT /api/v2/flows/{flow_id}/caller-memory-settings``.
+    CancelPlanOut:
+      properties:
+        status:
+          type: string
+          title: Status
+        cancel_at_period_end:
+          type: boolean
+          title: Cancel At Period End
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+      type: object
+      required:
+      - status
+      - cancel_at_period_end
+      title: CancelPlanOut
+      description: Response shape for POST /api/v1/tenants/plan/cancel.
     CandidateStatusEnum:
       type: string
       enum:
@@ -13312,6 +13747,56 @@ components:
       - created_at
       - invited_by
       title: InviteOut
+    InvoiceListOut:
+      properties:
+        invoices:
+          items:
+            $ref: '#/components/schemas/InvoiceOut'
+          type: array
+          title: Invoices
+      type: object
+      title: InvoiceListOut
+      description: Response shape for GET /api/v1/tenants/billing/invoices.
+    InvoiceOut:
+      properties:
+        id:
+          type: string
+          title: Id
+        number:
+          type: string
+          nullable: true
+        description:
+          type: string
+          nullable: true
+        status:
+          type: string
+          nullable: true
+        currency:
+          type: string
+          nullable: true
+        amount_due:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        amount_paid:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        hosted_invoice_url:
+          type: string
+          nullable: true
+        invoice_pdf:
+          type: string
+          nullable: true
+      type: object
+      required:
+      - id
+      title: InvoiceOut
+      description: Single Stripe invoice entry for the tenant's billing history.
     JobDescriptionCreateManual:
       properties:
         job_title:
@@ -14170,6 +14655,55 @@ components:
       - ar
       - zh
       title: LanguageEnum
+    LinkedWorkspaceOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        is_master:
+          type: boolean
+          title: Is Master
+          default: false
+        is_branded:
+          type: boolean
+          title: Is Branded
+          description: True when this workspace has its own BrandingConfig row on
+            file.
+        using_master_wallet:
+          type: boolean
+          title: Using Master Wallet
+      type: object
+      required:
+      - id
+      - name
+      - is_branded
+      - using_master_wallet
+      title: LinkedWorkspaceOut
+      description: 'One row of the "Linked Workspaces" modal — the parent workspace
+        itself
+
+        or one of its direct sub-accounts.'
+    LinkedWorkspacesOut:
+      properties:
+        auto_link_new_workspaces:
+          type: boolean
+          title: Auto Link New Workspaces
+          description: The parent workspace's own auto-link-new-workspaces setting.
+        workspaces:
+          items:
+            $ref: '#/components/schemas/LinkedWorkspaceOut'
+          type: array
+          title: Workspaces
+      type: object
+      required:
+      - auto_link_new_workspaces
+      - workspaces
+      title: LinkedWorkspacesOut
+      description: Response for GET /api/v2/workspace/linked-workspaces.
     LoginRequest:
       properties:
         email:
@@ -14264,6 +14798,17 @@ components:
       - role
       title: MemberRoleUpdate
       description: Request body for PUT /api/v2/workspace/members/{user_id}/role
+    MinutesByMonthOut:
+      properties:
+        months:
+          items:
+            $ref: '#/components/schemas/MonthlyMinutesUsageOut'
+          type: array
+          title: Months
+      type: object
+      required:
+      - months
+      title: MinutesByMonthOut
     ModelCreate:
       properties:
         model_name:
@@ -14419,6 +14964,36 @@ components:
       type: object
       title: ModelUpdate
       description: Schema for updating a model
+    MonthlyMinutesUsageOut:
+      properties:
+        month:
+          type: string
+          title: Month
+          description: ISO calendar-month key, e.g. '2026-08'.
+        label:
+          type: string
+          title: Label
+          description: Human-readable label, e.g. 'August 2026'.
+        total_minutes:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Minutes
+        call_count:
+          type: integer
+          title: Call Count
+        total_cost:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Cost
+      type: object
+      required:
+      - month
+      - label
+      - total_minutes
+      - call_count
+      - total_cost
+      title: MonthlyMinutesUsageOut
+      description: One row of the "Minutes Usage" table — one calendar month.
     MoveFlowRequest:
       properties:
         targetFolderId:
@@ -15485,6 +16060,42 @@ components:
       - created_at
       - message
       title: PurchasePhoneNumberResponse
+    RecentActivityItemOut:
+      properties:
+        date:
+          type: string
+          format: date-time
+          title: Date
+        type:
+          type: string
+          title: Type
+          default: call_usage
+        description:
+          type: string
+          title: Description
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+          description: Negative — credits deducted for this usage row.
+      type: object
+      required:
+      - date
+      - description
+      - amount
+      title: RecentActivityItemOut
+      description: One row of the "Recent Activity" table.
+    RecentActivityOut:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/RecentActivityItemOut'
+          type: array
+          title: Items
+      type: object
+      required:
+      - items
+      title: RecentActivityOut
     RecordingResponse:
       properties:
         url:
@@ -16949,6 +17560,22 @@ components:
       required:
       - data
       title: SuccessResponse[ApiKeyOut]
+    SuccessResponse_AutoRechargeSettingsOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/AutoRechargeSettingsOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[AutoRechargeSettingsOut]
     SuccessResponse_BatchCallMetrics_:
       properties:
         data:
@@ -16965,6 +17592,22 @@ components:
       required:
       - data
       title: SuccessResponse[BatchCallMetrics]
+    SuccessResponse_BillingPortalSessionOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/BillingPortalSessionOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[BillingPortalSessionOut]
     SuccessResponse_BindingStatusResponse_:
       properties:
         data:
@@ -17205,6 +17848,22 @@ components:
       required:
       - data
       title: SuccessResponse[CallSessionStats]
+    SuccessResponse_CancelPlanOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/CancelPlanOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[CancelPlanOut]
     SuccessResponse_CreatePaymentSessionResponse_:
       properties:
         data:
@@ -17493,6 +18152,22 @@ components:
       required:
       - data
       title: SuccessResponse[InviteOut]
+    SuccessResponse_InvoiceListOut_:
+      properties:
+        data:
+          $ref: '#/components/schemas/InvoiceListOut'
+        message:
+          type: string
+          title: Message
+          default: ''
+        status_code:
+          type: integer
+          title: Status Code
+          default: 200
+      type: object
+      required:
+      - data
+      title: SuccessResponse[InvoiceListOut]
     SuccessResponse_JobDescriptionListOut_:
       properties:
         data:
@@ -19183,11 +19858,31 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Credits Balance
+        price_monthly:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          nullable: true
+        per_minute_rate:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Per Minute Rate
+        subscription_status:
+          type: string
+          nullable: true
+        current_period_end:
+          type: string
+          format: date-time
+          nullable: true
+        cancel_at_period_end:
+          type: boolean
+          title: Cancel At Period End
+          default: false
       type: object
       required:
       - minutes_used_this_cycle
       - minutes_remaining
       - credits_balance
+      - per_minute_rate
       title: TenantPlanOut
       description: Response shape for GET /api/v1/tenants/plan — current plan + entitlements.
     TokenResponse:
@@ -19690,6 +20385,16 @@ components:
       - male
       - female
       title: VoiceTypeEnum
+    WalletSharingUpdate:
+      properties:
+        using_master_wallet:
+          type: boolean
+          title: Using Master Wallet
+      type: object
+      required:
+      - using_master_wallet
+      title: WalletSharingUpdate
+      description: Request body for PUT /api/v2/workspace/sub-accounts/{sub_account_id}/wallet-sharing
     WebhookDeliveryOut:
       properties:
         id:
@@ -19786,6 +20491,47 @@ components:
       - ai_dynamic
       - ai_custom
       title: WelcomeMessageTypeEnum
+    WorkspaceBreakdownRowOut:
+      properties:
+        workspace_id:
+          type: string
+          format: uuid
+          nullable: true
+        name:
+          type: string
+          title: Name
+        is_master:
+          type: boolean
+          title: Is Master
+          default: false
+        this_month:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: This Month
+        all_time:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: All Time
+        avg_monthly:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Avg Monthly
+        growth_percent:
+          type: number
+          nullable: true
+      type: object
+      required:
+      - name
+      - this_month
+      - all_time
+      - avg_monthly
+      title: WorkspaceBreakdownRowOut
+      description: 'One row of the agency billing-dashboard breakdown table — either
+        a
+
+        real workspace (the "Master" parent tenant or one of its direct
+
+        sub-accounts) or the synthetic "Total" summary row.'
     WorkspaceCreatedOut:
       properties:
         id:
@@ -19847,6 +20593,53 @@ components:
       title: WorkspaceOut
       description: Full (non-internal) workspace projection. Hides ``deleted_at``,
         ``schema_name`` etc.
+    WorkspaceUsageBreakdownOut:
+      properties:
+        period:
+          type: string
+          title: Period
+          description: Reserved for a future period selector; only 'this_month' is
+            supported today.
+          default: this_month
+        this_month_total:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: This Month Total
+        this_month_growth_percent:
+          type: number
+          nullable: true
+        all_time_total:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: All Time Total
+        avg_per_workspace_this_month:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Avg Per Workspace This Month
+        workspace_count:
+          type: integer
+          title: Workspace Count
+        active_workspace_count_this_month:
+          type: integer
+          title: Active Workspace Count This Month
+        rows:
+          items:
+            $ref: '#/components/schemas/WorkspaceBreakdownRowOut'
+          type: array
+          title: Rows
+        totals:
+          $ref: '#/components/schemas/WorkspaceBreakdownRowOut'
+      type: object
+      required:
+      - this_month_total
+      - all_time_total
+      - avg_per_workspace_this_month
+      - workspace_count
+      - active_workspace_count_this_month
+      - rows
+      - totals
+      title: WorkspaceUsageBreakdownOut
+      description: Response for GET /api/v2/workspace/usage/breakdown.
     WorkspaceUsageOut:
       properties:
         minutes_used_this_cycle:

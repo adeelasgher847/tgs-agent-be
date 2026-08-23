@@ -174,6 +174,109 @@ class SubAccountListOut(BaseModel):
     page_size: int
 
 
+class WorkspaceBreakdownRowOut(BaseModel):
+    """One row of the agency billing-dashboard breakdown table — either a
+    real workspace (the "Master" parent tenant or one of its direct
+    sub-accounts) or the synthetic "Total" summary row."""
+
+    workspace_id: uuid.UUID | None = None
+    name: str
+    is_master: bool = False
+    this_month: Decimal
+    all_time: Decimal
+    avg_monthly: Decimal
+    growth_percent: float | None = Field(
+        default=None,
+        description=(
+            "% change of this-month-to-date spend vs. last full calendar "
+            "month. None when last month had $0 spend (avoids divide-by-zero "
+            "— the mockup renders this as '—')."
+        ),
+    )
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class WorkspaceUsageBreakdownOut(BaseModel):
+    """Response for GET /api/v2/workspace/usage/breakdown."""
+
+    period: str = Field(
+        default="this_month",
+        description="Reserved for a future period selector; only 'this_month' is supported today.",
+    )
+    this_month_total: Decimal
+    this_month_growth_percent: float | None = None
+    all_time_total: Decimal
+    avg_per_workspace_this_month: Decimal
+    workspace_count: int
+    active_workspace_count_this_month: int
+    rows: list[WorkspaceBreakdownRowOut]
+    totals: WorkspaceBreakdownRowOut
+
+
+class RecentActivityItemOut(BaseModel):
+    """One row of the "Recent Activity" table."""
+
+    date: datetime
+    type: str = "call_usage"
+    description: str
+    amount: Decimal = Field(description="Negative — credits deducted for this usage row.")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RecentActivityOut(BaseModel):
+    items: list[RecentActivityItemOut]
+
+
+class MonthlyMinutesUsageOut(BaseModel):
+    """One row of the "Minutes Usage" table — one calendar month."""
+
+    month: str = Field(description="ISO calendar-month key, e.g. '2026-08'.")
+    label: str = Field(description="Human-readable label, e.g. 'August 2026'.")
+    total_minutes: Decimal
+    call_count: int
+    total_cost: Decimal
+
+
+class MinutesByMonthOut(BaseModel):
+    months: list[MonthlyMinutesUsageOut]
+
+
+class WalletSharingUpdate(BaseModel):
+    """Request body for PUT /api/v2/workspace/sub-accounts/{sub_account_id}/wallet-sharing"""
+    using_master_wallet: bool
+
+
+class AutoLinkNewWorkspacesUpdate(BaseModel):
+    """Request body for PUT /api/v2/workspace/auto-link-new-workspaces"""
+    auto_link_new_workspaces: bool
+
+
+class LinkedWorkspaceOut(BaseModel):
+    """One row of the "Linked Workspaces" modal — the parent workspace itself
+    or one of its direct sub-accounts."""
+
+    id: uuid.UUID
+    name: str
+    is_master: bool = False
+    is_branded: bool = Field(
+        description="True when this workspace has its own BrandingConfig row on file."
+    )
+    using_master_wallet: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LinkedWorkspacesOut(BaseModel):
+    """Response for GET /api/v2/workspace/linked-workspaces."""
+
+    auto_link_new_workspaces: bool = Field(
+        description="The parent workspace's own auto-link-new-workspaces setting."
+    )
+    workspaces: list[LinkedWorkspaceOut]
+
+
 class MemberRoleUpdate(BaseModel):
     """Request body for PUT /api/v2/workspace/members/{user_id}/role"""
     role: str

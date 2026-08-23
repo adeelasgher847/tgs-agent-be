@@ -1,14 +1,23 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
-from app.schemas.tenant import TenantCreate, TenantPlanOut
+from app.schemas.tenant import (
+    TenantCreate,
+    TenantPlanOut,
+    BillingPortalSessionOut,
+    CancelPlanOut,
+    InvoiceListOut,
+    InvoiceOut,
+    AutoRechargeSettingsOut,
+    AutoRechargeSettingsUpsert,
+)
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
 from app.schemas.base import SuccessResponse
 from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.role import Role
-from app.api.deps import get_db, get_current_user_jwt, require_admin
+from app.api.deps import get_db, get_current_user_jwt, require_admin, require_billing
 from app.core.security import create_user_token, create_refresh_token_value, refresh_token_expires_at
 from app.utils.response import create_success_response
 import re
@@ -20,6 +29,7 @@ from sqlalchemy import update
 from app.core.logger import logger
 from app.services.stripe_service import StripeService
 from app.services.role_service import get_default_product_id
+from app.services.audit_service import log_audit_event
 
 router = APIRouter()
 
@@ -69,7 +79,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
         name=tenant_in.name,
         schema_name=schema_name,
         status="pending_payment",
-        credits=50
+        credits=0
     )
     
     db.add(db_tenant)
@@ -652,7 +662,10 @@ def get_tenant_plan(
     db: Session = Depends(get_db),
 ):
     """Current core-product plan + entitlements for the caller's active tenant."""
+    from decimal import Decimal
+
     from app.models.plan import Plan
+    from app.models.pricing_configs import PricingConfig
     from app.services.billing_service import BillingService
 
     if not current_user.current_tenant_id:
@@ -669,6 +682,9 @@ def get_tenant_plan(
 
     _, used_this_cycle, remaining = BillingService.get_included_minutes_status(db, tenant.id)
 
+    pricing_config = db.query(PricingConfig).filter(PricingConfig.workspace_id == tenant.id).first()
+    per_minute_rate = pricing_config.per_minute_rate if pricing_config else Decimal("0.12")
+
     return TenantPlanOut(
         plan_name=plan.name if plan else None,
         display_name=plan.display_name if plan else None,
@@ -680,4 +696,323 @@ def get_tenant_plan(
         max_subaccounts=plan.max_subaccounts if plan else None,
         features=plan.features if plan and plan.features else [],
         credits_balance=tenant.credits or 0,
+        price_monthly=(Decimal(plan.price_monthly) / Decimal("100")) if plan and plan.price_monthly else None,
+        per_minute_rate=per_minute_rate,
+        subscription_status=subscription.status if subscription else None,
+        current_period_end=subscription.current_period_end if subscription else None,
+        cancel_at_period_end=subscription.cancel_at_period_end if subscription else False,
+    )
+
+
+@router.post("/billing/portal-session", response_model=SuccessResponse[BillingPortalSessionOut])
+def create_billing_portal_session(
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a Stripe billing-portal session for the caller's current tenant.
+
+    Lets the tenant manage payment methods and view Stripe-hosted invoices
+    through Stripe's own hosted portal (the "Manage Subscription" button).
+
+    Admin-only (not `require_billing`): Stripe's default billing-portal
+    configuration commonly lets the customer cancel the subscription
+    directly through the hosted portal UI, which would let a billing_only
+    user bypass the admin-only /plan/cancel gate below.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if not tenant.stripe_customer_id:
+        try:
+            stripe_customer_id = StripeService.create_customer(
+                tenant=tenant,
+                email=current_user.email,
+                user=current_user
+            )
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+        tenant.stripe_customer_id = stripe_customer_id
+        db.commit()
+    else:
+        stripe_customer_id = tenant.stripe_customer_id
+
+    return_url = f"{settings.FRONTEND_URL}/billing"
+    try:
+        portal_session = StripeService.create_portal_session(stripe_customer_id, return_url)
+        return create_success_response(
+            BillingPortalSessionOut(url=portal_session["url"]),
+            "Billing portal session created successfully"
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+
+@router.post("/plan/cancel", response_model=SuccessResponse[CancelPlanOut])
+def cancel_tenant_plan(
+    request: Request,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Cancel the tenant's active core-plan subscription at the end of the
+    current billing period (the tenant keeps access through what's already
+    paid for). The "Cancel Plan" button.
+    """
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = current_user.current_tenant_id
+
+    # Not get_workspace_subscription() — that filters status == "active" only,
+    # which would 404 a trialing/past_due subscription that still has a real
+    # stripe_subscription_id and is clearly cancelable.
+    from app.models.subscription import Subscription
+
+    subscription = (
+        db.query(Subscription)
+        .filter(
+            Subscription.tenant_id == tenant_id,
+            Subscription.crm_type.is_(None),
+            Subscription.status.in_(["active", "trialing", "past_due"]),
+        )
+        .first()
+    )
+    if not subscription or not subscription.stripe_subscription_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No cancelable plan subscription found for this tenant"
+        )
+
+    try:
+        stripe_subscription = StripeService.cancel_subscription(
+            subscription.stripe_subscription_id, at_period_end=True
+        )
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+    old_value = {
+        "status": subscription.status,
+        "cancel_at_period_end": subscription.cancel_at_period_end,
+    }
+
+    subscription.cancel_at_period_end = True
+    stripe_status = stripe_subscription.get("status") if isinstance(stripe_subscription, dict) else getattr(stripe_subscription, "status", None)
+    if stripe_status:
+        subscription.status = stripe_status
+    db.commit()
+    db.refresh(subscription)
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="billing.plan_canceled",
+        resource_type="subscription",
+        resource_id=subscription.id,
+        old_value=old_value,
+        new_value={
+            "status": subscription.status,
+            "cancel_at_period_end": subscription.cancel_at_period_end,
+        },
+        actor_user_id=current_user.id,
+    )
+
+    return create_success_response(
+        CancelPlanOut(
+            status=subscription.status,
+            cancel_at_period_end=subscription.cancel_at_period_end,
+            current_period_end=subscription.current_period_end,
+        ),
+        "Plan canceled — access continues through the end of the current billing period"
+    )
+
+
+@router.get("/billing/invoices", response_model=SuccessResponse[InvoiceListOut])
+def get_tenant_invoices(
+    current_user: User = Depends(get_current_user_jwt),
+    billing_user: User = Depends(require_billing),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the tenant's Stripe invoice history (date, invoice number,
+    description, amount, status, hosted PDF download URL).
+    """
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant = db.query(Tenant).filter(Tenant.id == current_user.current_tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if not tenant.stripe_customer_id:
+        return create_success_response(InvoiceListOut(invoices=[]), "No invoices found")
+
+    try:
+        raw_invoices = StripeService.get_invoices(tenant.stripe_customer_id, limit=10)
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+    invoices: list[InvoiceOut] = []
+    for inv in raw_invoices:
+        description = inv.get("description") if isinstance(inv, dict) else getattr(inv, "description", None)
+        if not description:
+            lines = inv.get("lines") if isinstance(inv, dict) else getattr(inv, "lines", None)
+            line_data = (lines.get("data") if isinstance(lines, dict) else getattr(lines, "data", None)) if lines else None
+            if line_data:
+                first_line = line_data[0]
+                description = first_line.get("description") if isinstance(first_line, dict) else getattr(first_line, "description", None)
+
+        created = inv.get("created") if isinstance(inv, dict) else getattr(inv, "created", None)
+        created_at = datetime.fromtimestamp(created, tz=timezone.utc) if created else None
+
+        amount_due = inv.get("amount_due") if isinstance(inv, dict) else getattr(inv, "amount_due", None)
+        amount_paid = inv.get("amount_paid") if isinstance(inv, dict) else getattr(inv, "amount_paid", None)
+
+        invoices.append(InvoiceOut(
+            id=inv.get("id") if isinstance(inv, dict) else inv.id,
+            number=inv.get("number") if isinstance(inv, dict) else getattr(inv, "number", None),
+            description=description,
+            status=inv.get("status") if isinstance(inv, dict) else getattr(inv, "status", None),
+            currency=inv.get("currency") if isinstance(inv, dict) else getattr(inv, "currency", None),
+            amount_due=(Decimal(amount_due) / Decimal("100")) if amount_due is not None else None,
+            amount_paid=(Decimal(amount_paid) / Decimal("100")) if amount_paid is not None else None,
+            created_at=created_at,
+            hosted_invoice_url=inv.get("hosted_invoice_url") if isinstance(inv, dict) else getattr(inv, "hosted_invoice_url", None),
+            invoice_pdf=inv.get("invoice_pdf") if isinstance(inv, dict) else getattr(inv, "invoice_pdf", None),
+        ))
+
+    return create_success_response(InvoiceListOut(invoices=invoices), "Invoices fetched successfully")
+
+
+@router.get("/billing/auto-recharge", response_model=SuccessResponse[AutoRechargeSettingsOut])
+def get_auto_recharge_settings(
+    current_user: User = Depends(get_current_user_jwt),
+    billing_user: User = Depends(require_billing),
+    db: Session = Depends(get_db),
+):
+    """
+    Current wallet auto-recharge configuration for the caller's active tenant
+    (min-balance threshold, recharge amount, saved payment method, cooldown
+    state). Returns sensible defaults (enabled=false) when no config row
+    exists yet, rather than 404ing — most tenants won't have configured this.
+    """
+    from decimal import Decimal
+
+    from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = current_user.current_tenant_id
+
+    config = db.query(WalletAutoRechargeConfig).filter(
+        WalletAutoRechargeConfig.workspace_id == tenant_id,
+        WalletAutoRechargeConfig.deleted_at.is_(None),
+    ).first()
+
+    if not config:
+        return create_success_response(
+            AutoRechargeSettingsOut(
+                enabled=False,
+                min_balance=Decimal("10.00"),
+                recharge_amount=Decimal("20.00"),
+                stripe_payment_method_id=None,
+                last_triggered_at=None,
+            ),
+            "Auto-recharge settings fetched successfully"
+        )
+
+    return create_success_response(
+        AutoRechargeSettingsOut.model_validate(config),
+        "Auto-recharge settings fetched successfully"
+    )
+
+
+@router.put("/billing/auto-recharge", response_model=SuccessResponse[AutoRechargeSettingsOut])
+def upsert_auto_recharge_settings(
+    payload: AutoRechargeSettingsUpsert,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Create or update wallet auto-recharge settings for the caller's active
+    tenant. When `stripe_payment_method_id` is provided, it must belong to
+    this tenant's own Stripe customer — verified against Stripe's own
+    payment-method listing so a tenant can't point auto-recharge at an
+    arbitrary/other-customer's saved card. `min_balance`/`recharge_amount`
+    bounds are enforced at the schema level (`AutoRechargeSettingsUpsert`).
+    """
+    from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = current_user.current_tenant_id
+
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if payload.stripe_payment_method_id:
+        if not tenant.stripe_customer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant has no Stripe customer on file yet; add a payment method first"
+            )
+        try:
+            payment_methods = StripeService.get_customer_payment_methods(tenant.stripe_customer_id)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+        valid_ids = {
+            pm.get("id") if isinstance(pm, dict) else getattr(pm, "id", None)
+            for pm in payment_methods
+        }
+        if payload.stripe_payment_method_id not in valid_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="stripe_payment_method_id does not belong to this tenant's Stripe customer"
+            )
+
+    config = db.query(WalletAutoRechargeConfig).filter(
+        WalletAutoRechargeConfig.workspace_id == tenant_id,
+        WalletAutoRechargeConfig.deleted_at.is_(None),
+    ).first()
+
+    if not config:
+        config = WalletAutoRechargeConfig(workspace_id=tenant_id)
+        db.add(config)
+
+    config.enabled = payload.enabled
+    config.min_balance = payload.min_balance
+    config.recharge_amount = payload.recharge_amount
+    config.stripe_payment_method_id = payload.stripe_payment_method_id
+
+    db.commit()
+    db.refresh(config)
+
+    return create_success_response(
+        AutoRechargeSettingsOut.model_validate(config),
+        "Auto-recharge settings updated successfully"
     )
