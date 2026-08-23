@@ -2,7 +2,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin, require_billing, get_current_workspace
+from app.api.deps import get_db, require_admin, require_billing, get_current_workspace, require_workspace_owner
 from app.models.branding_configs import BrandingConfig
 from app.models.pricing_configs import PricingConfig
 import secrets
@@ -24,6 +24,12 @@ from app.schemas.workspace import (
     SubAccountOut,
     SubAccountCreateOut,
     SubAccountListOut,
+    WorkspaceBreakdownRowOut,
+    WorkspaceUsageBreakdownOut,
+    RecentActivityItemOut,
+    RecentActivityOut,
+    MonthlyMinutesUsageOut,
+    MinutesByMonthOut,
 )
 from app.services.credit_service import credit_service
 
@@ -188,6 +194,355 @@ def get_workspace_usage(
         overage_minutes=overage_minutes,
         overage_cost=overage_cost,
         available_surcharges=_surcharge_catalog_out(),
+    )
+
+
+# ── Agency billing-dashboard reporting (owner-only) ──────────────────────────
+#
+# GET /workspace/usage/breakdown, /recent-activity, /minutes-by-month, and the
+# .csv variants of the first and third. Scoped to {caller's current tenant} ∪
+# {its direct sub_accounts} — never to all Tenant/UsageRecord rows. Gated by
+# require_workspace_owner (is_creator=True on the caller's membership row for
+# the *current* tenant), not require_admin: per product, a non-creator admin
+# on the parent, and any user (including that sub-account's own creator)
+# viewing from a sub-account's tenant context, must get 403 — "owner" isn't
+# one of the canonical ranked roles, so this can't be expressed with
+# require_admin/has_rank.
+
+
+def _month_bounds(dt):
+    """(start, end_exclusive) of the UTC calendar month containing dt."""
+    start = dt.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    if start.month == 12:
+        end = start.replace(year=start.year + 1, month=1)
+    else:
+        end = start.replace(month=start.month + 1)
+    return start, end
+
+
+def _shift_months(dt, n: int):
+    """dt shifted by n calendar months (n may be negative), day pinned to 1."""
+    month_index = dt.year * 12 + (dt.month - 1) + n
+    year, month = divmod(month_index, 12)
+    return dt.replace(year=year, month=month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+
+_SUPPORTED_PERIODS = ("this_month",)
+
+
+def _validate_period(period: str) -> None:
+    """Reject an unrecognized `period` instead of silently serving
+    this_month data for it — only 'this_month' is implemented today."""
+    if period not in _SUPPORTED_PERIODS:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Unsupported period '{period}'. Supported: {', '.join(_SUPPORTED_PERIODS)}.",
+        )
+
+
+def _workspace_family(db: Session, tenant_id: uuid.UUID) -> tuple[Tenant, list[Tenant]]:
+    """(parent_tenant, [parent, *direct sub_accounts]) — the exact scope every
+    aggregation query below must stay within.
+
+    Family-level billing reporting is only meaningful from the *root*
+    workspace's own tenant context. A sub-account has no sub_accounts of its
+    own, so calling this from a sub-account's context would silently degrade
+    to a harmless single-row response rather than leaking the parent
+    family's data — but product explicitly wants a hard 403 here (even for
+    that sub-account's own creator), so it's rejected outright rather than
+    left to degrade quietly.
+    """
+    parent = db.query(Tenant).filter(Tenant.id == tenant_id, Tenant.deleted_at.is_(None)).first()
+    if parent is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+    if parent.parent_workspace_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Billing breakdown reporting is only available from the master workspace, not a sub-account.",
+        )
+    subs = (
+        db.query(Tenant)
+        .filter(Tenant.parent_workspace_id == parent.id, Tenant.deleted_at.is_(None))
+        .order_by(Tenant.created_at.asc())
+        .all()
+    )
+    return parent, [parent, *subs]
+
+
+def _sums_by_workspace(db: Session, tenant_ids: list, start=None, end=None) -> dict:
+    """{workspace_id: Decimal(sum(credits_charged))} for the given family scope."""
+    from decimal import Decimal
+    from sqlalchemy import func
+
+    if not tenant_ids:
+        return {}
+    q = db.query(UsageRecord.workspace_id, func.coalesce(func.sum(UsageRecord.credits_charged), 0)).filter(
+        UsageRecord.workspace_id.in_(tenant_ids)
+    )
+    if start is not None:
+        q = q.filter(UsageRecord.recorded_at >= start)
+    if end is not None:
+        q = q.filter(UsageRecord.recorded_at < end)
+    return {wid: Decimal(str(total)) for wid, total in q.group_by(UsageRecord.workspace_id).all()}
+
+
+def _build_breakdown(db: Session, parent: Tenant, family: list) -> WorkspaceUsageBreakdownOut:
+    from datetime import datetime, timezone
+    from decimal import Decimal
+
+    now = datetime.now(timezone.utc)
+    this_month_start, this_month_end = _month_bounds(now)
+    last_month_start, last_month_end = _month_bounds(_shift_months(now, -1))
+
+    tenant_ids = [t.id for t in family]
+    this_month_sums = _sums_by_workspace(db, tenant_ids, this_month_start, this_month_end)
+    last_month_sums = _sums_by_workspace(db, tenant_ids, last_month_start, last_month_end)
+    all_time_sums = _sums_by_workspace(db, tenant_ids)
+
+    rows: list[WorkspaceBreakdownRowOut] = []
+    total_this_month = Decimal("0")
+    total_all_time = Decimal("0")
+    total_last_month = Decimal("0")
+    total_avg_monthly = Decimal("0")
+    active_this_month = 0
+
+    for t in family:
+        this_month = this_month_sums.get(t.id, Decimal("0"))
+        last_month = last_month_sums.get(t.id, Decimal("0"))
+        all_time = all_time_sums.get(t.id, Decimal("0"))
+
+        created_at = t.created_at or now
+        months_since_created = max(
+            1, (now.year - created_at.year) * 12 + (now.month - created_at.month) + 1
+        )
+        avg_monthly = all_time / months_since_created
+
+        growth_percent = None
+        if last_month != 0:
+            growth_percent = float((this_month - last_month) / last_month * 100)
+
+        if this_month > 0:
+            active_this_month += 1
+
+        total_this_month += this_month
+        total_all_time += all_time
+        total_last_month += last_month
+        total_avg_monthly += avg_monthly
+
+        rows.append(
+            WorkspaceBreakdownRowOut(
+                workspace_id=t.id,
+                name=t.name,
+                is_master=(t.id == parent.id),
+                this_month=this_month,
+                all_time=all_time,
+                avg_monthly=avg_monthly,
+                growth_percent=growth_percent,
+            )
+        )
+
+    workspace_count = len(family)
+    avg_per_workspace_this_month = (total_this_month / workspace_count) if workspace_count else Decimal("0")
+
+    this_month_growth_percent = None
+    if total_last_month != 0:
+        this_month_growth_percent = float((total_this_month - total_last_month) / total_last_month * 100)
+
+    totals = WorkspaceBreakdownRowOut(
+        workspace_id=None,
+        name="Total",
+        is_master=False,
+        this_month=total_this_month,
+        all_time=total_all_time,
+        avg_monthly=total_avg_monthly,
+        growth_percent=this_month_growth_percent,
+    )
+
+    return WorkspaceUsageBreakdownOut(
+        this_month_total=total_this_month,
+        this_month_growth_percent=this_month_growth_percent,
+        all_time_total=total_all_time,
+        avg_per_workspace_this_month=avg_per_workspace_this_month,
+        workspace_count=workspace_count,
+        active_workspace_count_this_month=active_this_month,
+        rows=rows,
+        totals=totals,
+        period="this_month",
+    )
+
+
+def _build_minutes_by_month(db: Session, family: list) -> MinutesByMonthOut:
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from sqlalchemy import func
+
+    now = datetime.now(timezone.utc)
+    tenant_ids = [t.id for t in family]
+
+    months: list[MonthlyMinutesUsageOut] = []
+    for offset in (0, -1, -2):
+        ref = _shift_months(now, offset)
+        start, end = _month_bounds(ref)
+
+        row = (
+            db.query(
+                func.coalesce(func.sum(UsageRecord.billable_minutes), 0),
+                func.count(UsageRecord.call_id),
+                func.coalesce(func.sum(UsageRecord.credits_charged), 0),
+            )
+            .filter(
+                UsageRecord.workspace_id.in_(tenant_ids),
+                UsageRecord.recorded_at >= start,
+                UsageRecord.recorded_at < end,
+            )
+            .first()
+        )
+        total_minutes, call_count, total_cost = row if row else (0, 0, 0)
+
+        months.append(
+            MonthlyMinutesUsageOut(
+                month=start.strftime("%Y-%m"),
+                label=start.strftime("%B %Y"),
+                total_minutes=Decimal(str(total_minutes)),
+                call_count=int(call_count or 0),
+                total_cost=Decimal(str(total_cost)),
+            )
+        )
+
+    # Oldest first, matching how "last 3 months" reads left-to-right in the mockup.
+    months.reverse()
+    return MinutesByMonthOut(months=months)
+
+
+def _build_recent_activity(db: Session, family: list) -> RecentActivityOut:
+    tenant_ids = [t.id for t in family]
+
+    records = (
+        db.query(UsageRecord)
+        .filter(UsageRecord.workspace_id.in_(tenant_ids))
+        .order_by(UsageRecord.recorded_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    items = [
+        RecentActivityItemOut(
+            date=r.recorded_at,
+            type="call_usage",
+            description=f"Call ID - {r.call_id}" if r.call_id else f"Call ID - {r.id}",
+            amount=-r.credits_charged,
+        )
+        for r in records
+    ]
+    return RecentActivityOut(items=items)
+
+
+def _csv_response(rows: list[list], header: list[str], filename: str) -> Response:
+    import csv
+    import io
+
+    buf = io.StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(header)
+    writer.writerows(rows)
+    return Response(
+        content=buf.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@v2_router.get("/usage/breakdown", response_model=WorkspaceUsageBreakdownOut)
+def get_workspace_usage_breakdown(
+    period: str = "this_month",
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Agency billing-dashboard breakdown: spend per workspace (parent +
+    direct sub-accounts) for the current billing period. Owner-only —
+    `period` is a placeholder for a future selector; only 'this_month' is
+    supported today."""
+    _validate_period(period)
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    return _build_breakdown(db, parent, family)
+
+
+@v2_router.get("/usage/breakdown.csv")
+def get_workspace_usage_breakdown_csv(
+    period: str = "this_month",
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    _validate_period(period)
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    breakdown = _build_breakdown(db, parent, family)
+
+    rows = [
+        [
+            r.name,
+            "Master" if r.is_master else "Sub-Account",
+            str(r.this_month),
+            str(r.all_time),
+            str(r.avg_monthly),
+            "" if r.growth_percent is None else f"{r.growth_percent:.2f}",
+        ]
+        for r in breakdown.rows
+    ]
+    rows.append(
+        [
+            breakdown.totals.name,
+            "",
+            str(breakdown.totals.this_month),
+            str(breakdown.totals.all_time),
+            str(breakdown.totals.avg_monthly),
+            "" if breakdown.totals.growth_percent is None else f"{breakdown.totals.growth_percent:.2f}",
+        ]
+    )
+    return _csv_response(
+        rows,
+        header=["Workspace", "Type", "This Month", "All Time", "Avg Monthly", "Growth %"],
+        filename="workspace-usage-breakdown.csv",
+    )
+
+
+@v2_router.get("/usage/recent-activity", response_model=RecentActivityOut)
+def get_workspace_recent_activity(
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Last 10 spend transactions across the parent tenant + its direct
+    sub-accounts. Owner-only."""
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    return _build_recent_activity(db, family)
+
+
+@v2_router.get("/usage/minutes-by-month", response_model=MinutesByMonthOut)
+def get_workspace_minutes_by_month(
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Minutes/calls/cost for the last 3 calendar months (current + 2 prior),
+    aggregated across the parent tenant + its direct sub-accounts. Owner-only."""
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    return _build_minutes_by_month(db, family)
+
+
+@v2_router.get("/usage/minutes-by-month.csv")
+def get_workspace_minutes_by_month_csv(
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    minutes = _build_minutes_by_month(db, family)
+
+    rows = [
+        [m.label, str(m.total_minutes), str(m.call_count), str(m.total_cost)]
+        for m in minutes.months
+    ]
+    return _csv_response(
+        rows,
+        header=["Month", "Total Minutes", "Call Count", "Total Cost"],
+        filename="workspace-minutes-by-month.csv",
     )
 
 

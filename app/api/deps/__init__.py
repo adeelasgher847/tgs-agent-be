@@ -55,6 +55,7 @@ from app.api.deps.rbac import (
     require_member,
     require_member_or_admin,
     require_active_subscription,
+    require_workspace_owner,
 )
 from app.api.deps.tokens import issue_tokens_for_user
 
@@ -102,6 +103,7 @@ __all__ = [
     "require_member",
     "require_member_or_admin",
     "require_active_subscription",
+    "require_workspace_owner",
     # tokens
     "issue_tokens_for_user",
 ]
