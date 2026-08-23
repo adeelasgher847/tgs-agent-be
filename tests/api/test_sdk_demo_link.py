@@ -31,6 +31,10 @@ def tenant(db) -> Tenant:
         name=f"DemoSdkWS-{uuid.uuid4().hex[:8]}",
         schema_name=f"demo_sdk_ws_{uuid.uuid4().hex[:8]}",
         status="active",
+        # demo calls now go through the same plan-aware credit gate as real
+        # calls (credit_service.has_sufficient_credits) — give the tenant a
+        # positive balance so existing happy-path tests aren't blocked by it.
+        credits=Decimal("100"),
     )
     db.add(t)
     db.commit()
@@ -316,6 +320,189 @@ class TestDemoCallToken:
         )
         assert resp.status_code == 200, resp.text
         assert "livekit_token" in resp.json()
+
+
+@pytest.mark.usefixtures("db")
+class TestDemoCallTokenCreditGate:
+    """demo_call_token bills the demo link's owning tenant through the same
+    plan-aware credit_service.has_sufficient_credits gate used for real
+    inbound/outbound calls — see app/routers/sdk.py."""
+
+    def test_insufficient_credits_returns_403(
+        self, client: TestClient, db, tenant, flow, demo_link, mock_livekit
+    ):
+        tenant.credits = Decimal("0")
+        db.add(tenant)
+        db.commit()
+
+        resp = client.post(
+            f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+            json=_body("visitor-no-credits"),
+        )
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["error"]["code"] == "demo_unavailable"
+        # No call session should have been created for the rejected call.
+        assert (
+            db.query(CallSession)
+            .filter(CallSession.tenant_id == tenant.id)
+            .count()
+            == 0
+        )
+
+    def test_sufficient_credits_allows_call(
+        self, client: TestClient, db, tenant, flow, demo_link, mock_livekit
+    ):
+        tenant.credits = Decimal("5")
+        db.add(tenant)
+        db.commit()
+
+        resp = client.post(
+            f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+            json=_body("visitor-has-credits"),
+        )
+        assert resp.status_code == 200, resp.text
+
+    def test_elevenlabs_surcharge_decline_reason_is_specific_in_logs(
+        self, client: TestClient, db, tenant, agent, flow, demo_link, mock_livekit, caplog
+    ):
+        """The `agent` fixture is configured with tts_provider_slug="elevenlabs"
+        (see the fixture above). With an active plan (included minutes remain)
+        but a zero credit balance, the rejection must be attributable in logs
+        to the ElevenLabs surcharge specifically — not the generic "insufficient
+        credits" message — per the has_sufficient_credits `reason` contract."""
+        from datetime import timedelta
+
+        from app.models.plan import Plan
+        from app.models.subscription import Subscription
+
+        plan = Plan(
+            name=f"studio_{uuid.uuid4().hex[:8]}",
+            display_name="Studio",
+            price_monthly=9900,
+            crm_type=None,
+            included_minutes=100,
+            monthly_credits=Decimal("50.00"),
+            is_active=True,
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        now = datetime.now(timezone.utc)
+        sub = Subscription(
+            user_id=agent.created_by,
+            tenant_id=tenant.id,
+            plan_id=plan.id,
+            crm_type=None,
+            status="active",
+            current_period_start=now - timedelta(days=1),
+            current_period_end=now + timedelta(days=29),
+        )
+        db.add(sub)
+        tenant.credits = Decimal("0")
+        db.add(tenant)
+        db.commit()
+
+        import logging
+
+        with caplog.at_level(logging.INFO, logger="app.routers.sdk"):
+            resp = client.post(
+                f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+                json=_body("visitor-elevenlabs-blocked"),
+            )
+
+        assert resp.status_code == 403, resp.text
+        assert resp.json()["error"]["code"] == "demo_unavailable"
+        assert any(
+            "ElevenLabs" in record.getMessage() for record in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+
+    def test_byo_elevenlabs_not_surcharged_even_at_zero_credits(
+        self, client: TestClient, db, tenant, agent, flow, demo_link, mock_livekit
+    ):
+        """Fix #1: a demo call for an agent using BYO ElevenLabs must NOT be
+        gated by the ElevenLabs surcharge rule — the platform incurs zero
+        ElevenLabs cost, so a plan with remaining included minutes is enough
+        to allow the call even at a zero credit balance."""
+        from datetime import timedelta
+
+        from app.models.plan import Plan
+        from app.models.subscription import Subscription
+
+        agent.tts_provider_slug = "11labs_byo"
+        agent.encrypted_elevenlabs_api_key = "byo-ciphertext"
+        db.add(agent)
+
+        plan = Plan(
+            name=f"studio_{uuid.uuid4().hex[:8]}",
+            display_name="Studio",
+            price_monthly=9900,
+            crm_type=None,
+            included_minutes=100,
+            monthly_credits=Decimal("50.00"),
+            is_active=True,
+        )
+        db.add(plan)
+        db.commit()
+        db.refresh(plan)
+
+        now = datetime.now(timezone.utc)
+        sub = Subscription(
+            user_id=agent.created_by,
+            tenant_id=tenant.id,
+            plan_id=plan.id,
+            crm_type=None,
+            status="active",
+            current_period_start=now - timedelta(days=1),
+            current_period_end=now + timedelta(days=29),
+        )
+        db.add(sub)
+        tenant.credits = Decimal("0")
+        db.add(tenant)
+        db.commit()
+
+        with patch(
+            "app.core.db_encryption.decrypt_stored_elevenlabs_key",
+            return_value="xi-byo-key",
+        ):
+            resp = client.post(
+                f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+                json=_body("visitor-byo-elevenlabs"),
+            )
+
+        assert resp.status_code == 200, resp.text
+
+    def test_byo_elevenlabs_decrypt_failure_returns_demo_error_not_500(
+        self, client: TestClient, db, tenant, agent, flow, demo_link, mock_livekit
+    ):
+        """Fix #2: resolve_tts_runtime() raises RuntimeError when a stored BYO
+        ElevenLabs key fails to decrypt. demo_call_token must degrade
+        gracefully like every other precondition check here, not 500."""
+        agent.tts_provider_slug = "11labs_byo"
+        agent.encrypted_elevenlabs_api_key = "corrupted-ciphertext"
+        db.add(agent)
+        tenant.credits = Decimal("100")
+        db.add(tenant)
+        db.commit()
+
+        with patch(
+            "app.core.db_encryption.decrypt_stored_elevenlabs_key",
+            side_effect=RuntimeError("corrupted ciphertext"),
+        ):
+            resp = client.post(
+                f"/api/v1/sdk/demo/{demo_link.token}/call-token",
+                json=_body("visitor-byo-corrupted"),
+            )
+
+        assert resp.status_code == 500, resp.text
+        assert resp.json()["error"]["code"] == "demo_tts_runtime_error"
+        # No call session should have been created for the failed call.
+        assert (
+            db.query(CallSession)
+            .filter(CallSession.tenant_id == tenant.id)
+            .count()
+            == 0
+        )
 
 
 @pytest.mark.usefixtures("db")

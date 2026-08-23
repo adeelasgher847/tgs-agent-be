@@ -8,6 +8,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 from twilio.base.exceptions import TwilioRestException
 
+from app.core.agent_runtime import resolve_tts_runtime
 from app.core.config import settings
 from app.core.error_responses import build_call_initiate_error_payload
 from app.middleware.request_id_middleware import new_request_id
@@ -232,33 +233,40 @@ async def initiate_call(
             )
 
         model_name = agent.model.model_name
-        has_sufficient, current_credits, required_credits = (
+        outbound_tts_runtime = resolve_tts_runtime(agent, db=db)
+        tts_provider_slug = outbound_tts_runtime.adapter_slug
+        has_sufficient, current_credits, required_credits, decline_reason = (
             credit_service.has_sufficient_credits(
                 db=db,
                 tenant_id=tenant_id_filter,
                 model_name=model_name,
-                estimated_minutes=1,
+                tts_provider_slug=tts_provider_slug,
+                is_byo_elevenlabs=outbound_tts_runtime.is_byo_elevenlabs,
             )
         )
 
         if not has_sufficient:
             logger.warning(
-                "❌ Insufficient credits: %s < %s", current_credits, required_credits
+                "❌ Insufficient credits: %s < %s (reason=%s)",
+                current_credits,
+                required_credits,
+                decline_reason,
             )
-            raise HTTPException(
-                status_code=status.HTTP_402_PAYMENT_REQUIRED,
-                detail=(
+            return _err(
+                status.HTTP_402_PAYMENT_REQUIRED,
+                "insufficient_credits",
+                (
                     f"Insufficient credits to initiate call. Current balance: "
-                    f"{current_credits} credits, Required: {required_credits} credits. "
-                    f"Model: {model_name}"
+                    f"{current_credits} credits. Model: {model_name}. "
+                    f"Reason: {decline_reason}"
                 ),
             )
 
         logger.info(
-            "✅ Credit check passed: %s credits available, %s required for model %s",
+            "✅ Credit check passed: %s credits available for model %s (tts=%s)",
             current_credits,
-            required_credits,
             model_name,
+            tts_provider_slug,
         )
 
         # ── 7. Per-workspace concurrent outbound limit (GAP 6) ────────────

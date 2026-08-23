@@ -71,6 +71,48 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 return {**result, "message": "Webhook processed successfully"}
             return {"status": "failed", "reason": "sync_failed"}
         
+        if event_type == 'invoice.payment_succeeded':
+            logger.info("STRIPE WEBHOOK: invoice.payment_succeeded")
+            # StripeObject supports [] not dict.get(); .get looks up key "get" and raises.
+            invoice = event["data"]["object"]
+
+            try:
+                stripe_subscription_id = invoice["subscription"]
+            except (KeyError, TypeError):
+                stripe_subscription_id = None
+            if not stripe_subscription_id:
+                return {"status": "ignored", "reason": "no_subscription_id"}
+
+            try:
+                invoice_id = invoice["id"]
+            except (KeyError, TypeError):
+                invoice_id = None
+
+            period_start, period_end = None, None
+            try:
+                line = invoice["lines"]["data"][0]
+                period = line["period"]
+                from datetime import datetime, timezone
+                if period["start"]:
+                    period_start = datetime.fromtimestamp(period["start"], tz=timezone.utc)
+                if period["end"]:
+                    period_end = datetime.fromtimestamp(period["end"], tz=timezone.utc)
+            except (KeyError, TypeError, IndexError) as exc:
+                logger.warning(f"Failed to extract invoice line period: {exc}")
+
+            if not period_start or not period_end:
+                logger.warning(
+                    "invoice.payment_succeeded missing period bounds for subscription %s",
+                    stripe_subscription_id,
+                )
+                return {"status": "ignored", "reason": "missing_period"}
+
+            from app.services.billing_service import BillingService
+            BillingService.handle_subscription_renewed(
+                db, stripe_subscription_id, period_start, period_end, invoice_id=invoice_id
+            )
+            return {"status": "success", "event_type": event_type}
+
         if event_type in IGNORED_EVENT_TYPES:
             logger.info(f"Ignored event type: {event_type}")
             return {"status": "ignored", "event_type": event_type}

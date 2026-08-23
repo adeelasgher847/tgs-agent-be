@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import asyncio
 import time
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Set
 
 from app.core.config import settings
@@ -1297,6 +1298,36 @@ class VoiceOrchestrator:
                 reason,
             )
             agent.llm_model = _OPENAI_REALTIME_FALLBACK_TEXT_MODEL
+
+            # Persist the fallback on CallSession.call_metadata so
+            # credit_service's out-of-process billing tick (which re-queries
+            # CallSession every 10s, never holds a reference to this
+            # orchestrator instance) can stop billing the OpenAI Realtime
+            # surcharge and start evaluating the ElevenLabs TTS surcharge for
+            # the remainder of the call — see
+            # CreditService.get_active_surcharges(realtime_fallen_back=...).
+            # Mirrors the existing call_metadata write pattern in
+            # CallControlMixin._transfer_call (human_transfer).
+            try:
+                call_session = getattr(h, "call_session", None)
+                db = getattr(h, "db", None)
+                if call_session is not None and db is not None:
+                    meta = dict(call_session.call_metadata or {})
+                    meta["openai_realtime_fallback"] = {
+                        "fell_back": True,
+                        "reason": reason,
+                        "at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    call_session.call_metadata = meta
+                    db.commit()
+                    db.refresh(call_session)
+            except Exception as exc:
+                logger.error(
+                    "[OpenAIRealtime] failed to persist realtime-fallback flag on "
+                    "call_metadata for call_session_id=%s (credit billing may keep "
+                    "charging the realtime surcharge for this call): %s",
+                    getattr(h, "call_session_id", None), exc, exc_info=True,
+                )
         else:
             logger.error(
                 "[OpenAIRealtime] pre-session failure with no agent loaded for call_session_id=%s "

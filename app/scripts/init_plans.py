@@ -1,86 +1,115 @@
 #!/usr/bin/env python3
 """
-Simple script to create Vapi-style plans.
-Just run: python app/scripts/init_plans.py
+Seed/upsert the core-product (non-CRM) Studio and Agency Plan rows.
+
+Run: python app/scripts/init_plans.py
+
+These are tenant-level subscription plans (see `app/models/plan.py`'s
+Studio/Agency fields: included_minutes, monthly_credits, max_subaccounts,
+free_phone_numbers, features). `crm_type` is left NULL for both — they are
+NOT one of the three CRM-addon plan stacks.
+
+Set STRIPE_PRICE_ID_STUDIO / STRIPE_PRICE_ID_AGENCY in the environment before
+running so the seeded rows have a working `stripe_price_id` for checkout.
 """
 
-import sys
 import os
+import sys
+
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from sqlalchemy.orm import Session
+
 from app.db.session import SessionLocal
+import app.db.base  # noqa: F401 - registers all models so relationship() strings resolve
 from app.models.plan import Plan
 
-def create_simple_plans():
-    """Create 3 simple plans like Vapi"""
+CORE_PLAN_FEATURES = [
+    "WhiteLabel workspaces",
+    "Advanced analytics",
+    "Priority support",
+]
+
+
+def _upsert_plan(db: Session, *, name: str, display_name: str, description: str,
+                  price_monthly_cents: int, included_minutes: int, monthly_credits: str,
+                  max_subaccounts: int | None, free_phone_numbers: int, features: list[str],
+                  stripe_price_id_env: str, is_popular: bool = False) -> Plan:
+    plan = db.query(Plan).filter(Plan.name == name).first()
+    if plan is None:
+        plan = Plan(name=name)
+        db.add(plan)
+
+    plan.display_name = display_name
+    plan.description = description
+    plan.price_monthly = price_monthly_cents
+    plan.crm_type = None
+    plan.is_active = True
+    plan.is_popular = is_popular
+    plan.included_minutes = included_minutes
+    plan.monthly_credits = monthly_credits
+    plan.max_subaccounts = max_subaccounts
+    plan.free_phone_numbers = free_phone_numbers
+    plan.features = features
+    plan.stripe_price_id = os.environ.get(stripe_price_id_env) or plan.stripe_price_id
+
+    return plan
+
+
+def seed_core_plans() -> None:
+    """Create/update the Studio and Agency core-product Plan rows."""
     db: Session = SessionLocal()
-    
+
     try:
-        # Check if plans already exist
-        if db.query(Plan).count() > 0:
-            print("✅ Plans already exist!")
-            return
-        
-        # 1. Free Plan
-        free = Plan(
-            name="free",
-            display_name="Free",
-            description="Perfect for testing. Pay $0.05 per minute.",
-            price_monthly=0,  # Free
-            price_per_minute=0.05,  # $0.05 per minute
-            agent_limit=2,
-            monthly_calls_limit=0,  # No limit, pay per minute
-            included_minutes=0
+        studio = _upsert_plan(
+            db,
+            name="studio",
+            display_name="Studio",
+            description="100 included call minutes/mo, whitelabel workspaces, up to 3 sub-accounts.",
+            price_monthly_cents=9900,
+            included_minutes=100,
+            monthly_credits="12.00",
+            max_subaccounts=3,
+            free_phone_numbers=3,
+            features=CORE_PLAN_FEATURES,
+            stripe_price_id_env="STRIPE_PRICE_ID_STUDIO",
         )
-        
-        # 2. Starter Plan (Popular)
-        starter = Plan(
-            name="starter", 
-            display_name="Starter",
-            description="Great for small businesses. $10/month + $0.05/minute.",
-            price_monthly=1,  # $10.00 in cents
-            price_per_minute=0.05,
-            agent_limit=1,  # As per your edit
-            monthly_calls_limit=0,  # No limit, pay per minute
-            included_minutes=500,  # 500 free minutes
-            is_popular=True
+
+        agency = _upsert_plan(
+            db,
+            name="agency",
+            display_name="Agency",
+            description="300 included call minutes/mo, unlimited whitelabel sub-accounts.",
+            price_monthly_cents=29900,
+            included_minutes=300,
+            monthly_credits="36.00",
+            max_subaccounts=None,
+            free_phone_numbers=10,
+            features=CORE_PLAN_FEATURES + ["Unlimited sub-accounts"],
+            stripe_price_id_env="STRIPE_PRICE_ID_AGENCY",
+            is_popular=True,
         )
-        
-        # 3. Pro Plan
-        pro = Plan(
-            name="pro",
-            display_name="Pro", 
-            description="For growing businesses. $99/month + $0.05/minute.",
-            price_monthly=2,  # $99.00 in cents
-            price_per_minute=0.05,
-            agent_limit=50,
-            monthly_calls_limit=0,  # No limit, pay per minute
-            included_minutes=2000  # 2000 free minutes
-        )
-        
-        # Save to database
-        db.add(free)
-        db.add(starter) 
-        db.add(pro)
+
         db.commit()
-        
-        print("✅ Created 3 simple plans:")
-        print("   📱 Free: $0/month, $0.05/minute, 2 agents")
-        print("   🚀 Starter: $10/month, 500 free minutes, 1 agent (Popular)")
-        print("   💼 Pro: $99/month, 2000 free minutes, 50 agents")
-        
+
+        print("Seeded core plans:")
+        print(f"   Studio: $99/month, {studio.included_minutes} included minutes, "
+              f"${studio.monthly_credits} credit grant, {studio.max_subaccounts} max sub-accounts")
+        print(f"   Agency: $299/month, {agency.included_minutes} included minutes, "
+              f"${agency.monthly_credits} credit grant, unlimited sub-accounts")
+
     except Exception as e:
-        print(f"❌ Error: {str(e)}")
+        print(f"Error seeding core plans: {e}")
         db.rollback()
+        raise
     finally:
         db.close()
 
+
 if __name__ == "__main__":
-    print("🚀 Creating simple Vapi-style plans...")
-    create_simple_plans()
-    print("\n✅ Done! Your plans are ready.")
-    print("\n💡 Next steps:")
-    print("   1. Set up Stripe products in your dashboard")
-    print("   2. Add STRIPE_PRICE_ID_PRO to your .env file")
-    print("   3. Test the billing endpoints")
+    print("Seeding Studio/Agency core-product plans...")
+    seed_core_plans()
+    print("\nDone.")
+    print("\nNext steps:")
+    print("   1. Set STRIPE_PRICE_ID_STUDIO / STRIPE_PRICE_ID_AGENCY in your .env if not already set")
+    print("   2. Re-run this script if you update pricing/features so the DB rows stay in sync")

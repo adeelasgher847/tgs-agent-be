@@ -455,7 +455,11 @@ def pg_engine():
 
     yield schema_engine
 
-    Base.metadata.drop_all(bind=schema_engine)
+    # DROP SCHEMA ... CASCADE below removes every table/FK in one shot
+    # regardless of dependency order — drop_all() is redundant here and was
+    # failing on FK-dependent table pairs (e.g. resumeinterview /
+    # resumeinterviewevent) since it doesn't resolve cross-table drop order
+    # the same way CASCADE does.
     schema_engine.dispose()
 
     with engine.connect() as conn:

@@ -15,6 +15,7 @@ from app.schemas.workspace import (
     BrandingConfigOut,
     PricingConfigUpsert,
     PricingConfigOut,
+    SurchargeInfoOut,
     WorkspaceUsageOut,
     MemberRoleUpdate,
     MemberRoleOut,
@@ -24,6 +25,7 @@ from app.schemas.workspace import (
     SubAccountCreateOut,
     SubAccountListOut,
 )
+from app.services.credit_service import credit_service
 
 import uuid
 
@@ -41,6 +43,24 @@ from app.services.data_export_service import create_export_job, get_export_job
 router = APIRouter(prefix="/workspace", tags=["workspace-gdpr"])
 
 v2_router = APIRouter()
+
+
+def _surcharge_catalog_out() -> list[SurchargeInfoOut]:
+    """Advertise the full surcharge catalog (see
+    app.services.credit_service.SURCHARGE_CATALOG) via the pricing/usage
+    APIs so a tenant can discover what can stack on top of the base
+    per-minute rate — these endpoints are workspace-scoped, not agent-scoped,
+    so this lists everything the platform *can* charge rather than what's
+    active for a specific agent/call right now."""
+    return [
+        SurchargeInfoOut(
+            key=s.key,
+            label=s.label,
+            rate_per_minute=s.rate_per_minute,
+            applies_when=s.applies_when,
+        )
+        for s in credit_service.get_surcharge_catalog()
+    ]
 
 @v2_router.get("/branding", response_model=BrandingConfigOut)
 def get_branding_config(
@@ -100,7 +120,8 @@ def get_pricing_config(
     return PricingConfigOut(
         per_minute_rate=per_minute_rate,
         markup_percent=markup_percent,
-        effective_client_rate=effective_client_rate
+        effective_client_rate=effective_client_rate,
+        available_surcharges=_surcharge_catalog_out(),
     )
 
 @v2_router.put("/pricing", response_model=PricingConfigOut)
@@ -133,7 +154,8 @@ def upsert_pricing_config(
     return PricingConfigOut(
         per_minute_rate=config.per_minute_rate,
         markup_percent=config.markup_percent,
-        effective_client_rate=effective_client_rate
+        effective_client_rate=effective_client_rate,
+        available_surcharges=_surcharge_catalog_out(),
     )
 
 @v2_router.get("/usage", response_model=WorkspaceUsageOut)
@@ -142,19 +164,16 @@ def get_workspace_usage(
     db: Session = Depends(get_db),
 ):
     """Get the usage statistics for the current billing cycle."""
-    from sqlalchemy import func
     from decimal import Decimal
-    
-    usage_sum = db.query(func.sum(UsageRecord.billable_minutes)).filter(
-        UsageRecord.workspace_id == user.current_tenant_id,
-        UsageRecord.recorded_at >= func.date_trunc('month', func.now())
-    ).scalar() or Decimal("0")
-    
-    minutes_used_this_cycle = Decimal(str(usage_sum))
-    minutes_included = None
-    
+
+    from app.services.billing_service import BillingService
+
+    minutes_included, minutes_used_this_cycle, remaining = BillingService.get_included_minutes_status(
+        db, user.current_tenant_id
+    )
+
     overage_minutes = max(Decimal("0"), minutes_used_this_cycle - minutes_included)
-    
+
     config = db.query(PricingConfig).filter(PricingConfig.workspace_id == user.current_tenant_id).first()
     if config:
         effective_rate = Decimal(str(config.per_minute_rate)) * (Decimal("1") + Decimal(str(config.markup_percent)) / Decimal("100"))
@@ -167,7 +186,8 @@ def get_workspace_usage(
         minutes_used_this_cycle=minutes_used_this_cycle,
         minutes_included=minutes_included,
         overage_minutes=overage_minutes,
-        overage_cost=overage_cost
+        overage_cost=overage_cost,
+        available_surcharges=_surcharge_catalog_out(),
     )
 
 
@@ -460,6 +480,26 @@ def create_sub_account(
 ):
     if workspace.workspace_type != "agency":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only agency workspaces can create sub-accounts.")
+
+    from app.services.billing_service import BillingService
+    from app.models.plan import Plan
+
+    subscription = BillingService.get_workspace_subscription(db, workspace.id)
+    if subscription is not None:
+        plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first()
+        if plan is not None and plan.max_subaccounts is not None:
+            existing_count = db.query(Tenant).filter(
+                Tenant.parent_workspace_id == workspace.id,
+                Tenant.deleted_at.is_(None),
+            ).count()
+            if existing_count >= plan.max_subaccounts:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"Sub-account limit reached for your plan "
+                        f"({plan.max_subaccounts} max). Upgrade your plan to add more."
+                    ),
+                )
 
     # Create Tenant
     new_tenant = Tenant(

@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,8 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_db, require_admin, get_current_workspace
 from app.core.exception_handlers import register_exception_handlers
+from app.models.plan import Plan
+from app.models.subscription import Subscription
 from app.models.tenant import Tenant
 from app.models.user import User
 
@@ -160,6 +163,80 @@ def test_rbac_enforcement(db, agency_workspace):
     res = client.post("/workspace/sub-accounts", json={"name": "Sub", "contact_email": "x@x.com"})
     assert res.status_code == 403
     assert "Workspace context does not match" in res.json()["error"]["message"]
+
+def _activate_plan(db, tenant, *, max_subaccounts):
+    suffix = uuid.uuid4().hex[:8]
+    plan = Plan(
+        name=f"plan_{suffix}",
+        display_name="Plan",
+        price_monthly=9900,
+        crm_type=None,
+        max_subaccounts=max_subaccounts,
+        is_active=True,
+    )
+    db.add(plan)
+    db.commit()
+    db.refresh(plan)
+
+    now = datetime.now(timezone.utc)
+    admin_user = User(
+        email=f"owner_{suffix}@test.com",
+        current_tenant_id=tenant.id,
+        first_name="Owner",
+        last_name="Test",
+        hashed_password="X",
+    )
+    db.add(admin_user)
+    db.commit()
+    db.refresh(admin_user)
+
+    sub = Subscription(
+        user_id=admin_user.id,
+        tenant_id=tenant.id,
+        plan_id=plan.id,
+        crm_type=None,
+        status="active",
+        current_period_start=now - timedelta(days=1),
+        current_period_end=now + timedelta(days=29),
+    )
+    db.add(sub)
+    db.commit()
+    return plan
+
+
+def test_create_sub_account_studio_tier_rejects_over_cap(db, agency_workspace):
+    _activate_plan(db, agency_workspace, max_subaccounts=3)
+    client = _client(db, agency_workspace)
+    suffix = uuid.uuid4().hex[:8]
+
+    for i in range(3):
+        res = client.post(
+            "/workspace/sub-accounts",
+            json={"name": f"Sub {suffix}-{i}", "contact_email": f"sub{suffix}{i}@example.com"},
+        )
+        assert res.status_code == 201
+
+    # 4th sub-account exceeds the Studio-tier cap of 3.
+    res = client.post(
+        "/workspace/sub-accounts",
+        json={"name": f"Sub {suffix}-4", "contact_email": f"sub{suffix}4@example.com"},
+    )
+    assert res.status_code == 422
+    assert "Sub-account limit reached" in res.json()["error"]["message"]
+
+
+def test_create_sub_account_agency_tier_no_cap(db, agency_workspace):
+    _activate_plan(db, agency_workspace, max_subaccounts=None)
+    client = _client(db, agency_workspace)
+    suffix = uuid.uuid4().hex[:8]
+
+    for i in range(4):
+        res = client.post(
+            "/workspace/sub-accounts",
+            json={"name": f"Sub {suffix}-{i}", "contact_email": f"sub{suffix}{i}@example.com"},
+        )
+        assert res.status_code == 201
+
 
 def test_create_member_role_post_alias(db, agency_workspace):
     user = User(email=f"test{uuid.uuid4().hex[:8]}@x.com", current_tenant_id=agency_workspace.id, first_name="A", last_name="B", hashed_password="X")

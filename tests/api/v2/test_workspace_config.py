@@ -83,7 +83,10 @@ def test_upsert_pricing_valid(client):
     
     resp = client.put("/api/v2/workspace/pricing", json=payload)
     assert resp.status_code == 200
-    assert float(resp.json()["effective_client_rate"]) == 0.12
+    body = resp.json()
+    assert float(body["effective_client_rate"]) == 0.12
+    # GAP fix: surcharges must be inspectable via the pricing API response.
+    assert {s["key"] for s in body["available_surcharges"]} == {"openai_realtime", "elevenlabs_tts"}
 
 def test_rbac_enforcement():
     # FastAPI automatically handles Depends(require_admin), returning 403 or 401 if not provided.

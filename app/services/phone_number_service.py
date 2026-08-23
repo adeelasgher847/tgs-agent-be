@@ -11,9 +11,10 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from decimal import Decimal
 from typing import List
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -59,6 +60,70 @@ class PhoneNumberService:
         ).scalar_one_or_none()
         if existing is None:
             db.add(NumberConfiguration(phone_number_id=pn.id))
+
+    # $2 flat charge (== 2 credits, 1 credit = $1) per phone number purchased/imported
+    # beyond the tenant's plan-included `free_phone_numbers` allowance.
+    PHONE_NUMBER_OVERAGE_COST = Decimal("2")
+
+    @staticmethod
+    def _phone_number_overage_check(db: Session, tenant_id: uuid.UUID) -> bool:
+        """
+        Plan-aware phone-number allowance check — NOT a hard cap. Returns True if the
+        next number purchase/import would be billed as overage (tenant already at/over
+        `plan.free_phone_numbers`), after confirming the tenant can cover
+        `PHONE_NUMBER_OVERAGE_COST`; raises HTTP 402 (mirrors the insufficient-credits
+        pattern used for the pre-call gate) if it can't — callers must not proceed to
+        Twilio in that case. Returns False (no charge) when there's no active core plan,
+        `free_phone_numbers` is NULL (unlimited), or the tenant is still within its free
+        allowance.
+        """
+        from fastapi import HTTPException
+
+        from app.models.plan import Plan
+        from app.models.tenant import Tenant
+        from app.services.billing_service import BillingService
+
+        subscription = BillingService.get_workspace_subscription(db, tenant_id)
+        if subscription is None:
+            return False
+        plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first()
+        if plan is None or plan.free_phone_numbers is None:
+            return False
+
+        existing_count = db.execute(
+            select(func.count()).select_from(PhoneNumber).where(
+                PhoneNumber.tenant_id == tenant_id,
+                PhoneNumber.status == "active",
+            )
+        ).scalar_one()
+
+        if existing_count < plan.free_phone_numbers:
+            return False
+
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        current_credits = tenant.credits if tenant and tenant.credits is not None else Decimal("0")
+        if tenant is None or current_credits < PhoneNumberService.PHONE_NUMBER_OVERAGE_COST:
+            raise HTTPException(
+                status_code=402,
+                detail=(
+                    f"Insufficient balance to purchase an additional phone number. "
+                    f"Your plan includes {plan.free_phone_numbers} free numbers; "
+                    f"additional numbers cost ${PhoneNumberService.PHONE_NUMBER_OVERAGE_COST} "
+                    f"each, deducted from your credit balance."
+                ),
+            )
+        return True
+
+    @staticmethod
+    def _charge_phone_number_overage(db: Session, tenant_id: uuid.UUID) -> None:
+        """Deduct the flat overage cost from the tenant's credit balance. Caller must
+        have already confirmed sufficient balance via `_phone_number_overage_check`."""
+        from app.models.tenant import Tenant
+
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if tenant is None:
+            return
+        tenant.credits = (tenant.credits or Decimal("0")) - PhoneNumberService.PHONE_NUMBER_OVERAGE_COST
 
     # ------------------------------------------------------------------
     # Legacy CRUD (backward compat — existing router uses these)
@@ -179,6 +244,10 @@ class PhoneNumberService:
         twilio_auth_token: str,
     ) -> PhoneNumber:
         """Import a BYO Twilio number with custom per-number credentials."""
+        # Plan-aware overage check before touching Twilio: raises 402 if this import
+        # would be billed as overage and the tenant can't cover it.
+        needs_overage_charge = self._phone_number_overage_check(db, tenant_id)
+
         existing = db.execute(
             select(PhoneNumber).where(PhoneNumber.phone_number == phone_number)
         ).scalar_one_or_none()
@@ -235,6 +304,8 @@ class PhoneNumberService:
         )
         db.add(pn)
         try:
+            if needs_overage_charge:
+                self._charge_phone_number_overage(db, tenant_id)
             db.commit()
         except IntegrityError:
             db.rollback()
@@ -263,6 +334,10 @@ class PhoneNumberService:
 
         from app.core.config import settings
         from app.services.twilio_service import twilio_service
+
+        # Plan-aware overage check before touching Twilio: raises 402 if this purchase
+        # would be billed as overage and the tenant can't cover it.
+        needs_overage_charge = self._phone_number_overage_check(db, tenant_id)
 
         # Global uniqueness check before touching Twilio
         existing = db.execute(
@@ -300,6 +375,8 @@ class PhoneNumberService:
         try:
             db.flush()
             self._attach_default_configuration(db, pn)
+            if needs_overage_charge:
+                self._charge_phone_number_overage(db, tenant_id)
             db.commit()
         except IntegrityError:
             db.rollback()

@@ -7,22 +7,39 @@ from app.models.plan import Plan
 from app.models.usage_record import UsageRecord
 from app.services.stripe_service import StripeService
 from typing import Dict, Any
+from decimal import Decimal
 from datetime import datetime, timedelta, timezone
 import uuid
 
 class BillingService:
-    
+
     # Default subscription period in days (e.g. 1 month)
     DEFAULT_PERIOD_DAYS = 30
 
     @staticmethod
-    def get_or_create_subscription(db: Session, user_id: uuid.UUID, crm_type: str | None = None) -> Subscription:
-        """Get existing subscription for user (and optional crm_type) or create a free one for default usage."""
-        subscription = db.query(Subscription).filter(
-            Subscription.user_id == user_id,
-            (Subscription.crm_type == crm_type) if crm_type is not None else (Subscription.crm_type.is_(None))
-        ).first()
-        
+    def get_or_create_subscription(
+        db: Session,
+        user_id: uuid.UUID,
+        crm_type: str | None = None,
+        tenant_id: uuid.UUID | None = None,
+    ) -> Subscription:
+        """Get existing subscription (for user+crm_type, or tenant's core subscription) or create a free one.
+
+        When `tenant_id` is provided, look up/create the tenant-scoped core-product
+        subscription (`tenant_id` match, `crm_type IS NULL`) instead of the legacy
+        `user_id` + `crm_type` row. When `tenant_id` is None, behavior is unchanged.
+        """
+        if tenant_id is not None:
+            subscription = db.query(Subscription).filter(
+                Subscription.tenant_id == tenant_id,
+                Subscription.crm_type.is_(None),
+            ).first()
+        else:
+            subscription = db.query(Subscription).filter(
+                Subscription.user_id == user_id,
+                (Subscription.crm_type == crm_type) if crm_type is not None else (Subscription.crm_type.is_(None))
+            ).first()
+
         if not subscription:
             free_plan = db.query(Plan).filter(Plan.name == "free").first()
             if not free_plan:
@@ -36,17 +53,26 @@ class BillingService:
                 db.add(free_plan)
                 db.commit()
                 db.refresh(free_plan)
-            
-            subscription = Subscription(
-                user_id=user_id,
-                plan_id=free_plan.id,
-                status="active",
-                crm_type=crm_type
-            )
+
+            if tenant_id is not None:
+                subscription = Subscription(
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                    plan_id=free_plan.id,
+                    status="active",
+                    crm_type=None,
+                )
+            else:
+                subscription = Subscription(
+                    user_id=user_id,
+                    plan_id=free_plan.id,
+                    status="active",
+                    crm_type=crm_type
+                )
             db.add(subscription)
             db.commit()
             db.refresh(subscription)
-        
+
         return subscription
 
     @staticmethod
@@ -112,13 +138,15 @@ class BillingService:
                 logger.info(f"Session {session_id} already processed.")
                 return {"status": "already_processed"}
 
-            # Plan purchase: update subscription only, NO credits
+            # Plan purchase: update subscription (core plans additionally grant monthly credits)
             if purchase_type == 'plan_purchase' and user_id and plan_id:
+                plan_row = db.query(Plan).filter(Plan.id == plan_id).first()
                 # If crm_type missing/empty in metadata, get from plan so we create correct subscription row
-                if not crm_type and plan_id:
-                    plan_row = db.query(Plan).filter(Plan.id == plan_id).first()
-                    if plan_row and plan_row.crm_type:
-                        crm_type = plan_row.crm_type
+                if not crm_type and plan_row and plan_row.crm_type:
+                    crm_type = plan_row.crm_type
+
+                is_core_plan = plan_row is not None and plan_row.crm_type is None
+
                 stripe_sub_id = session["subscription"]  # set when mode=subscription
                 period_start, period_end = None, None
                 if stripe_sub_id:
@@ -130,6 +158,40 @@ class BillingService:
                             period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
                     except Exception as exc:
                         logger.warning(f"Failed to retrieve Stripe subscription period for {stripe_sub_id}: {exc}")
+
+                if is_core_plan:
+                    BillingService.update_subscription(
+                        db=db,
+                        user_id=user_id,
+                        plan_id=plan_id,
+                        status="active",
+                        stripe_subscription_id=stripe_sub_id,
+                        stripe_customer_id=session["customer"],
+                        stripe_session_id=session_id,
+                        current_period_start=period_start,
+                        current_period_end=period_end,
+                        tenant_id=tenant_id,
+                    )
+                    credits_granted = Decimal("0")
+                    if plan_row.monthly_credits:
+                        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+                        if tenant:
+                            credits_granted = Decimal(str(plan_row.monthly_credits))
+                            tenant.credits = (tenant.credits or Decimal("0")) + credits_granted
+                            tenant.status = 'active'
+                            db.commit()
+                    logger.info(
+                        f"Core plan subscription updated for tenant {tenant_id} (plan={plan_row.name}) "
+                        f"via sync - granted {credits_granted} credits"
+                    )
+                    return {
+                        "status": "success",
+                        "credits_added": float(credits_granted),
+                        "crm_type": None,
+                        "purchase_type": purchase_type,
+                        "message": "Core plan subscription updated and monthly credits granted."
+                    }
+
                 BillingService.update_subscription(
                     db=db,
                     user_id=user_id,
@@ -151,24 +213,24 @@ class BillingService:
                     "message": "Plan subscription updated. No credits added for plan purchase."
                 }
 
-            # Credit purchase: add credits to tenant
-            credits_to_add = 0
+            # Credit purchase: add credits to tenant. 1 credit = $1.
+            credits_to_add = Decimal("0")
             amount_total_cents = session["amount_total"] or 0
-            amount_dollars = float(amount_total_cents) / 100.0
+            amount_dollars = Decimal(amount_total_cents) / Decimal("100")
             if purchase_type == 'credit_purchase':
-                credits_to_add = int(amount_dollars * 10)
+                credits_to_add = amount_dollars
 
             if credits_to_add > 0:
                 tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
                 if tenant:
-                    tenant.credits = (tenant.credits or 0) + credits_to_add
+                    tenant.credits = (tenant.credits or Decimal("0")) + credits_to_add
                     tenant.status = 'active'
                     logger.info(f"Added {credits_to_add} credits to tenant {tenant_id} (credit_purchase)")
 
             db.commit()
             return {
                 "status": "success",
-                "credits_added": credits_to_add,
+                "credits_added": float(credits_to_add),
                 "purchase_type": purchase_type
             }
         except Exception as e:
@@ -201,20 +263,36 @@ class BillingService:
         stripe_session_id: str | None = None,
         crm_type: str | None = None,
         current_period_start: datetime | None = None,
-        current_period_end: datetime | None = None
+        current_period_end: datetime | None = None,
+        tenant_id: uuid.UUID | None = None,
     ) -> Subscription:
-        """Update or create user subscription for this CRM. Sets current_period_start/end from args or default 30 days."""
-        subscription = db.query(Subscription).filter(
-            Subscription.user_id == user_id,
-            (Subscription.crm_type == crm_type) if crm_type is not None else Subscription.crm_type.is_(None)
-        ).first()
+        """Update or create a subscription. Sets current_period_start/end from args or default 30 days.
+
+        When `tenant_id` is provided, the subscription is looked up/created by
+        `tenant_id` + `crm_type IS NULL` (the tenant-scoped core-product subscription)
+        instead of by `user_id` + `crm_type`. When `tenant_id` is None, behavior is
+        unchanged from before.
+        """
+        if tenant_id is not None:
+            subscription = db.query(Subscription).filter(
+                Subscription.tenant_id == tenant_id,
+                Subscription.crm_type.is_(None),
+            ).first()
+        else:
+            subscription = db.query(Subscription).filter(
+                Subscription.user_id == user_id,
+                (Subscription.crm_type == crm_type) if crm_type is not None else Subscription.crm_type.is_(None)
+            ).first()
 
         now = datetime.now(timezone.utc)
         period_start = current_period_start if current_period_start is not None else now
         period_end = current_period_end if current_period_end is not None else (now + timedelta(days=BillingService.DEFAULT_PERIOD_DAYS))
 
         if not subscription:
-            subscription = Subscription(user_id=user_id, crm_type=crm_type)
+            if tenant_id is not None:
+                subscription = Subscription(user_id=user_id, tenant_id=tenant_id, crm_type=None)
+            else:
+                subscription = Subscription(user_id=user_id, crm_type=crm_type)
             db.add(subscription)
 
         subscription.plan_id = plan_id
@@ -227,7 +305,7 @@ class BillingService:
             subscription.stripe_customer_id = stripe_customer_id
         if stripe_session_id:
             subscription.stripe_session_id = stripe_session_id
-        if crm_type is not None:
+        if tenant_id is None and crm_type is not None:
             subscription.crm_type = crm_type
         subscription.updated_at = now
 
@@ -236,18 +314,172 @@ class BillingService:
         return subscription
 
     @staticmethod
+    def get_workspace_subscription(db: Session, tenant_id: uuid.UUID) -> Subscription | None:
+        """Return the tenant's active core-product (non-CRM) subscription, if any."""
+        return db.query(Subscription).filter(
+            Subscription.tenant_id == tenant_id,
+            Subscription.crm_type.is_(None),
+            Subscription.status == "active",
+        ).first()
+
+    @staticmethod
+    def get_included_minutes_status(
+        db: Session, tenant_id: uuid.UUID
+    ) -> tuple[Decimal, Decimal, Decimal]:
+        """Return (included_minutes, used_this_cycle, remaining) for the tenant's current billing cycle.
+
+        If the tenant has an active core subscription, the cycle window is
+        `current_period_start` -> now and `included_minutes` comes from the plan.
+        Otherwise (pure pay-as-you-go), included_minutes is 0 and the cycle window
+        is calendar-month-to-date (matching the existing `get_workspace_usage` convention).
+        """
+        from sqlalchemy import func
+
+        subscription = BillingService.get_workspace_subscription(db, tenant_id)
+
+        if subscription is not None:
+            plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first()
+            included_minutes = Decimal(str(plan.included_minutes)) if plan and plan.included_minutes is not None else Decimal("0")
+            cycle_start = subscription.current_period_start or datetime.now(timezone.utc).replace(
+                day=1, hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            included_minutes = Decimal("0")
+            cycle_start = datetime.now(timezone.utc).replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        usage_sum = db.query(func.sum(UsageRecord.billable_minutes)).filter(
+            UsageRecord.workspace_id == tenant_id,
+            UsageRecord.recorded_at >= cycle_start,
+        ).scalar() or Decimal("0")
+        used_this_cycle = Decimal(str(usage_sum))
+
+        remaining = max(Decimal("0"), included_minutes - used_this_cycle)
+        return (included_minutes, used_this_cycle, remaining)
+
+    @staticmethod
+    def record_call_minutes(
+        db: Session,
+        tenant_id: uuid.UUID,
+        call_id: uuid.UUID | None,
+        minutes: Decimal,
+        credits_charged: Decimal = Decimal("0"),
+    ) -> UsageRecord:
+        """Record a billing usage row for a call: minutes consumed + credits actually charged."""
+        record = UsageRecord(
+            workspace_id=tenant_id,
+            call_id=call_id,
+            billable_minutes=minutes,
+            credits_charged=credits_charged,
+        )
+        db.add(record)
+        db.commit()
+        db.refresh(record)
+        return record
+
+    @staticmethod
     def record_call_usage(
         db: Session,
         tenant_id: uuid.UUID,
         user_id: uuid.UUID | None = None,
     ) -> None:
-        """Record a billing event for a connected outbound call."""
-        record = UsageRecord(
-            workspace_id=tenant_id,
+        """Record a billing event for a connected outbound call.
+
+        Legacy stub kept for existing callers (e.g. batch_call_worker_service.py)
+        that don't yet compute real minutes/credits — behaviorally identical to
+        before (inserts a 0-minute record). New code should call
+        `record_call_minutes` directly with real values.
+        """
+        BillingService.record_call_minutes(
+            db=db,
+            tenant_id=tenant_id,
             call_id=None,
-            billable_minutes=0,
+            minutes=Decimal("0"),
+            credits_charged=Decimal("0"),
         )
-        db.add(record)
+
+    @staticmethod
+    def _same_instant(a: datetime | None, b: datetime | None) -> bool:
+        """Compare two datetimes for practical equality, tolerant of SQLite's
+        tzinfo-dropping round-trip and Stripe's integer-second timestamps."""
+        if a is None or b is None:
+            return False
+
+        def _norm(dt: datetime) -> datetime:
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc).replace(tzinfo=None)
+            return dt
+
+        return abs((_norm(a) - _norm(b)).total_seconds()) < 1
+
+    @staticmethod
+    def handle_subscription_renewed(
+        db: Session,
+        stripe_subscription_id: str,
+        period_start: datetime,
+        period_end: datetime,
+        invoice_id: str | None = None,
+    ) -> None:
+        """Handle a Stripe `invoice.payment_succeeded` renewal: roll the period forward and
+        re-grant the plan's monthly credit allotment to the tenant (core plans only).
+
+        Idempotency (two guards, since a tenant's very first invoice for a new core-plan
+        subscription fires BOTH `checkout.session.completed` — which already grants
+        `monthly_credits` once via `sync_payment_status` — AND `invoice.payment_succeeded`
+        for that same period):
+
+        1. Claim on the Stripe invoice id (mirrors `_claim_checkout_session`) so a
+           redelivered `invoice.payment_succeeded` webhook event (Stripe is at-least-once)
+           is a hard no-op.
+        2. If the incoming `period_start` matches what's already recorded on the
+           subscription, this is the same period already credited by the checkout-
+           completion path (or a prior call to this method) — skip granting credits again.
+        """
+        from app.core.logger import logger
+
+        subscription = db.query(Subscription).filter(
+            Subscription.stripe_subscription_id == stripe_subscription_id
+        ).first()
+        if not subscription:
+            logger.warning(
+                "handle_subscription_renewed: no subscription found for stripe_subscription_id=%s",
+                stripe_subscription_id,
+            )
+            return
+
+        if invoice_id and not BillingService._claim_checkout_session(db, f"invoice:{invoice_id}"):
+            logger.info(
+                "Invoice %s already processed for subscription %s - skipping duplicate renewal.",
+                invoice_id, stripe_subscription_id,
+            )
+            return
+
+        already_recorded_period = BillingService._same_instant(
+            subscription.current_period_start, period_start
+        )
+
+        subscription.current_period_start = period_start
+        subscription.current_period_end = period_end
+        subscription.updated_at = datetime.now(timezone.utc)
+
+        if already_recorded_period:
+            logger.info(
+                "Renewal for subscription %s: period %s already recorded (likely granted "
+                "via checkout completion) - skipping duplicate credit grant.",
+                stripe_subscription_id, period_start,
+            )
+            db.commit()
+            return
+
+        plan = db.query(Plan).filter(Plan.id == subscription.plan_id).first()
+        if plan and plan.monthly_credits and subscription.tenant_id:
+            tenant = db.query(Tenant).filter(Tenant.id == subscription.tenant_id).first()
+            if tenant:
+                tenant.credits = (tenant.credits or Decimal("0")) + Decimal(str(plan.monthly_credits))
+                logger.info(
+                    "Renewed subscription %s: granted %s credits to tenant %s",
+                    stripe_subscription_id, plan.monthly_credits, subscription.tenant_id,
+                )
+
         db.commit()
 
     @staticmethod

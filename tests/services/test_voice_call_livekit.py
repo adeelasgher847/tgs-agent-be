@@ -47,6 +47,16 @@ def _agent():
     ag.name = "Test Agent"
     ag.status = "ready"  # telephony bind sets this; required for outbound calls
     ag.model = MagicMock(model_name="gpt-4o")
+    # Explicit (non-MagicMock) TTS fields so resolve_tts_runtime(agent, db=...)
+    # — invoked for the surcharge gate in voice_call_service.initiate_call —
+    # resolves safely to the "google" default instead of tripping over
+    # arbitrary MagicMock attribute access (dict(MagicMock()), .lower(), etc.).
+    ag.tts_settings_json = {}
+    ag.tts_provider_slug = None
+    ag.tts_language = None
+    ag.tts_voice_external_id = None
+    ag.tts_provider = None
+    ag.language = "en"
     return ag
 
 
@@ -153,7 +163,7 @@ async def _run(
         patch(
             "app.services.voice_call_service.credit_service",
             MagicMock(
-                has_sufficient_credits=MagicMock(return_value=(True, 100, 10))
+                has_sufficient_credits=MagicMock(return_value=(True, 100, 10, "ok"))
             ),
         ),
         patch(
@@ -324,7 +334,7 @@ async def _run_raw(request, *, flow_status: str = "active") -> object:
         patch(
             "app.services.voice_call_service.credit_service",
             MagicMock(
-                has_sufficient_credits=MagicMock(return_value=(True, 100, 10))
+                has_sufficient_credits=MagicMock(return_value=(True, 100, 10, "ok"))
             ),
         ),
         patch(

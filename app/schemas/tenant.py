@@ -1,5 +1,6 @@
 from pydantic import BaseModel, ConfigDict, Field
 from datetime import datetime
+from decimal import Decimal
 import uuid
 
 class TenantBase(BaseModel):
@@ -23,3 +24,20 @@ class TenantOut(TenantBase):
 class TenantCreateResponse(BaseModel):
     tenant_id: uuid.UUID
     tenant: TenantOut
+
+
+class TenantPlanOut(BaseModel):
+    """Response shape for GET /api/v1/tenants/plan — current plan + entitlements."""
+
+    plan_name: str | None = None
+    display_name: str | None = None
+    included_minutes: int | None = None
+    minutes_used_this_cycle: Decimal
+    minutes_remaining: Decimal
+    monthly_credits: Decimal | None = None
+    free_phone_numbers: int | None = None
+    max_subaccounts: int | None = None
+    features: list[str] = Field(default_factory=list)
+    credits_balance: Decimal
+
+    model_config = ConfigDict(from_attributes=True)

@@ -34,6 +34,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db
+from app.core.agent_runtime import resolve_tts_runtime
 from app.core.config import settings
 from app.core.error_responses import build_api_error_payload
 from app.core.logger import logger
@@ -294,6 +295,37 @@ async def demo_call_token(
             403,
             "You have used up your allotted call time for this demo link.",
             "demo_link_visitor_limit_exceeded",
+        )
+
+    from app.services.credit_service import credit_service
+
+    demo_model_name = agent.model.model_name if agent.model else None
+    try:
+        demo_tts_runtime = resolve_tts_runtime(agent, db=db)
+    except Exception as exc:
+        logger.warning(
+            "Demo call token denied (TTS runtime resolution failed) demo_link_id=%s "
+            "agent_id=%s ip=%s error=%s",
+            demo_link.id, flow.agent_id, ip, exc,
+        )
+        return _demo_error(
+            request, 500, "This demo is temporarily unavailable. Please try again later.", "demo_tts_runtime_error"
+        )
+    demo_tts_provider_slug = demo_tts_runtime.adapter_slug
+    has_sufficient, _current_credits, _required_credits, decline_reason = credit_service.has_sufficient_credits(
+        db=db,
+        tenant_id=demo_link.tenant_id,
+        model_name=demo_model_name,
+        tts_provider_slug=demo_tts_provider_slug,
+        is_byo_elevenlabs=demo_tts_runtime.is_byo_elevenlabs,
+    )
+    if not has_sufficient:
+        logger.info(
+            "Demo call token denied (insufficient tenant credits) demo_link_id=%s ip=%s reason=%s",
+            demo_link.id, ip, decline_reason,
+        )
+        return _demo_error(
+            request, 403, "This demo is temporarily unavailable. Please try again later.", "demo_unavailable"
         )
 
     from app.services.livekit_service import livekit_service
