@@ -40,4 +40,46 @@ class TenantPlanOut(BaseModel):
     features: list[str] = Field(default_factory=list)
     credits_balance: Decimal
 
+    # Subscription/billing summary (image 3/4 of the billing dashboard).
+    price_monthly: Decimal | None = None
+    per_minute_rate: Decimal
+    subscription_status: str | None = None
+    current_period_end: datetime | None = None
+    cancel_at_period_end: bool = False
+
     model_config = ConfigDict(from_attributes=True)
+
+
+class BillingPortalSessionOut(BaseModel):
+    """Response shape for POST /api/v1/tenants/billing/portal-session."""
+
+    url: str
+
+
+class CancelPlanOut(BaseModel):
+    """Response shape for POST /api/v1/tenants/plan/cancel."""
+
+    status: str
+    cancel_at_period_end: bool
+    current_period_end: datetime | None = None
+
+
+class InvoiceOut(BaseModel):
+    """Single Stripe invoice entry for the tenant's billing history."""
+
+    id: str
+    number: str | None = None
+    description: str | None = None
+    status: str | None = None
+    currency: str | None = None
+    amount_due: Decimal | None = None
+    amount_paid: Decimal | None = None
+    created_at: datetime | None = None
+    hosted_invoice_url: str | None = None
+    invoice_pdf: str | None = None
+
+
+class InvoiceListOut(BaseModel):
+    """Response shape for GET /api/v1/tenants/billing/invoices."""
+
+    invoices: list[InvoiceOut] = Field(default_factory=list)
