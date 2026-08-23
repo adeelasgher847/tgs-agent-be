@@ -8953,7 +8953,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowDataResponse'
+                $ref: '#/components/schemas/FlowDataSaveResponse'
         '422':
           description: Validation Error
           content:
@@ -8975,6 +8975,15 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: mode
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Pass 'readonly' to strip sensitive node fields (prompts, phone
+          numbers, webhook URLs) and omit the compiled plan from the response. Any
+          other value (or omitting the parameter) returns the full response.
       responses:
         '200':
           description: Successful Response
@@ -8988,12 +8997,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v2/flows/{flow_id}/flow-data/validate:
-    get:
+  /api/v2/flows/{flow_id}/validate:
+    post:
       tags:
       - Visual Flow Editor
-      summary: Validate the current (or posted) flow graph without saving
-      operationId: validate_flow_data_api_v2_flows__flow_id__flow_data_validate_get
+      summary: Validate the current (or proposed) flow graph without saving
+      operationId: validate_flow_data_api_v2_flows__flow_id__validate_post
       security:
       - HTTPBearer: []
       parameters:
@@ -13189,6 +13198,23 @@ components:
       type: object
       title: FlowDataResponse
       description: Response body for the flow-data GET/PUT endpoints.
+    FlowDataSaveResponse:
+      properties:
+        version:
+          type: integer
+          title: Version
+        validated:
+          type: boolean
+          title: Validated
+          default: true
+      type: object
+      required:
+      - version
+      title: FlowDataSaveResponse
+      description: 'Response body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
+
+
+        Ticket-literal shape: ``{version: int, validated: true}``.'
     FlowDataSchema:
       properties:
         nodes:
@@ -13243,21 +13269,42 @@ components:
       - message
       title: FlowValidationError
       description: A single validation failure for a visual flow graph.
+    FlowValidationErrorItem:
+      properties:
+        node_id:
+          type: string
+          nullable: true
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - message
+      title: FlowValidationErrorItem
+      description: A single node-level error, per the ticket's literal ``/validate``
+        shape.
     FlowValidationResponse:
       properties:
         valid:
           type: boolean
           title: Valid
-        validationErrors:
+        errors:
           items:
-            $ref: '#/components/schemas/FlowValidationError'
+            $ref: '#/components/schemas/FlowValidationErrorItem'
           type: array
-          title: Validationerrors
+          title: Errors
       type: object
       required:
       - valid
       title: FlowValidationResponse
-      description: Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``.
+      description: 'Response body for ``POST /api/v2/flows/{flow_id}/validate``.
+
+
+        Ticket-literal shape: ``{valid: bool, errors: [{node_id, message}]}`` — no
+
+        camelCase aliasing, no ``code`` field, deliberately narrower than
+
+        ``FlowValidationError``/``FlowDataResponse`` used elsewhere in this file.'
     FolderCreate:
       properties:
         name:

@@ -1,8 +1,8 @@
 """Pure, CPU-bound traversal engine for pre-compiled visual call-flow graphs.
 
-Consumes the ``flow_data_compiled`` JSONB produced by
-``app.services.flow_graph_service.compile_graph`` — ``{node_id: {"node":
-node_dict, "outgoing_edges": [sorted_edges]}}``. No I/O: callers are
+Consumes the ``compiled_plan`` JSONB produced by
+``app.services.flow_graph_service.compile_graph`` — ``{node_id: {"type": str,
+"data": dict, "next_nodes": {handle: target_node_id}}}``. No I/O: callers are
 responsible for actually speaking text, waiting for STT, transferring the
 call, etc. Every node transition is budgeted at under 50ms; transitions
 exceeding the budget are logged as warnings.
@@ -24,6 +24,11 @@ COLLECT_INPUT = "collect_input"
 BRANCH = "branch"
 TRANSFER = "transfer"
 END_CALL = "end_call"
+KB_LOOKUP = "kb_lookup"
+
+DEFAULT_HANDLE = "default"
+YES_HANDLE = "yes"
+NO_HANDLE = "no"
 
 
 @dataclass
@@ -51,26 +56,31 @@ class FlowExecutorError(Exception):
 
 
 class FlowExecutor:
-    """Traverses a pre-compiled flow graph one node at a time."""
+    """Traverses a pre-compiled flow graph one node at a time.
 
-    def __init__(self, compiled_graph: Dict[str, Any]) -> None:
+    ``entry_node_id`` is the flow document's own ``entry_node_id`` field
+    (always the flow's single ``greeting`` node) — the executor never infers
+    the entry point from node flags, per the ticket's literal entry-point
+    mechanism.
+    """
+
+    def __init__(
+        self, compiled_graph: Dict[str, Any], entry_node_id: str | None = None
+    ) -> None:
         self._graph = compiled_graph
+        self._entry_node_id = entry_node_id
 
     def start_node_id(self) -> str:
-        """Return the id of the graph's single start node.
+        """Return the flow's declared entry node id.
 
-        A node is a start node if it has ``type == "start"`` or
-        ``data.isStart``/``data.is_start`` truthy — mirrors
-        ``flow_graph_service._is_start_node``.
+        Raises ``FlowExecutorError`` if no entry node id was supplied or it
+        doesn't reference a node present in the compiled graph.
         """
-        for node_id, entry in self._graph.items():
-            node = entry["node"]
-            if node.get("type") == "start":
-                return node_id
-            data = node.get("data") or {}
-            if data.get("isStart") or data.get("is_start"):
-                return node_id
-        raise FlowExecutorError("Compiled graph has no start node")
+        if not self._entry_node_id or self._entry_node_id not in self._graph:
+            raise FlowExecutorError(
+                f"Compiled graph has no usable entry node (entry_node_id={self._entry_node_id!r})"
+            )
+        return self._entry_node_id
 
     def execute_node(self, node_id: str, state: PipelineState) -> NodeExecutionResult:
         """Run the node's action logic and record it in ``state.history``."""
@@ -79,9 +89,8 @@ class FlowExecutor:
         if entry is None:
             raise FlowExecutorError(f"Unknown node id: {node_id}")
 
-        node = entry["node"]
-        node_type = node.get("type")
-        data = node.get("data") or {}
+        node_type = entry.get("type")
+        data = entry.get("data") or {}
 
         if node_type == GREETING:
             result = NodeExecutionResult(
@@ -110,6 +119,10 @@ class FlowExecutor:
             result = NodeExecutionResult(
                 node_id=node_id, node_type=node_type, action="end_call", config=data
             )
+        elif node_type == KB_LOOKUP:
+            result = NodeExecutionResult(
+                node_id=node_id, node_type=node_type, action="kb_lookup", config=data
+            )
         else:
             raise FlowExecutorError(f"Unsupported node type: {node_type}")
 
@@ -124,10 +137,14 @@ class FlowExecutor:
         transcript: str | None,
         variables: Dict[str, Any] | None = None,
     ) -> str | None:
-        """Evaluate outgoing edges from ``current_node_id`` in priority order.
+        """Select the next node id per the ticket's per-node-type executor logic.
 
-        Returns the target node id of the first matching edge, falling back
-        to a ``fallback`` edge if present, or ``None`` if nothing matches.
+        ``branch`` nodes evaluate their own ``condition_variable``/``operator``
+        /``condition_value`` (from the node's ``data``) against ``variables``
+        and follow the ``yes`` or ``no`` handle. Every other node type follows
+        its single ``default`` handle. ``transcript`` is accepted for call-site
+        symmetry with the STT turn loop but does not affect routing — no node
+        type in the ticket spec routes by transcript content.
         """
         started = time.perf_counter()
         entry = self._graph.get(current_node_id)
@@ -135,53 +152,85 @@ class FlowExecutor:
             raise FlowExecutorError(f"Unknown node id: {current_node_id}")
 
         variables = variables or {}
-        fallback_target: str | None = None
+        next_nodes = entry.get("next_nodes") or {}
 
-        for edge in entry["outgoing_edges"]:
-            condition = edge.get("condition") or {}
-            condition_type = condition.get("type", "always")
+        if entry.get("type") == BRANCH:
+            matched = self._evaluate_branch_condition(entry.get("data") or {}, variables)
+            handle = YES_HANDLE if matched else NO_HANDLE
+            target = next_nodes.get(handle)
+            self._log_timing("next_node_id", current_node_id, started)
+            return target
 
-            if condition_type == "fallback":
-                if fallback_target is None:
-                    fallback_target = edge.get("target")
-                continue
-
-            if self._condition_matches(
-                condition_type, condition, transcript, variables
-            ):
-                self._log_timing("next_node_id", current_node_id, started)
-                return edge.get("target")
-
+        target = next_nodes.get(DEFAULT_HANDLE)
         self._log_timing("next_node_id", current_node_id, started)
-        return fallback_target
+        return target
 
-    def _condition_matches(
-        self,
-        condition_type: str,
-        condition: Dict[str, Any],
-        transcript: str | None,
-        variables: Dict[str, Any],
+    def _evaluate_branch_condition(
+        self, data: Dict[str, Any], variables: Dict[str, Any]
     ) -> bool:
-        if condition_type == "always":
-            return True
+        """Evaluate a ``branch`` node's condition against ``variables``.
 
-        if transcript is None:
+        Reads ``condition_variable``/``operator``/``condition_value`` directly
+        from the branch node's own config, per the ticket's BRANCH row in the
+        node executor logic table. Supported operators: ``equals``,
+        ``contains``, ``greater_than``, ``less_than``, ``is_empty``,
+        ``regex_match``.
+        """
+        condition_variable = data.get("condition_variable", "")
+        operator = data.get("operator", "equals")
+        condition_value = data.get("condition_value", "")
+
+        if condition_variable not in variables:
+            logger.warning(
+                "FlowExecutor: variable '%s' not found in state for branch condition, treating as empty",
+                condition_variable,
+            )
+        raw_value = variables.get(condition_variable, "")
+
+        if operator == "is_empty":
+            return raw_value == "" or raw_value is None
+        elif operator == "equals":
+            try:
+                return float(raw_value) == float(condition_value)
+            except (ValueError, TypeError):
+                return str(raw_value) == str(condition_value)
+        elif operator == "contains":
+            return str(condition_value) in str(raw_value)
+        elif operator == "greater_than":
+            try:
+                return float(raw_value) > float(condition_value)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "FlowExecutor: branch greater_than: '%s' (value %r) is non-numeric; treating as false",
+                    condition_variable,
+                    raw_value,
+                )
+                return False
+        elif operator == "less_than":
+            try:
+                return float(raw_value) < float(condition_value)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "FlowExecutor: branch less_than: '%s' (value %r) is non-numeric; treating as false",
+                    condition_variable,
+                    raw_value,
+                )
+                return False
+        elif operator == "regex_match":
+            try:
+                return re.search(str(condition_value), str(raw_value)) is not None
+            except re.error as exc:
+                logger.warning(
+                    "FlowExecutor: branch regex_match: invalid pattern %r: %s",
+                    condition_value,
+                    exc,
+                )
+                return False
+        else:
+            logger.warning(
+                "FlowExecutor: unknown branch operator %r; treating as false", operator
+            )
             return False
-
-        if condition_type == "intent_match":
-            pattern = condition.get("pattern")
-            if not pattern:
-                return False
-            return re.search(pattern, transcript, re.IGNORECASE) is not None
-
-        if condition_type == "keyword":
-            keyword = condition.get("keyword")
-            if not keyword:
-                return False
-            words = re.findall(r"\w+", transcript.lower())
-            return keyword.lower() in words
-
-        return False
 
     def _log_timing(self, op: str, node_id: str, started: float) -> None:
         elapsed_ms = (time.perf_counter() - started) * 1000

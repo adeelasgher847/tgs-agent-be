@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import HTTPException, status
 from scipy.stats import chi2_contingency
@@ -38,8 +39,10 @@ from app.schemas.call_flow import (
     CallFlowUpdate,
     FlowDataListItem,
     FlowDataResponse,
+    FlowDataSaveResponse,
     FlowDataUpdate,
     FlowValidationError,
+    FlowValidationErrorItem,
     FlowValidationResponse,
     PaginatedFlowDataResponse,
     PostCallActionsSettingsResponse,
@@ -54,6 +57,45 @@ from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 _MAX_VERSIONS = 50
 _AB_MIN_CALLS_FOR_SIGNIFICANCE = 30
 _AB_SIGNIFICANCE_P_VALUE = 0.05
+
+def _strip_flow_data_for_readonly(flow_data: dict) -> dict:
+    """Return a sanitised copy of *flow_data* safe for readonly callers.
+
+    Keeps per-node: ``id``, ``type``, ``position``, ``data.label``. Every other
+    ``node.data`` field — prompt text, phone/extension numbers, webhook URLs,
+    etc. — is dropped via allow-list (only ``label`` is ever copied over), so
+    a new sensitive node field never needs to be enumerated here to stay safe.
+    Keeps edges unchanged (structural info only, no secrets).
+    Keeps top-level: ``entry_node_id``, ``version``, ``compiled_at``.
+    The caller is responsible for setting ``flow_data_compiled=None`` separately.
+    """
+    sanitised_nodes = []
+    for node in flow_data.get("nodes", []):
+        raw_data: dict = node.get("data") or {}
+        # Allow-list approach: start from an empty dict and keep only label
+        safe_data: dict = {}
+        if "label" in raw_data:
+            safe_data["label"] = raw_data["label"]
+
+        sanitised_nodes.append(
+            {
+                "id": node.get("id"),
+                "type": node.get("type"),
+                "position": node.get("position"),
+                "data": safe_data,
+            }
+        )
+
+    return {
+        "nodes": sanitised_nodes,
+        "edges": list(flow_data.get("edges", [])),
+        # Top-level metadata fields — present only when stored
+        **{
+            k: flow_data[k]
+            for k in ("entry_node_id", "version", "compiled_at")
+            if k in flow_data
+        },
+    }
 
 
 class CallFlowService:
@@ -818,7 +860,7 @@ class CallFlowService:
                     flow_id=f.id,
                     name=f.name,
                     flow_data=f.flow_data,
-                    flow_data_compiled=f.flow_data_compiled,
+                    flow_data_compiled=f.compiled_plan,
                     updated_at=f.updated_at,
                 )
                 for f in rows
@@ -829,13 +871,26 @@ class CallFlowService:
         )
 
     def get_flow_data(
-        self, db: Session, flow_id: uuid.UUID, tenant_id: uuid.UUID
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        *,
+        readonly: bool = False,
     ) -> FlowDataResponse:
         flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        if readonly:
+            raw = _strip_flow_data_for_readonly(flow.flow_data) if flow.flow_data else None
+            validation_errors = validate_graph(raw) if raw else []
+            return FlowDataResponse(
+                flow_data=raw,
+                flow_data_compiled=None,  # never expose compiled plan in readonly mode
+                validation_errors=[FlowValidationError(**e) for e in validation_errors],
+            )
         validation_errors = validate_graph(flow.flow_data) if flow.flow_data else []
         return FlowDataResponse(
             flow_data=flow.flow_data,
-            flow_data_compiled=flow.flow_data_compiled,
+            flow_data_compiled=flow.compiled_plan,
             validation_errors=[FlowValidationError(**e) for e in validation_errors],
         )
 
@@ -851,7 +906,10 @@ class CallFlowService:
         validation_errors = validate_graph(flow_data)
         return FlowValidationResponse(
             valid=not validation_errors,
-            validation_errors=[FlowValidationError(**e) for e in validation_errors],
+            errors=[
+                FlowValidationErrorItem(node_id=e.get("node_id"), message=e["message"])
+                for e in validation_errors
+            ],
         )
 
     def update_flow_data(
@@ -860,7 +918,7 @@ class CallFlowService:
         flow_id: uuid.UUID,
         tenant_id: uuid.UUID,
         body: FlowDataUpdate,
-    ) -> FlowDataResponse:
+    ) -> FlowDataSaveResponse:
         flow = self._get_flow_or_404(db, flow_id, tenant_id)
         flow_data = body.flow_data.model_dump()
 
@@ -882,19 +940,22 @@ class CallFlowService:
                 },
             )
 
+        # version increments on every save; compiled_at is set to the moment
+        # the pre-compiled executor plan below is built — both are top-level
+        # fields of the flow_data JSONB document itself, per the ticket schema.
+        previous_version = (flow.flow_data or {}).get("version", 0) if flow.flow_data else 0
+        flow_data["version"] = (previous_version or 0) + 1
+        flow_data["compiled_at"] = datetime.now(timezone.utc).isoformat()
+
         compiled = compile_graph(flow_data)
 
         repo = CallFlowRepository(db)
         flow = repo.update(
-            flow, {"flow_data": flow_data, "flow_data_compiled": compiled}
+            flow, {"flow_data": flow_data, "compiled_plan": compiled}
         )
         db.commit()
         db.refresh(flow)
-        return FlowDataResponse(
-            flow_data=flow.flow_data,
-            flow_data_compiled=flow.flow_data_compiled,
-            validation_errors=[],
-        )
+        return FlowDataSaveResponse(version=flow_data["version"], validated=True)
 
 
 call_flow_service = CallFlowService()

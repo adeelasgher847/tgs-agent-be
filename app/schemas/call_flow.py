@@ -373,15 +373,33 @@ class FlowDataResponse(BaseModel):
     )
 
 
-class FlowValidationResponse(BaseModel):
-    """Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``."""
+class FlowValidationErrorItem(BaseModel):
+    """A single node-level error, per the ticket's literal ``/validate`` shape."""
 
-    model_config = ConfigDict(populate_by_name=True)
+    node_id: str | None = None
+    message: str
+
+
+class FlowValidationResponse(BaseModel):
+    """Response body for ``POST /api/v2/flows/{flow_id}/validate``.
+
+    Ticket-literal shape: ``{valid: bool, errors: [{node_id, message}]}`` — no
+    camelCase aliasing, no ``code`` field, deliberately narrower than
+    ``FlowValidationError``/``FlowDataResponse`` used elsewhere in this file.
+    """
 
     valid: bool
-    validation_errors: List[FlowValidationError] = Field(
-        default_factory=list, serialization_alias="validationErrors"
-    )
+    errors: List[FlowValidationErrorItem] = Field(default_factory=list)
+
+
+class FlowDataSaveResponse(BaseModel):
+    """Response body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
+
+    Ticket-literal shape: ``{version: int, validated: true}``.
+    """
+
+    version: int
+    validated: bool = True
 
 
 class FlowDataListItem(BaseModel):

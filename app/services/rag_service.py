@@ -91,7 +91,18 @@ class RagService:
         top_k: int = 5,
         trace: dict | None = None,
         db_session: Session | None = None,
+        kb_id: uuid.UUID | str | None = None,
     ) -> List[RagChunkDTO]:
+        """
+        Retrieve the top-k most relevant KB chunks for ``user_text``.
+
+        Always scoped to ``tenant_id`` (== KnowledgeBase.workspace_id). When
+        ``kb_id`` is provided, results are additionally restricted to that
+        single knowledge base — the ``kb.workspace_id == tenant_id`` filter is
+        still applied unconditionally, so a caller cannot use ``kb_id`` to
+        reach a KB owned by a different tenant; a ``kb_id`` for another
+        tenant simply matches zero rows.
+        """
         query_text = (user_text or "").strip()
         if not query_text or not tenant_id:
             return []
@@ -110,8 +121,18 @@ class RagService:
 
         db, should_close = self._session(db_session)
         try:
+            kb_filter_sql = ""
+            params: dict = {
+                "vec": vec_str,
+                "workspace_id": str(tenant_id),
+                "top_k": top_k,
+            }
+            if kb_id:
+                kb_filter_sql = "AND kb.id = :kb_id"
+                params["kb_id"] = str(kb_id)
+
             stmt = text(
-                """
+                f"""
                 SELECT
                     c.id::text            AS id,
                     c.content,
@@ -122,18 +143,12 @@ class RagService:
                 JOIN knowledgebase kb ON c.kb_id = kb.id
                 WHERE kb.workspace_id = :workspace_id
                   AND c.embedding IS NOT NULL
+                  {kb_filter_sql}
                 ORDER BY c.embedding::vector <=> CAST(:vec AS vector)
                 LIMIT :top_k
                 """
             )
-            rows = db.execute(
-                stmt,
-                {
-                    "vec": vec_str,
-                    "workspace_id": str(tenant_id),
-                    "top_k": top_k,
-                },
-            ).fetchall()
+            rows = db.execute(stmt, params).fetchall()
         except Exception as e:
             logger.error("pgvector retrieval failed: %s", e, exc_info=True)
             if trace is not None:

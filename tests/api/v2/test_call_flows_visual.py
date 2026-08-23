@@ -2,14 +2,19 @@
 
 Coverage:
   - PUT /api/v2/flows/{flow_id}/flow-data: valid graphs save + pre-compile;
-    invalid graphs (missing start, cycle, orphan node, missing outgoing
-    edge) are rejected with 422 and a detailed error array.
+    invalid graphs (missing greeting, invalid entry_node_id, cycle, orphan
+    node, missing outgoing edge) are rejected with 422 and a detailed error
+    array.
+  - PUT /api/v2/flows/{flow_id}/flow-data: version increments and
+    compiled_at is stamped on every save, per the ticket's flow_data schema.
   - GET /api/v2/flows/{flow_id}/flow-data: returns saved flow_data +
     flow_data_compiled.
-  - GET /api/v2/flows/{flow_id}/flow-data/validate: validates without saving.
-  - Graph compilation: edge priority ordering (intent_match < keyword < fallback).
+  - POST /api/v2/flows/{flow_id}/validate: validates without saving.
+  - Graph compilation: next_nodes handle map (the ticket's flat
+    ``{node_id: {type, data, next_nodes}}`` compiled-plan shape).
   - FlowExecutor: isolated node-executor sequence greeting -> collect_input ->
-    branch -> transfer.
+    branch -> transfer, entry point resolved via entry_node_id (not a
+    separate "start" node type).
 """
 
 from __future__ import annotations
@@ -104,62 +109,39 @@ def flow(db, workspace, agent):
 
 def _valid_flow_data() -> dict:
     return {
+        "entry_node_id": "greet",
         "nodes": [
-            {"id": "start", "type": "start", "data": {}},
             {"id": "greet", "type": "greeting", "data": {"message": "Hi there!"}},
             {
                 "id": "collect",
                 "type": "collect_input",
                 "data": {
-                    "timeout_seconds": 10,
-                    "silence_threshold_ms": 700,
-                    "max_attempts": 3,
+                    "variable_name": "call_reason",
+                    "prompt": "What can I help you with?",
                 },
             },
-            {"id": "branch", "type": "branch", "data": {"variable": "transcript"}},
+            {
+                "id": "branch",
+                "type": "branch",
+                "data": {
+                    "condition_variable": "call_reason",
+                    "operator": "contains",
+                    "condition_value": "human",
+                },
+            },
             {"id": "transfer", "type": "transfer", "data": {}},
             {"id": "end", "type": "end_call", "data": {}},
         ],
         "edges": [
-            {
-                "id": "e1",
-                "source": "start",
-                "target": "greet",
-                "condition": {"type": "always"},
-            },
-            {
-                "id": "e2",
-                "source": "greet",
-                "target": "collect",
-                "condition": {"type": "always"},
-            },
+            {"id": "e1", "source": "greet", "target": "collect"},
+            {"id": "e2", "source": "collect", "target": "branch"},
             {
                 "id": "e3",
-                "source": "collect",
-                "target": "branch",
-                "condition": {"type": "always"},
-            },
-            {
-                "id": "e4",
                 "source": "branch",
                 "target": "transfer",
-                "condition": {
-                    "type": "intent_match",
-                    "pattern": "(?i)speak to (a )?human",
-                },
+                "sourceHandle": "yes",
             },
-            {
-                "id": "e5",
-                "source": "branch",
-                "target": "end",
-                "condition": {"type": "keyword", "keyword": "bye"},
-            },
-            {
-                "id": "e6",
-                "source": "branch",
-                "target": "end",
-                "condition": {"type": "fallback"},
-            },
+            {"id": "e4", "source": "branch", "target": "end", "sourceHandle": "no"},
         ],
     }
 
@@ -177,49 +159,79 @@ class TestUpdateFlowData:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        assert body["validationErrors"] == []
-        assert body["flowData"]["nodes"]
-        assert "greet" in body["flowDataCompiled"]
-        assert body["flowDataCompiled"]["greet"]["node"]["type"] == "greeting"
+        # PUT response is the ticket-literal {version, validated} shape.
+        assert body == {"version": 1, "validated": True}
 
         db.refresh(flow)
         assert flow.flow_data is not None
-        assert flow.flow_data_compiled is not None
+        assert flow.flow_data["version"] == 1
+        assert flow.flow_data["compiled_at"]
+        assert flow.compiled_plan is not None
+        assert flow.compiled_plan["greet"]["type"] == "greeting"
+        assert flow.compiled_plan["greet"]["next_nodes"] == {"default": "collect"}
 
-    def test_missing_start_node_returns_422(self, db, workspace, flow):
+    def test_version_increments_on_every_save(self, db, workspace, flow):
+        client = _build_app(db, _principal(workspace.id))
+
+        first = client.put(
+            f"/flows/{flow.id}/flow-data", json={"flowData": _valid_flow_data()}
+        )
+        second = client.put(
+            f"/flows/{flow.id}/flow-data", json={"flowData": _valid_flow_data()}
+        )
+
+        assert first.json()["version"] == 1
+        assert second.json()["version"] == 2
+
+    def test_missing_greeting_node_returns_422(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
-        data["nodes"][0]["type"] = "greeting"  # no node left marked as start
+        data["nodes"][0]["type"] = "collect_input"  # no greeting node left
 
         resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
 
         assert resp.status_code == 422
         codes = [e["code"] for e in resp.json()["error"]["validationErrors"]]
-        assert "no_start_node" in codes
+        assert "no_greeting_node" in codes
 
-    def test_multiple_start_nodes_returns_422(self, db, workspace, flow):
+    def test_multiple_greeting_nodes_returns_422(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
-        data["nodes"][1]["data"]["isStart"] = True
+        data["nodes"][1]["type"] = "greeting"  # collect -> a second greeting node
 
         resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
 
         assert resp.status_code == 422
         codes = [e["code"] for e in resp.json()["error"]["validationErrors"]]
-        assert "multiple_start_nodes" in codes
+        assert "multiple_greeting_nodes" in codes
+
+    def test_missing_entry_node_id_returns_422(self, db, workspace, flow):
+        client = _build_app(db, _principal(workspace.id))
+        data = _valid_flow_data()
+        del data["entry_node_id"]
+
+        resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
+
+        assert resp.status_code == 422
+        codes = [e["code"] for e in resp.json()["error"]["validationErrors"]]
+        assert "missing_entry_node_id" in codes
+
+    def test_entry_node_id_not_greeting_returns_422(self, db, workspace, flow):
+        client = _build_app(db, _principal(workspace.id))
+        data = _valid_flow_data()
+        data["entry_node_id"] = "collect"  # points at a non-greeting node
+
+        resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
+
+        assert resp.status_code == 422
+        codes = [e["code"] for e in resp.json()["error"]["validationErrors"]]
+        assert "entry_node_not_greeting" in codes
 
     def test_cycle_returns_422(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
         # Introduce a cycle: end -> branch (end was previously terminal)
-        data["edges"].append(
-            {
-                "id": "e7",
-                "source": "end",
-                "target": "branch",
-                "condition": {"type": "always"},
-            }
-        )
+        data["edges"].append({"id": "e5", "source": "end", "target": "branch"})
 
         resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
 
@@ -231,16 +243,9 @@ class TestUpdateFlowData:
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
         data["nodes"].append(
-            {"id": "orphan", "type": "greeting", "data": {"message": "unreachable"}}
+            {"id": "orphan", "type": "kb_lookup", "data": {}}
         )
-        data["edges"].append(
-            {
-                "id": "e8",
-                "source": "orphan",
-                "target": "end",
-                "condition": {"type": "always"},
-            }
-        )
+        data["edges"].append({"id": "e6", "source": "orphan", "target": "end"})
 
         resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
 
@@ -251,7 +256,7 @@ class TestUpdateFlowData:
     def test_missing_outgoing_edge_returns_422(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
-        # Drop branch's edges entirely — non-end node with no outgoing edge.
+        # Drop branch's edges entirely — non-terminal node with no outgoing edge.
         data["edges"] = [e for e in data["edges"] if e["source"] != "branch"]
 
         resp = client.put(f"/flows/{flow.id}/flow-data", json={"flowData": data})
@@ -270,7 +275,7 @@ class TestUpdateFlowData:
         assert resp.status_code == 404
 
 
-# ── GET /flow-data + /flow-data/validate ──────────────────────────────────
+# ── GET /flow-data + POST /validate ────────────────────────────────────────
 
 
 class TestGetAndValidateFlowData:
@@ -299,16 +304,14 @@ class TestGetAndValidateFlowData:
     def test_validate_endpoint_reports_errors_without_saving(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         data = _valid_flow_data()
-        data["nodes"][0]["type"] = "greeting"  # break the start-node invariant
+        data["nodes"][0]["type"] = "collect_input"  # break the greeting invariant
 
-        resp = client.request(
-            "GET", f"/flows/{flow.id}/flow-data/validate", json={"flowData": data}
-        )
+        resp = client.post(f"/flows/{flow.id}/validate", json={"flowData": data})
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["valid"] is False
-        assert any(e["code"] == "no_start_node" for e in body["validationErrors"])
+        assert any("greeting" in e["message"] for e in body["errors"])
 
         db.refresh(flow)
         assert flow.flow_data is None  # nothing was persisted
@@ -316,28 +319,27 @@ class TestGetAndValidateFlowData:
     def test_validate_endpoint_valid_graph(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
 
-        resp = client.request(
-            "GET",
-            f"/flows/{flow.id}/flow-data/validate",
+        resp = client.post(
+            f"/flows/{flow.id}/validate",
             json={"flowData": _valid_flow_data()},
         )
 
         assert resp.status_code == 200, resp.text
-        assert resp.json()["valid"] is True
+        body = resp.json()
+        assert body == {"valid": True, "errors": []}
 
 
-# ── Graph compilation: edge priority ordering ─────────────────────────────
-
-
-class TestCompileGraphPriority:
-    def test_edges_sorted_by_condition_specificity(self):
+# ── Graph compilation: compiled-plan shape ────────────────────────────────
+class TestCompileGraphShape:
+    def test_compiled_plan_is_flat_type_data_next_nodes_lookup(self):
         data = _valid_flow_data()
 
         compiled = compile_graph(data)
 
-        branch_edges = compiled["branch"]["outgoing_edges"]
-        types = [e["condition"]["type"] for e in branch_edges]
-        assert types == ["intent_match", "keyword", "fallback"]
+        assert compiled["branch"]["type"] == "branch"
+        assert compiled["branch"]["data"]["condition_variable"] == "call_reason"
+        assert compiled["branch"]["next_nodes"] == {"yes": "transfer", "no": "end"}
+        assert compiled["greet"]["next_nodes"] == {"default": "collect"}
 
     def test_validate_graph_accepts_well_formed_flow(self):
         assert validate_graph(_valid_flow_data()) == []
@@ -348,64 +350,50 @@ class TestCompileGraphPriority:
 
 class TestFlowExecutor:
     def test_full_sequence_greeting_collect_branch_transfer(self):
-        compiled = compile_graph(_valid_flow_data())
-        executor = FlowExecutor(compiled)
+        data = _valid_flow_data()
+        compiled = compile_graph(data)
+        executor = FlowExecutor(compiled, data["entry_node_id"])
         state = PipelineState(current_node_id=executor.start_node_id())
 
-        # start -> greeting (always edge, no transcript needed)
-        assert executor.start_node_id() == "start"
-        greet_result = executor.execute_node(
-            executor.next_node_id(state.current_node_id, None, state.variables), state
-        )
+        # entry_node_id resolves directly to the greeting node — no "start" node.
+        assert executor.start_node_id() == "greet"
+        greet_result = executor.execute_node(state.current_node_id, state)
         assert greet_result.node_type == "greeting"
         assert greet_result.action == "speak"
         assert greet_result.speech_text == "Hi there!"
 
-        # greeting -> collect_input (always edge)
+        # greeting -> collect_input (single default edge)
         next_id = executor.next_node_id(state.current_node_id, None, state.variables)
         collect_result = executor.execute_node(next_id, state)
         assert collect_result.node_type == "collect_input"
         assert collect_result.action == "wait_for_input"
 
-        # collect_input -> branch (always edge)
+        # caller's answer to collect_input is stored by the pipeline mixin;
+        # simulate it directly here since FlowExecutor itself doesn't store variables.
+        state.variables["call_reason"] = "I'd like to speak to a human please"
+
+        # collect_input -> branch (single default edge)
         next_id = executor.next_node_id(state.current_node_id, None, state.variables)
         branch_result = executor.execute_node(next_id, state)
         assert branch_result.node_type == "branch"
         assert branch_result.action == "branch"
 
-        # branch -> transfer (transcript matches intent_match over keyword/fallback)
-        next_id = executor.next_node_id(
-            state.current_node_id,
-            "I'd like to speak to a human please",
-            state.variables,
-        )
+        # branch evaluates condition_variable/operator/condition_value from its
+        # own data against flow_variables — "human" is contained -> yes -> transfer
+        next_id = executor.next_node_id(state.current_node_id, None, state.variables)
         transfer_result = executor.execute_node(next_id, state)
         assert transfer_result.node_type == "transfer"
         assert transfer_result.action == "transfer"
 
         assert state.history == ["greet", "collect", "branch", "transfer"]
 
-    def test_keyword_condition_matches_exact_word(self):
-        compiled = compile_graph(_valid_flow_data())
-        executor = FlowExecutor(compiled)
+    def test_branch_no_path_when_condition_does_not_match(self):
+        data = _valid_flow_data()
+        compiled = compile_graph(data)
+        executor = FlowExecutor(compiled, data["entry_node_id"])
 
-        target = executor.next_node_id("branch", "ok bye then", {})
-
-        assert target == "end"
-
-    def test_fallback_used_when_nothing_else_matches(self):
-        compiled = compile_graph(_valid_flow_data())
-        executor = FlowExecutor(compiled)
-
-        target = executor.next_node_id("branch", "totally unrelated text", {})
+        target = executor.next_node_id(
+            "branch", None, {"call_reason": "billing question"}
+        )
 
         assert target == "end"
-
-    def test_intent_match_takes_priority_over_keyword(self):
-        compiled = compile_graph(_valid_flow_data())
-        executor = FlowExecutor(compiled)
-
-        # Contains both an intent phrase and a keyword; intent_match must win.
-        target = executor.next_node_id("branch", "speak to a human, then bye", {})
-
-        assert target == "transfer"
