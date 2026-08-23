@@ -881,11 +881,12 @@ class CallFlowService:
         flow = self._get_flow_or_404(db, flow_id, tenant_id)
         if readonly:
             raw = _strip_flow_data_for_readonly(flow.flow_data) if flow.flow_data else None
-            validation_errors = validate_graph(raw) if raw else []
+            # Flow graph was already validated and pre-compiled at save time;
+            # skip redundant O(V+E) graph traversal on readonly GET requests.
             return FlowDataResponse(
                 flow_data=raw,
                 flow_data_compiled=None,  # never expose compiled plan in readonly mode
-                validation_errors=[FlowValidationError(**e) for e in validation_errors],
+                validation_errors=[],
             )
         validation_errors = validate_graph(flow.flow_data) if flow.flow_data else []
         return FlowDataResponse(
@@ -955,7 +956,12 @@ class CallFlowService:
         )
         db.commit()
         db.refresh(flow)
-        return FlowDataSaveResponse(version=flow_data["version"], validated=True)
+        return FlowDataSaveResponse(
+            version=flow_data["version"],
+            validated=True,
+            flow_data=flow_data,
+            flow_data_compiled=compiled,
+        )
 
 
 call_flow_service = CallFlowService()

@@ -159,8 +159,10 @@ class TestUpdateFlowData:
 
         assert resp.status_code == 200, resp.text
         body = resp.json()
-        # PUT response is the ticket-literal {version, validated} shape.
-        assert body == {"version": 1, "validated": True}
+        assert body["version"] == 1
+        assert body["validated"] is True
+        assert body["flowData"] is not None
+        assert body["flowDataCompiled"] is not None
 
         db.refresh(flow)
         assert flow.flow_data is not None

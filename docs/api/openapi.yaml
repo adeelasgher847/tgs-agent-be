@@ -13235,6 +13235,14 @@ components:
           type: boolean
           title: Validated
           default: true
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        flowDataCompiled:
+          additionalProperties: true
+          type: object
+          nullable: true
       type: object
       required:
       - version
@@ -13242,7 +13250,11 @@ components:
       description: 'Response body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
 
 
-        Ticket-literal shape: ``{version: int, validated: true}``.'
+        Ticket-literal shape: ``{version: int, validated: true}``, optionally including
+
+        ``flowData`` and ``flowDataCompiled`` for compatibility with frontends expecting
+
+        the full graph upon save.'
     FlowDataSchema:
       properties:
         nodes:

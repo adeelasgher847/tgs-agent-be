@@ -7,11 +7,9 @@ import pytest
 
 from app.voice.flow_executor import (
     BRANCH,
-    COLLECT_INPUT,
     END_CALL,
     GREETING,
     KB_LOOKUP,
-    TRANSFER,
     FlowExecutor,
     FlowExecutorError,
     NodeExecutionResult,

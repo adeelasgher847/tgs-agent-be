@@ -121,33 +121,30 @@ class RagService:
 
         db, should_close = self._session(db_session)
         try:
-            kb_filter_sql = ""
             params: dict = {
                 "vec": vec_str,
                 "workspace_id": str(tenant_id),
                 "top_k": top_k,
             }
-            if kb_id:
-                kb_filter_sql = "AND kb.id = :kb_id"
-                params["kb_id"] = str(kb_id)
-
-            stmt = text(
-                f"""
-                SELECT
-                    c.id::text            AS id,
-                    c.content,
-                    c.metadata            AS chunk_metadata,
-                    kb.name               AS kb_name,
-                    1 - (c.embedding::vector <=> CAST(:vec AS vector)) AS score
-                FROM kbchunk c
-                JOIN knowledgebase kb ON c.kb_id = kb.id
-                WHERE kb.workspace_id = :workspace_id
-                  AND c.embedding IS NOT NULL
-                  {kb_filter_sql}
-                ORDER BY c.embedding::vector <=> CAST(:vec AS vector)
-                LIMIT :top_k
-                """
+            # Construct parameterized query using static string concatenation (no f-string interpolation).
+            base_sql = (
+                "SELECT\n"
+                "    c.id::text            AS id,\n"
+                "    c.content,\n"
+                "    c.metadata            AS chunk_metadata,\n"
+                "    kb.name               AS kb_name,\n"
+                "    1 - (c.embedding::vector <=> CAST(:vec AS vector)) AS score\n"
+                "FROM kbchunk c\n"
+                "JOIN knowledgebase kb ON c.kb_id = kb.id\n"
+                "WHERE kb.workspace_id = :workspace_id\n"
+                "  AND c.embedding IS NOT NULL\n"
             )
+            if kb_id:
+                base_sql += "  AND kb.id = :kb_id\n"
+                params["kb_id"] = str(kb_id)
+            base_sql += "ORDER BY c.embedding::vector <=> CAST(:vec AS vector)\nLIMIT :top_k\n"
+
+            stmt = text(base_sql)
             rows = db.execute(stmt, params).fetchall()
         except Exception as e:
             logger.error("pgvector retrieval failed: %s", e, exc_info=True)

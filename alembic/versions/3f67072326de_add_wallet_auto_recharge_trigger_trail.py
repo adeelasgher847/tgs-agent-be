@@ -20,15 +20,6 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.execute(
-        "UPDATE walletautorechargeconfig SET updated_at = created_at WHERE updated_at IS NULL"
-    )
-    op.alter_column(
-        "walletautorechargeconfig",
-        "updated_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=False,
-    )
     op.add_column(
         "walletautorechargeconfig",
         sa.Column("last_payment_intent_id", sa.String(), nullable=True),
@@ -48,9 +39,3 @@ def downgrade() -> None:
     op.drop_column("walletautorechargeconfig", "last_trigger_error")
     op.drop_column("walletautorechargeconfig", "last_trigger_status")
     op.drop_column("walletautorechargeconfig", "last_payment_intent_id")
-    op.alter_column(
-        "walletautorechargeconfig",
-        "updated_at",
-        existing_type=sa.DateTime(timezone=True),
-        nullable=True,
-    )

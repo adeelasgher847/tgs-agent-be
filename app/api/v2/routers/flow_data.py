@@ -99,11 +99,6 @@ def get_flow_data(
     )
 
 
-# BREAKING CHANGE (feat/visual-flow-editor-phase2):
-# This endpoint was previously GET /{flow_id}/flow-data/validate. Per the
-# ticket's literal path (POST /api/v2/flows/:id/validate), it moved to POST
-# and dropped the /flow-data segment. Frontend consumers (Zaid) must update
-# both the method and the path — there is no backward-compat alias.
 @router.post(
     "/{flow_id}/validate",
     response_model=FlowValidationResponse,
@@ -118,4 +113,23 @@ def validate_flow_data(
 ) -> FlowValidationResponse:
     return call_flow_service.validate_flow_data(
         db, flow_id, _tenant_id(principal), body
+    )
+
+
+@router.get(
+    "/{flow_id}/flow-data/validate",
+    response_model=FlowValidationResponse,
+    status_code=status.HTTP_200_OK,
+    deprecated=True,
+    include_in_schema=False,
+    summary="[Deprecated] Validate current flow graph",
+)
+def validate_flow_data_deprecated(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> FlowValidationResponse:
+    """Deprecated alias for GET /{flow_id}/flow-data/validate to support transition to POST /{flow_id}/validate."""
+    return call_flow_service.validate_flow_data(
+        db, flow_id, _tenant_id(principal), body=None
     )

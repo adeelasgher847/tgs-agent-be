@@ -276,8 +276,7 @@ class FlowPipelineMixin:
             )
 
         try:
-            loop = asyncio.get_event_loop()
-            chunks = await loop.run_in_executor(None, _sync_retrieve)
+            chunks = await asyncio.to_thread(_sync_retrieve)
         except Exception as exc:
             logger.error(
                 "FlowExecutor: kb_lookup retrieval failed: %s", exc, exc_info=True

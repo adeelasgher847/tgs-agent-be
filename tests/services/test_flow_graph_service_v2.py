@@ -105,3 +105,21 @@ class TestValidateGraphEntryNode:
 
         codes = [e["code"] for e in validate_graph(data)]
         assert "multiple_greeting_nodes" in codes
+
+    def test_duplicate_source_handle_fails_validation(self):
+        data = _flow(
+            extra_edges=[
+                {
+                    "id": "e_yes_duplicate",
+                    "source": "branch_node",
+                    "target": "unverified",
+                    "sourceHandle": "yes",
+                }
+            ]
+        )
+        errors = validate_graph(data)
+        codes = [e["code"] for e in errors]
+        assert "duplicate_edge_handle" in codes
+        dup_err = next(e for e in errors if e["code"] == "duplicate_edge_handle")
+        assert dup_err["node_id"] == "branch_node"
+        assert "duplicate outgoing edges" in dup_err["message"]

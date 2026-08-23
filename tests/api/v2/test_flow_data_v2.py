@@ -185,6 +185,35 @@ class TestValidatePostEndpoint:
         assert resp.status_code == 200, resp.text
         assert resp.json()["valid"] is True
 
+    def test_get_validate_deprecated_endpoint_works(self, db, workspace, flow):
+        client = _build_app(db, _principal(workspace.id))
+        # Save valid flow
+        client.put(
+            f"/flows/{flow.id}/flow-data",
+            json={"flowData": _full_sensitive_flow_data()},
+        )
+        # Call deprecated GET /{flow_id}/flow-data/validate
+        resp = client.get(f"/flows/{flow.id}/flow-data/validate")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["valid"] is True
+        assert body["errors"] == []
+
+    def test_put_flow_data_response_shape_compatibility(self, db, workspace, flow):
+        client = _build_app(db, _principal(workspace.id))
+        resp = client.put(
+            f"/flows/{flow.id}/flow-data",
+            json={"flowData": _full_sensitive_flow_data()},
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        # Ticket shape
+        assert body["version"] == 1
+        assert body["validated"] is True
+        # Compatibility shape
+        assert body["flowData"] is not None
+        assert body["flowDataCompiled"] is not None
+
     def test_get_validate_returns_405_method_not_allowed(self, db, workspace, flow):
         client = _build_app(db, _principal(workspace.id))
         resp = client.get(f"/flows/{flow.id}/validate")

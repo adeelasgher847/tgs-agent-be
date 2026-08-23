@@ -12,7 +12,10 @@ which is always the entry point, referenced by the flow document's top-level
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 # Nodes that leave the flow entirely (hang up or hand off) — exempt from the
 # "must have an outgoing edge" rule.
@@ -107,6 +110,7 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             }
         )
 
+    seen_handles: Dict[str, set] = {node_id: set() for node_id in node_by_id}
     adjacency: Dict[str, List[str]] = {node_id: [] for node_id in node_by_id}
     for edge in edges:
         source = edge.get("source")
@@ -120,6 +124,17 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             )
             continue
+        handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if handle in seen_handles[source]:
+            errors.append(
+                {
+                    "code": "duplicate_edge_handle",
+                    "message": f"Node '{source}' has duplicate outgoing edges for handle '{handle}'",
+                    "node_id": source,
+                }
+            )
+        else:
+            seen_handles[source].add(handle)
         adjacency[source].append(target)
 
     for node_id, node in node_by_id.items():
@@ -207,6 +222,14 @@ def compile_graph(flow_data: Dict[str, Any]) -> Dict[str, Any]:
         if source not in next_nodes:
             continue
         handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if handle in next_nodes[source]:
+            logger.warning(
+                "Node '%s' has duplicate outgoing edges for handle '%s'; overwriting target '%s' with '%s'",
+                source,
+                handle,
+                next_nodes[source][handle],
+                target,
+            )
         next_nodes[source][handle] = target
 
     compiled: Dict[str, Any] = {}
