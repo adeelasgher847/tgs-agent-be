@@ -1139,6 +1139,276 @@ def test_auto_recharge_failure_persists_trigger_trail_with_error(db, tenant, ser
     assert config.last_trigger_error and "declined" in config.last_trigger_error
 
 
+def _sub_account(db, parent, *, uses_master_wallet):
+    suffix = uuid.uuid4().hex[:8]
+    sub = Tenant(
+        id=uuid.uuid4(),
+        name=f"Sub Account {suffix}",
+        schema_name=f"credit_test_sub_{suffix}",
+        status="active",
+        credits=Decimal("0"),
+        parent_workspace_id=parent.id,
+        workspace_type="sub_account",
+        uses_master_wallet=uses_master_wallet,
+    )
+    db.add(sub)
+    db.commit()
+    db.refresh(sub)
+    return sub
+
+
+# ---------------------------------------------------------------------------
+# Wallet sharing — _resolve_billing_tenant_id and its effect on
+# has_sufficient_credits / the live billing loop / auto-recharge.
+# ---------------------------------------------------------------------------
+
+
+def test_resolve_billing_tenant_id_sharing_off_resolves_to_self(db, tenant, service):
+    sub = _sub_account(db, tenant, uses_master_wallet=False)
+    assert service._resolve_billing_tenant_id(db, sub.id) == sub.id
+
+
+def test_resolve_billing_tenant_id_sharing_on_resolves_to_parent(db, tenant, service):
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    assert service._resolve_billing_tenant_id(db, sub.id) == tenant.id
+
+
+def test_resolve_billing_tenant_id_sharing_on_but_no_parent_resolves_to_self(
+    db, tenant, service
+):
+    """Guards against a data anomaly: uses_master_wallet=True with no
+    parent_workspace_id must never resolve to itself-as-parent or blow up."""
+    tenant.uses_master_wallet = True
+    db.commit()
+    assert service._resolve_billing_tenant_id(db, tenant.id) == tenant.id
+
+
+def test_has_sufficient_credits_wallet_sharing_gates_on_parent_balance(
+    db, tenant, user, service
+):
+    """Sub-account has 0 credits of its own but the parent has plenty —
+    wallet sharing must gate the balance check on the PARENT, and the
+    included-minutes allowance check must still use the sub-account's own
+    (absent) plan."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    sub.credits = Decimal("0")
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    ok, current_credits, _, reason = service.has_sufficient_credits(db, sub.id)
+    assert ok is True
+    assert current_credits == 50.0
+    assert reason == "ok"
+
+
+def test_has_sufficient_credits_wallet_sharing_off_regression(
+    db, tenant, user, service
+):
+    """Wallet sharing OFF: sub-account bills itself as before — a 0-balance
+    sub-account is blocked even if its parent has plenty of credits."""
+    sub = _sub_account(db, tenant, uses_master_wallet=False)
+    sub.credits = Decimal("0")
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    ok, current_credits, _, reason = service.has_sufficient_credits(db, sub.id)
+    assert ok is False
+    assert current_credits == 0.0
+
+
+@pytest.mark.asyncio
+async def test_finalize_wallet_sharing_drains_parent_not_sub_account(
+    db, tenant, user, service
+):
+    """A wallet-sharing sub-account's overage call must drain the PARENT's
+    Tenant.credits — the sub-account's own balance (0) must stay untouched —
+    while the included-minutes usage is still recorded against the
+    sub-account itself."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    sub.credits = Decimal("0")
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    agent = Agent(tenant_id=sub.id, name="Sub Agent")
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+
+    cs = CallSession(
+        user_id=user.id,
+        agent_id=agent.id,
+        tenant_id=sub.id,
+        start_time=datetime.now(timezone.utc),
+        status="active",
+        call_type="inbound",
+        twilio_call_sid="CA_wallet_sharing_test",
+    )
+    db.add(cs)
+    db.commit()
+    db.refresh(cs)
+
+    call_id_str = str(cs.id)
+    # No plan/subscription for the sub-account -> pay-as-you-go, fully billable.
+    service._accumulated_seconds[call_id_str] = 30.0  # 0.5 min
+
+    await service._finalize_call_credits(db, cs.id, sub.id, "gpt-4o-mini", 12.0, cs)
+
+    db.refresh(tenant)
+    db.refresh(sub)
+
+    # 0.5 min * 12 credits/min = 6 credits, deducted from the PARENT.
+    assert tenant.credits == Decimal("50") - Decimal("6")
+    assert sub.credits == Decimal("0")  # sub-account's own balance untouched
+
+    # Usage/minutes are still recorded against the CALLING (sub-account) tenant.
+    record = db.query(UsageRecord).filter(UsageRecord.workspace_id == sub.id).first()
+    assert record is not None
+    assert round(float(record.credits_charged), 2) == 6.0
+    assert (
+        db.query(UsageRecord).filter(UsageRecord.workspace_id == tenant.id).first()
+        is None
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalize_wallet_sharing_included_minutes_still_own_plan(
+    db, tenant, user, service
+):
+    """Included-minutes allowance must still be checked/depleted against the
+    sub-account's OWN plan regardless of wallet-sharing status — the parent
+    having its own separate plan must not matter here."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    _activate_plan(db, sub, user, included_minutes=10)  # 600s remaining, own plan
+    sub.credits = Decimal("0")
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    agent = Agent(tenant_id=sub.id, name="Sub Agent")
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+
+    cs = CallSession(
+        user_id=user.id,
+        agent_id=agent.id,
+        tenant_id=sub.id,
+        start_time=datetime.now(timezone.utc),
+        status="active",
+        call_type="inbound",
+        twilio_call_sid="CA_wallet_sharing_allowance_test",
+    )
+    db.add(cs)
+    db.commit()
+    db.refresh(cs)
+
+    call_id_str = str(cs.id)
+    service._accumulated_seconds[call_id_str] = 120.0  # 2 min, well within 600s
+
+    await service._finalize_call_credits(db, cs.id, sub.id, "gpt-4o-mini", 12.0, cs)
+
+    db.refresh(tenant)
+    db.refresh(sub)
+
+    # Fully within the sub-account's own included minutes -> 0 credits charged,
+    # neither the sub-account's nor the parent's balance moves.
+    assert tenant.credits == Decimal("50")
+    assert sub.credits == Decimal("0")
+
+
+@pytest.mark.asyncio
+async def test_finalize_uses_billing_tenant_pinned_at_call_start_not_current_toggle(
+    db, tenant, user, service
+):
+    """Regression: _finalize_call_credits must bill against the
+    billing_tenant_id resolved ONCE at monitoring-loop start (passed in
+    explicitly), not re-derive it from the CURRENT uses_master_wallet value.
+    Otherwise a wallet-sharing toggle that fires mid-call (a real, owner-only
+    action) would split a single call's cost across two tenants' wallets:
+    ticks before the toggle bill one tenant, the final catch-up deduction
+    re-reads the new toggle state and bills the other."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    sub.credits = Decimal("100")
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    agent = Agent(tenant_id=sub.id, name="Sub Agent")
+    db.add(agent)
+    db.commit()
+    db.refresh(agent)
+
+    cs = CallSession(
+        user_id=user.id,
+        agent_id=agent.id,
+        tenant_id=sub.id,
+        start_time=datetime.now(timezone.utc),
+        status="active",
+        call_type="inbound",
+        twilio_call_sid="CA_wallet_sharing_toggle_mid_call",
+    )
+    db.add(cs)
+    db.commit()
+    db.refresh(cs)
+
+    # Billing tenant resolved at call start, while wallet sharing is still ON.
+    billing_tenant_id_at_start = service._resolve_billing_tenant_id(db, sub.id)
+    assert billing_tenant_id_at_start == tenant.id
+
+    # Parent (owner-only action) toggles wallet sharing OFF mid-call.
+    sub.uses_master_wallet = False
+    db.commit()
+
+    call_id_str = str(cs.id)
+    service._accumulated_seconds[call_id_str] = 30.0  # 0.5 min
+
+    # Finalize is called the way _monitor_and_deduct_credits actually calls
+    # it: with the pinned billing_tenant_id from call start, NOT re-derived.
+    await service._finalize_call_credits(
+        db,
+        cs.id,
+        sub.id,
+        "gpt-4o-mini",
+        12.0,
+        cs,
+        billing_tenant_id=billing_tenant_id_at_start,
+    )
+
+    db.refresh(tenant)
+    db.refresh(sub)
+
+    # 0.5 min * 12 credits/min = 6 credits — still charged to the PARENT
+    # (the pinned billing tenant), even though the toggle is now OFF.
+    assert tenant.credits == Decimal("50") - Decimal("6")
+    assert sub.credits == Decimal("100")  # untouched despite toggle now being off
+
+
+def test_auto_recharge_triggers_against_parent_config_for_wallet_sharing_sub_account(
+    db, tenant, service
+):
+    """The parent may have its own WalletAutoRechargeConfig while the
+    sub-account has none configured at all — deduct_credits called with the
+    resolved billing tenant (the parent) must trigger the PARENT's config,
+    since deduct_credits has no notion of wallet sharing itself."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    tenant.credits = Decimal("9")
+    tenant.stripe_customer_id = "cus_test_parent"
+    db.commit()
+    _auto_recharge_config(db, tenant, min_balance="8", recharge_amount="5")
+
+    billing_tenant_id = service._resolve_billing_tenant_id(db, sub.id)
+    assert billing_tenant_id == tenant.id
+
+    with patch.object(service, "_execute_auto_recharge_charge") as mock_charge:
+        # Simulates what the billing loop now does: deduct against the
+        # resolved billing tenant, not the calling sub-account.
+        service.deduct_credits(
+            db=db, tenant_id=billing_tenant_id, amount=2.0, description="tick"
+        )
+
+    mock_charge.assert_called_once()
+    args, _ = mock_charge.call_args
+    assert args[0] == tenant.id  # triggered for the PARENT, not the sub-account
+
+
 async def test_auto_recharge_task_tracked_and_cleaned_up_on_completion(
     db, tenant, service
 ):

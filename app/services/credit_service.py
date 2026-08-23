@@ -253,6 +253,34 @@ class CreditService:
         # Return float for accurate billing (no rounding until final deduction)
         return round(total_credits, 4)  # Round to 4 decimal places for precision
 
+    def _resolve_billing_tenant_id(
+        self, db: Session, tenant_id: uuid.UUID
+    ) -> uuid.UUID:
+        """
+        Resolve which tenant's `Tenant.credits` should actually be touched
+        for a credit-balance check/deduction originating from `tenant_id`.
+
+        Wallet sharing: when `tenant_id` is a sub-account with
+        `uses_master_wallet=True` AND a non-null `parent_workspace_id`, the
+        PARENT tenant's credit balance is billed instead of the sub-account's
+        own. Otherwise (wallet sharing off, or no parent) this is a no-op —
+        the tenant bills itself, as before wallet sharing existed.
+
+        This must NEVER be used for the included-minutes/plan-allowance
+        lookup (`BillingService.get_included_minutes_status`) — that stays
+        keyed on the original calling tenant's own plan/allowance regardless
+        of wallet sharing. Only the actual `Tenant.credits` balance
+        check/mutation is redirected here.
+        """
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        if (
+            tenant is not None
+            and tenant.uses_master_wallet
+            and tenant.parent_workspace_id is not None
+        ):
+            return tenant.parent_workspace_id
+        return tenant_id
+
     def get_tenant_credits(self, db: Session, tenant_id: uuid.UUID) -> float:
         """
         Get current credit balance for a tenant
@@ -310,10 +338,17 @@ class CreditService:
             is retired; it's always 0.0. `reason` is a short machine/human-readable
             string identifying which rule produced the result (for diagnosable
             rejection logging/messaging at call sites) — "ok" when allowed.
+
+        Wallet sharing: the included-minutes/plan-allowance check below is always
+        against `tenant_id` (the calling tenant's own plan is unaffected by wallet
+        sharing), but the credit-BALANCE check is against the resolved billing
+        tenant (`_resolve_billing_tenant_id`) — the parent's balance when the
+        calling tenant has wallet sharing on, otherwise the calling tenant's own.
         """
         from app.services.billing_service import BillingService
 
-        current_credits = self.get_tenant_credits(db, tenant_id)
+        billing_tenant_id = self._resolve_billing_tenant_id(db, tenant_id)
+        current_credits = self.get_tenant_credits(db, billing_tenant_id)
         _, _, remaining_minutes = BillingService.get_included_minutes_status(
             db, tenant_id
         )
@@ -938,6 +973,13 @@ class CreditService:
 
         db = SessionLocal()
 
+        # Resolved once per call (wallet-sharing config doesn't change mid-call):
+        # which tenant's Tenant.credits actually gets debited. `tenant_id` itself
+        # is still used everywhere else in this loop (included-minutes allowance
+        # lookup, UsageRecord attribution) — only the credit-balance
+        # check/deduction is redirected to the resolved billing tenant.
+        billing_tenant_id = self._resolve_billing_tenant_id(db, tenant_id)
+
         try:
             while True:
                 # Wait for monitoring interval (real-time checks)
@@ -979,6 +1021,7 @@ class CreditService:
                         call_session,
                         tts_provider_slug=tts_provider_slug,
                         is_byo_elevenlabs=is_byo_elevenlabs,
+                        billing_tenant_id=billing_tenant_id,
                     )
                     break
 
@@ -1030,7 +1073,7 @@ class CreditService:
                     total_deduction_float = credits_to_deduct_float + surcharge_float
 
                     deduction_success = True
-                    remaining_credits = self.get_tenant_credits(db, tenant_id)
+                    remaining_credits = self.get_tenant_credits(db, billing_tenant_id)
 
                     if total_deduction_float >= 0.01:
                         description = (
@@ -1040,10 +1083,12 @@ class CreditService:
                         if surcharge_float > 0:
                             description += f" + {surcharge_desc}"
                         # ✅ Deduct accumulated overage + active surcharge credits in one
-                        # combined deduction (updates DB immediately)
+                        # combined deduction (updates DB immediately). Targets the
+                        # RESOLVED billing tenant (parent, if wallet sharing is on) —
+                        # never the calling tenant_id directly.
                         deduction_success, remaining_credits = self.deduct_credits(
                             db=db,
-                            tenant_id=tenant_id,
+                            tenant_id=billing_tenant_id,
                             amount=total_deduction_float,
                             call_session_id=call_session_id,
                             description=description,
@@ -1161,6 +1206,7 @@ class CreditService:
                         call_session,
                         tts_provider_slug=tts_provider_slug,
                         is_byo_elevenlabs=is_byo_elevenlabs,
+                        billing_tenant_id=billing_tenant_id,
                     )
             except Exception as e:
                 logger.error(f"Error in final credit deduction: {e}")
@@ -1190,6 +1236,7 @@ class CreditService:
         call_session: CallSession,
         tts_provider_slug: str | None = None,
         is_byo_elevenlabs: bool = False,
+        billing_tenant_id: uuid.UUID | None = None,
     ):
         """
         Finalize credits for call end - deduct any remaining accumulated time (Vapi-style),
@@ -1204,6 +1251,18 @@ class CreditService:
         the final deduction.
         """
         from app.services.billing_service import BillingService
+
+        # `billing_tenant_id` is passed in by the caller (resolved ONCE at
+        # monitoring-loop start) rather than re-derived here. Re-deriving it
+        # independently at call-end would let a wallet-sharing toggle that
+        # fires mid-call split a single call's cost across two tenants'
+        # wallets (some ticks billed the sub-account, the final catch-up
+        # deduction billed the parent, or vice versa) — the whole call must
+        # be billed against exactly one resolved tenant. The calling
+        # tenant_id is still used for the included-minutes allowance lookup
+        # and UsageRecord attribution below regardless.
+        if billing_tenant_id is None:
+            billing_tenant_id = self._resolve_billing_tenant_id(db, tenant_id)
 
         surcharges = self._resolve_current_surcharges(
             call_session, model_name, tts_provider_slug, is_byo_elevenlabs
@@ -1238,7 +1297,7 @@ class CreditService:
                     description += f" + {surcharge_desc}"
                 success, remaining_credits = self.deduct_credits(
                     db=db,
-                    tenant_id=tenant_id,
+                    tenant_id=billing_tenant_id,
                     amount=total_final,
                     call_session_id=call_session_id,
                     description=description,

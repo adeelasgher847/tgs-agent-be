@@ -29,6 +29,7 @@ class Workspace:
     parent_workspace_id: uuid.UUID | None = None
     workspace_type: str = "standalone"
     contact_email: str | None = None
+    auto_link_new_workspaces: bool = False
 
     @classmethod
     def from_tenant(cls, tenant: Tenant) -> Workspace:
@@ -43,6 +44,7 @@ class Workspace:
             parent_workspace_id=tenant.parent_workspace_id,
             workspace_type=tenant.workspace_type,
             contact_email=tenant.contact_email,
+            auto_link_new_workspaces=bool(tenant.auto_link_new_workspaces),
         )
 
     @classmethod
@@ -64,6 +66,7 @@ class Workspace:
             parent_workspace_id=uuid.UUID(str(data["parent_workspace_id"])) if data.get("parent_workspace_id") else None,
             workspace_type=str(data.get("workspace_type", "standalone")),
             contact_email=data.get("contact_email"),
+            auto_link_new_workspaces=bool(data.get("auto_link_new_workspaces", False)),
         )
 
     def to_cache_dict(self) -> dict[str, Any]:
@@ -78,6 +81,7 @@ class Workspace:
             "parent_workspace_id": str(self.parent_workspace_id) if self.parent_workspace_id else None,
             "workspace_type": self.workspace_type,
             "contact_email": self.contact_email,
+            "auto_link_new_workspaces": self.auto_link_new_workspaces,
         }
 
     @property

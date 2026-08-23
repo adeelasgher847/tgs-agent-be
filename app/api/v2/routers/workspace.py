@@ -30,6 +30,10 @@ from app.schemas.workspace import (
     RecentActivityOut,
     MonthlyMinutesUsageOut,
     MinutesByMonthOut,
+    WalletSharingUpdate,
+    AutoLinkNewWorkspacesUpdate,
+    LinkedWorkspaceOut,
+    LinkedWorkspacesOut,
 )
 from app.services.credit_service import credit_service
 
@@ -546,6 +550,109 @@ def get_workspace_minutes_by_month_csv(
     )
 
 
+# ── Wallet sharing (agency "master wallet") ──────────────────────────────────
+#
+# PUT /workspace/sub-accounts/{sub_account_id}/wallet-sharing,
+# PUT /workspace/auto-link-new-workspaces, GET /workspace/linked-workspaces.
+# Owner-only (require_workspace_owner — see its docstring in deps/rbac.py),
+# same rationale as the usage/breakdown endpoints above: this is
+# cross-sub-account billing configuration that must stay invisible to a
+# non-creator admin and to anyone operating from a sub-account's own tenant
+# context.
+
+
+@v2_router.put("/sub-accounts/{sub_account_id}/wallet-sharing", response_model=LinkedWorkspaceOut)
+def update_sub_account_wallet_sharing(
+    sub_account_id: uuid.UUID,
+    payload: WalletSharingUpdate,
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Toggle whether `sub_account_id` draws call credits from the caller's
+    (parent) wallet ("Using master wallet") or its own ("Using own wallet").
+    `sub_account_id` must be a direct sub-account of the caller's current
+    tenant — never trusted without that check."""
+    parent, family = _workspace_family(db, user.current_tenant_id)
+    sub = db.query(Tenant).filter(
+        Tenant.id == sub_account_id,
+        Tenant.parent_workspace_id == parent.id,
+        Tenant.deleted_at.is_(None),
+    ).first()
+    if sub is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Sub-account not found or does not belong to this workspace.",
+        )
+
+    sub.uses_master_wallet = payload.using_master_wallet
+    db.commit()
+    db.refresh(sub)
+
+    is_branded = db.query(BrandingConfig).filter(BrandingConfig.workspace_id == sub.id).first() is not None
+    return LinkedWorkspaceOut(
+        id=sub.id,
+        name=sub.name,
+        is_master=False,
+        is_branded=is_branded,
+        using_master_wallet=bool(sub.uses_master_wallet),
+    )
+
+
+@v2_router.put("/auto-link-new-workspaces", response_model=AutoLinkNewWorkspacesUpdate)
+def update_auto_link_new_workspaces(
+    payload: AutoLinkNewWorkspacesUpdate,
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Toggle the caller's own (parent/agency) `auto_link_new_workspaces` —
+    when on, newly created sub-accounts default to wallet-sharing-on."""
+    tenant = db.query(Tenant).filter(
+        Tenant.id == user.current_tenant_id, Tenant.deleted_at.is_(None)
+    ).first()
+    if tenant is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workspace not found")
+
+    tenant.auto_link_new_workspaces = payload.auto_link_new_workspaces
+    db.commit()
+    db.refresh(tenant)
+
+    return AutoLinkNewWorkspacesUpdate(auto_link_new_workspaces=bool(tenant.auto_link_new_workspaces))
+
+
+@v2_router.get("/linked-workspaces", response_model=LinkedWorkspacesOut)
+def get_linked_workspaces(
+    user: User = Depends(require_workspace_owner),
+    db: Session = Depends(get_db),
+):
+    """Parent workspace + its direct sub-accounts, with branding/wallet-sharing
+    status for the "Linked Workspaces" modal."""
+    parent, family = _workspace_family(db, user.current_tenant_id)
+
+    tenant_ids = [t.id for t in family]
+    branded_ids = {
+        wid
+        for (wid,) in db.query(BrandingConfig.workspace_id).filter(
+            BrandingConfig.workspace_id.in_(tenant_ids)
+        ).all()
+    }
+
+    workspaces = [
+        LinkedWorkspaceOut(
+            id=t.id,
+            name=t.name,
+            is_master=(t.id == parent.id),
+            is_branded=(t.id in branded_ids),
+            using_master_wallet=bool(t.uses_master_wallet),
+        )
+        for t in family
+    ]
+
+    return LinkedWorkspacesOut(
+        auto_link_new_workspaces=bool(parent.auto_link_new_workspaces),
+        workspaces=workspaces,
+    )
+
+
 @v2_router.put("/members/{user_id}/role", response_model=MemberRoleOut)
 def update_member_role(
     user_id: uuid.UUID,
@@ -856,14 +963,17 @@ def create_sub_account(
                     ),
                 )
 
-    # Create Tenant
+    # Create Tenant. When the parent has auto_link_new_workspaces enabled,
+    # the new sub-account defaults to wallet-sharing-on (uses_master_wallet);
+    # otherwise it keeps the column default (False, own-wallet).
     new_tenant = Tenant(
         name=payload.name,
         schema_name=f"sub_{uuid.uuid4().hex[:8]}",
         parent_workspace_id=workspace.id,
         workspace_type="sub_account",
         contact_email=payload.contact_email,
-        status="active"
+        status="active",
+        uses_master_wallet=bool(workspace.auto_link_new_workspaces),
     )
     db.add(new_tenant)
     db.flush()

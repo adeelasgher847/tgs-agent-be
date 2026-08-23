@@ -243,6 +243,40 @@ class MinutesByMonthOut(BaseModel):
     months: list[MonthlyMinutesUsageOut]
 
 
+class WalletSharingUpdate(BaseModel):
+    """Request body for PUT /api/v2/workspace/sub-accounts/{sub_account_id}/wallet-sharing"""
+    using_master_wallet: bool
+
+
+class AutoLinkNewWorkspacesUpdate(BaseModel):
+    """Request body for PUT /api/v2/workspace/auto-link-new-workspaces"""
+    auto_link_new_workspaces: bool
+
+
+class LinkedWorkspaceOut(BaseModel):
+    """One row of the "Linked Workspaces" modal — the parent workspace itself
+    or one of its direct sub-accounts."""
+
+    id: uuid.UUID
+    name: str
+    is_master: bool = False
+    is_branded: bool = Field(
+        description="True when this workspace has its own BrandingConfig row on file."
+    )
+    using_master_wallet: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class LinkedWorkspacesOut(BaseModel):
+    """Response for GET /api/v2/workspace/linked-workspaces."""
+
+    auto_link_new_workspaces: bool = Field(
+        description="The parent workspace's own auto-link-new-workspaces setting."
+    )
+    workspaces: list[LinkedWorkspaceOut]
+
+
 class MemberRoleUpdate(BaseModel):
     """Request body for PUT /api/v2/workspace/members/{user_id}/role"""
     role: str

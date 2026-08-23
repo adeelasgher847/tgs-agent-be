@@ -252,14 +252,16 @@ async def initiate_call(
                 required_credits,
                 decline_reason,
             )
+            # Don't put the numeric balance in the client-facing message: when
+            # wallet sharing is on, `current_credits` is the PARENT tenant's
+            # balance, not this (sub-account) caller's own — echoing it back
+            # would leak the parent's live wallet balance to any sub-account
+            # API caller. Full detail (including the balance) stays in the
+            # log line above for internal debugging only.
             return _err(
                 status.HTTP_402_PAYMENT_REQUIRED,
                 "insufficient_credits",
-                (
-                    f"Insufficient credits to initiate call. Current balance: "
-                    f"{current_credits} credits. Model: {model_name}. "
-                    f"Reason: {decline_reason}"
-                ),
+                f"Insufficient credits to initiate call. Model: {model_name}. Reason: {decline_reason}",
             )
 
         logger.info(
