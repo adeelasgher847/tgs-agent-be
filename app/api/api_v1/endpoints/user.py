@@ -80,7 +80,7 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
         name=tenant_name,
         schema_name=schema_name,
         status="pending_payment",
-        credits=50
+        credits=0
     )
     
     db.add(db_tenant)
@@ -310,7 +310,7 @@ def google_login(
             name=tenant_name,
             schema_name=schema_name,
             status="pending_payment",
-            credits=50
+            credits=0
         )
         db.add(db_tenant)
         db.commit()

@@ -79,7 +79,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
         name=tenant_in.name,
         schema_name=schema_name,
         status="pending_payment",
-        credits=50
+        credits=0
     )
     
     db.add(db_tenant)
