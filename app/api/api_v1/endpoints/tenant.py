@@ -9,6 +9,8 @@ from app.schemas.tenant import (
     CancelPlanOut,
     InvoiceListOut,
     InvoiceOut,
+    AutoRechargeSettingsOut,
+    AutoRechargeSettingsUpsert,
 )
 from app.schemas.auth import SwitchTenantRequest, TokenResponse, RoleInfo
 from app.schemas.base import SuccessResponse
@@ -896,3 +898,121 @@ def get_tenant_invoices(
         ))
 
     return create_success_response(InvoiceListOut(invoices=invoices), "Invoices fetched successfully")
+
+
+@router.get("/billing/auto-recharge", response_model=SuccessResponse[AutoRechargeSettingsOut])
+def get_auto_recharge_settings(
+    current_user: User = Depends(get_current_user_jwt),
+    billing_user: User = Depends(require_billing),
+    db: Session = Depends(get_db),
+):
+    """
+    Current wallet auto-recharge configuration for the caller's active tenant
+    (min-balance threshold, recharge amount, saved payment method, cooldown
+    state). Returns sensible defaults (enabled=false) when no config row
+    exists yet, rather than 404ing — most tenants won't have configured this.
+    """
+    from decimal import Decimal
+
+    from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = current_user.current_tenant_id
+
+    config = db.query(WalletAutoRechargeConfig).filter(
+        WalletAutoRechargeConfig.workspace_id == tenant_id,
+        WalletAutoRechargeConfig.deleted_at.is_(None),
+    ).first()
+
+    if not config:
+        return create_success_response(
+            AutoRechargeSettingsOut(
+                enabled=False,
+                min_balance=Decimal("10.00"),
+                recharge_amount=Decimal("20.00"),
+                stripe_payment_method_id=None,
+                last_triggered_at=None,
+            ),
+            "Auto-recharge settings fetched successfully"
+        )
+
+    return create_success_response(
+        AutoRechargeSettingsOut.model_validate(config),
+        "Auto-recharge settings fetched successfully"
+    )
+
+
+@router.put("/billing/auto-recharge", response_model=SuccessResponse[AutoRechargeSettingsOut])
+def upsert_auto_recharge_settings(
+    payload: AutoRechargeSettingsUpsert,
+    current_user: User = Depends(get_current_user_jwt),
+    admin_user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Create or update wallet auto-recharge settings for the caller's active
+    tenant. When `stripe_payment_method_id` is provided, it must belong to
+    this tenant's own Stripe customer — verified against Stripe's own
+    payment-method listing so a tenant can't point auto-recharge at an
+    arbitrary/other-customer's saved card. `min_balance`/`recharge_amount`
+    bounds are enforced at the schema level (`AutoRechargeSettingsUpsert`).
+    """
+    from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig
+
+    if not current_user.current_tenant_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No tenant selected"
+        )
+    tenant_id = current_user.current_tenant_id
+
+    tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+    if not tenant:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tenant not found")
+
+    if payload.stripe_payment_method_id:
+        if not tenant.stripe_customer_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Tenant has no Stripe customer on file yet; add a payment method first"
+            )
+        try:
+            payment_methods = StripeService.get_customer_payment_methods(tenant.stripe_customer_id)
+        except Exception as e:
+            raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(e))
+
+        valid_ids = {
+            pm.get("id") if isinstance(pm, dict) else getattr(pm, "id", None)
+            for pm in payment_methods
+        }
+        if payload.stripe_payment_method_id not in valid_ids:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="stripe_payment_method_id does not belong to this tenant's Stripe customer"
+            )
+
+    config = db.query(WalletAutoRechargeConfig).filter(
+        WalletAutoRechargeConfig.workspace_id == tenant_id,
+        WalletAutoRechargeConfig.deleted_at.is_(None),
+    ).first()
+
+    if not config:
+        config = WalletAutoRechargeConfig(workspace_id=tenant_id)
+        db.add(config)
+
+    config.enabled = payload.enabled
+    config.min_balance = payload.min_balance
+    config.recharge_amount = payload.recharge_amount
+    config.stripe_payment_method_id = payload.stripe_payment_method_id
+
+    db.commit()
+    db.refresh(config)
+
+    return create_success_response(
+        AutoRechargeSettingsOut.model_validate(config),
+        "Auto-recharge settings updated successfully"
+    )

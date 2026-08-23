@@ -60,6 +60,7 @@ from app.models.webhook import WebhookEndpoint, WebhookDelivery
 # Branding, pricing, RBAC
 from app.models.branding_configs import BrandingConfig  # noqa: F401
 from app.models.pricing_configs import PricingConfig  # noqa: F401
+from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig  # noqa: F401
 
 
 # Smart Callback Scheduler

@@ -28,6 +28,8 @@ class Tenant(Base):
     )
     contact_email = Column(String, nullable=True)
     workspace_slug = Column(String(100), nullable=True, index=True)
+    uses_master_wallet = Column(Boolean, nullable=False, server_default="false")
+    auto_link_new_workspaces = Column(Boolean, nullable=False, server_default="false")
     
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
@@ -47,6 +49,7 @@ class Tenant(Base):
     branding_config = relationship("BrandingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     pricing_config = relationship("PricingConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     usage_record = relationship("UsageRecord", back_populates="tenant", cascade="all, delete-orphan")
+    wallet_auto_recharge_config = relationship("WalletAutoRechargeConfig", uselist=False, back_populates="tenant", cascade="all, delete-orphan")
     core_subscriptions = relationship("Subscription", back_populates="tenant")
     sso_config = relationship("SsoConfig", uselist=False, back_populates="workspace", cascade="all, delete-orphan")
 

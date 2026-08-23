@@ -21,12 +21,16 @@ from fastapi import HTTPException
 from app.api.api_v1.endpoints.tenant import (
     cancel_tenant_plan,
     create_billing_portal_session,
+    get_auto_recharge_settings,
     get_tenant_invoices,
+    upsert_auto_recharge_settings,
 )
 from app.models.plan import Plan
 from app.models.subscription import Subscription
 from app.models.tenant import Tenant
 from app.models.user import User
+from app.models.wallet_auto_recharge_config import WalletAutoRechargeConfig
+from app.schemas.tenant import AutoRechargeSettingsUpsert
 
 
 def _fake_request() -> MagicMock:
@@ -272,3 +276,177 @@ class TestGetTenantInvoices:
         assert invoice.amount_due == Decimal("99")
         assert invoice.amount_paid == Decimal("99")
         assert invoice.hosted_invoice_url == "https://invoice.stripe.test/in_test_1"
+
+
+# ---------------------------------------------------------------------------
+# GET/PUT /tenants/billing/auto-recharge
+# ---------------------------------------------------------------------------
+
+
+class TestAutoRechargeSettings:
+    def test_get_returns_defaults_when_no_config_exists(self, db, tenant, user):
+        result = get_auto_recharge_settings(current_user=user, billing_user=user, db=db)
+        assert result.data.enabled is False
+        assert result.data.min_balance == Decimal("10.00")
+        assert result.data.recharge_amount == Decimal("20.00")
+        assert result.data.stripe_payment_method_id is None
+        assert result.data.last_triggered_at is None
+
+    def test_get_returns_existing_config(self, db, tenant, user):
+        config = WalletAutoRechargeConfig(
+            workspace_id=tenant.id,
+            enabled=True,
+            min_balance=Decimal("15.00"),
+            recharge_amount=Decimal("30.00"),
+            stripe_payment_method_id="pm_existing_123",
+        )
+        db.add(config)
+        db.commit()
+
+        result = get_auto_recharge_settings(current_user=user, billing_user=user, db=db)
+        assert result.data.enabled is True
+        assert result.data.min_balance == Decimal("15.00")
+        assert result.data.recharge_amount == Decimal("30.00")
+        assert result.data.stripe_payment_method_id == "pm_existing_123"
+
+    def test_put_rejects_recharge_amount_not_positive(self):
+        with pytest.raises(Exception):
+            AutoRechargeSettingsUpsert(
+                enabled=True,
+                min_balance=Decimal("10"),
+                recharge_amount=Decimal("0"),
+                stripe_payment_method_id=None,
+            )
+
+    def test_put_rejects_negative_min_balance(self):
+        with pytest.raises(Exception):
+            AutoRechargeSettingsUpsert(
+                enabled=True,
+                min_balance=Decimal("-1"),
+                recharge_amount=Decimal("10"),
+                stripe_payment_method_id=None,
+            )
+
+    def test_put_rejects_payment_method_not_belonging_to_tenant(self, db, tenant, user):
+        tenant.stripe_customer_id = "cus_owned_by_tenant"
+        db.commit()
+
+        payload = AutoRechargeSettingsUpsert(
+            enabled=True,
+            min_balance=Decimal("10"),
+            recharge_amount=Decimal("20"),
+            stripe_payment_method_id="pm_belongs_to_someone_else",
+        )
+
+        with patch(
+            "app.api.api_v1.endpoints.tenant.StripeService.get_customer_payment_methods",
+            return_value=[{"id": "pm_actually_owned_123"}],
+        ):
+            with pytest.raises(HTTPException) as exc_info:
+                upsert_auto_recharge_settings(
+                    payload=payload, current_user=user, admin_user=user, db=db
+                )
+        assert exc_info.value.status_code == 400
+
+    def test_put_creates_config_with_valid_payment_method(self, db, tenant, user):
+        tenant.stripe_customer_id = "cus_owned_by_tenant"
+        db.commit()
+
+        payload = AutoRechargeSettingsUpsert(
+            enabled=True,
+            min_balance=Decimal("10"),
+            recharge_amount=Decimal("20"),
+            stripe_payment_method_id="pm_actually_owned_123",
+        )
+
+        with patch(
+            "app.api.api_v1.endpoints.tenant.StripeService.get_customer_payment_methods",
+            return_value=[{"id": "pm_actually_owned_123"}],
+        ):
+            result = upsert_auto_recharge_settings(
+                payload=payload, current_user=user, admin_user=user, db=db
+            )
+
+        assert result.data.enabled is True
+        assert result.data.stripe_payment_method_id == "pm_actually_owned_123"
+
+        config = (
+            db.query(WalletAutoRechargeConfig)
+            .filter(WalletAutoRechargeConfig.workspace_id == tenant.id)
+            .first()
+        )
+        assert config is not None
+        assert config.min_balance == Decimal("10")
+        assert config.recharge_amount == Decimal("20")
+
+    def test_put_updates_existing_config(self, db, tenant, user):
+        tenant.stripe_customer_id = "cus_owned_by_tenant"
+        config = WalletAutoRechargeConfig(
+            workspace_id=tenant.id,
+            enabled=False,
+            min_balance=Decimal("10.00"),
+            recharge_amount=Decimal("20.00"),
+        )
+        db.add(config)
+        db.commit()
+
+        # enabled=True now requires a payment method (see
+        # AutoRechargeSettingsUpsert._validate_recharge_config).
+        payload = AutoRechargeSettingsUpsert(
+            enabled=True,
+            min_balance=Decimal("25"),
+            recharge_amount=Decimal("50"),
+            stripe_payment_method_id="pm_actually_owned_123",
+        )
+        with patch(
+            "app.api.api_v1.endpoints.tenant.StripeService.get_customer_payment_methods",
+            return_value=[{"id": "pm_actually_owned_123"}],
+        ):
+            result = upsert_auto_recharge_settings(
+                payload=payload, current_user=user, admin_user=user, db=db
+            )
+        assert result.data.enabled is True
+        assert result.data.min_balance == Decimal("25")
+        assert result.data.recharge_amount == Decimal("50")
+
+        db.refresh(config)
+        assert config.enabled is True
+        assert config.min_balance == Decimal("25")
+
+    def test_put_rejects_enabled_without_payment_method(self):
+        with pytest.raises(Exception):
+            AutoRechargeSettingsUpsert(
+                enabled=True,
+                min_balance=Decimal("10"),
+                recharge_amount=Decimal("20"),
+                stripe_payment_method_id=None,
+            )
+
+    def test_put_rejects_recharge_amount_too_small_relative_to_min_balance(self):
+        with pytest.raises(Exception):
+            AutoRechargeSettingsUpsert(
+                enabled=True,
+                min_balance=Decimal("100"),
+                recharge_amount=Decimal("10"),  # < 0.5 * min_balance
+                stripe_payment_method_id="pm_test_123",
+            )
+
+    def test_put_allows_recharge_amount_at_exactly_half_min_balance(self):
+        # Boundary: recharge_amount == 0.5 * min_balance must be allowed, not rejected.
+        payload = AutoRechargeSettingsUpsert(
+            enabled=True,
+            min_balance=Decimal("100"),
+            recharge_amount=Decimal("50"),
+            stripe_payment_method_id="pm_test_123",
+        )
+        assert payload.recharge_amount == Decimal("50")
+
+    def test_put_allows_disabled_without_payment_method(self):
+        # enabled=False must never require a payment method, regardless of ratio.
+        payload = AutoRechargeSettingsUpsert(
+            enabled=False,
+            min_balance=Decimal("100"),
+            recharge_amount=Decimal("1"),
+            stripe_payment_method_id=None,
+        )
+        assert payload.enabled is False
