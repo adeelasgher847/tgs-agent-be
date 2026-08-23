@@ -1,5 +1,5 @@
 from __future__ import annotations
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_admin, require_billing, get_current_workspace, require_workspace_owner
@@ -273,21 +273,33 @@ def _workspace_family(db: Session, tenant_id: uuid.UUID) -> tuple[Tenant, list[T
     return parent, [parent, *subs]
 
 
-def _sums_by_workspace(db: Session, tenant_ids: list, start=None, end=None) -> dict:
-    """{workspace_id: Decimal(sum(credits_charged))} for the given family scope."""
+def _sums_by_workspace(
+    db: Session, tenant_ids: list, start=None, end=None, batch_size: int = 500
+) -> dict:
+    """{workspace_id: Decimal(sum(credits_charged))} for the given family scope.
+
+    Batches tenant_ids to avoid unbounded IN clauses on large workspace families.
+    """
     from decimal import Decimal
     from sqlalchemy import func
 
     if not tenant_ids:
         return {}
-    q = db.query(UsageRecord.workspace_id, func.coalesce(func.sum(UsageRecord.credits_charged), 0)).filter(
-        UsageRecord.workspace_id.in_(tenant_ids)
-    )
-    if start is not None:
-        q = q.filter(UsageRecord.recorded_at >= start)
-    if end is not None:
-        q = q.filter(UsageRecord.recorded_at < end)
-    return {wid: Decimal(str(total)) for wid, total in q.group_by(UsageRecord.workspace_id).all()}
+
+    result = {}
+    for i in range(0, len(tenant_ids), batch_size):
+        chunk = tenant_ids[i : i + batch_size]
+        q = db.query(
+            UsageRecord.workspace_id,
+            func.coalesce(func.sum(UsageRecord.credits_charged), 0),
+        ).filter(UsageRecord.workspace_id.in_(chunk))
+        if start is not None:
+            q = q.filter(UsageRecord.recorded_at >= start)
+        if end is not None:
+            q = q.filter(UsageRecord.recorded_at < end)
+        for wid, total in q.group_by(UsageRecord.workspace_id).all():
+            result[wid] = Decimal(str(total))
+    return result
 
 
 def _build_breakdown(db: Session, parent: Tenant, family: list) -> WorkspaceUsageBreakdownOut:
@@ -375,7 +387,9 @@ def _build_breakdown(db: Session, parent: Tenant, family: list) -> WorkspaceUsag
     )
 
 
-def _build_minutes_by_month(db: Session, family: list) -> MinutesByMonthOut:
+def _build_minutes_by_month(
+    db: Session, family: list, batch_size: int = 500
+) -> MinutesByMonthOut:
     from datetime import datetime, timezone
     from decimal import Decimal
     from sqlalchemy import func
@@ -388,28 +402,37 @@ def _build_minutes_by_month(db: Session, family: list) -> MinutesByMonthOut:
         ref = _shift_months(now, offset)
         start, end = _month_bounds(ref)
 
-        row = (
-            db.query(
-                func.coalesce(func.sum(UsageRecord.billable_minutes), 0),
-                func.count(UsageRecord.call_id),
-                func.coalesce(func.sum(UsageRecord.credits_charged), 0),
+        total_minutes = Decimal("0")
+        call_count = 0
+        total_cost = Decimal("0")
+
+        for i in range(0, len(tenant_ids), batch_size):
+            chunk = tenant_ids[i : i + batch_size]
+            row = (
+                db.query(
+                    func.coalesce(func.sum(UsageRecord.billable_minutes), 0),
+                    func.count(UsageRecord.call_id),
+                    func.coalesce(func.sum(UsageRecord.credits_charged), 0),
+                )
+                .filter(
+                    UsageRecord.workspace_id.in_(chunk),
+                    UsageRecord.recorded_at >= start,
+                    UsageRecord.recorded_at < end,
+                )
+                .first()
             )
-            .filter(
-                UsageRecord.workspace_id.in_(tenant_ids),
-                UsageRecord.recorded_at >= start,
-                UsageRecord.recorded_at < end,
-            )
-            .first()
-        )
-        total_minutes, call_count, total_cost = row if row else (0, 0, 0)
+            if row:
+                total_minutes += Decimal(str(row[0] or 0))
+                call_count += int(row[1] or 0)
+                total_cost += Decimal(str(row[2] or 0))
 
         months.append(
             MonthlyMinutesUsageOut(
                 month=start.strftime("%Y-%m"),
                 label=start.strftime("%B %Y"),
-                total_minutes=Decimal(str(total_minutes)),
-                call_count=int(call_count or 0),
-                total_cost=Decimal(str(total_cost)),
+                total_minutes=total_minutes,
+                call_count=call_count,
+                total_cost=total_cost,
             )
         )
 
@@ -418,14 +441,17 @@ def _build_minutes_by_month(db: Session, family: list) -> MinutesByMonthOut:
     return MinutesByMonthOut(months=months)
 
 
-def _build_recent_activity(db: Session, family: list) -> RecentActivityOut:
+def _build_recent_activity(
+    db: Session, family: list, limit: int = 10, offset: int = 0
+) -> RecentActivityOut:
     tenant_ids = [t.id for t in family]
 
     records = (
         db.query(UsageRecord)
         .filter(UsageRecord.workspace_id.in_(tenant_ids))
         .order_by(UsageRecord.recorded_at.desc())
-        .limit(10)
+        .offset(offset)
+        .limit(limit)
         .all()
     )
 
@@ -438,7 +464,7 @@ def _build_recent_activity(db: Session, family: list) -> RecentActivityOut:
         )
         for r in records
     ]
-    return RecentActivityOut(items=items)
+    return RecentActivityOut(items=items, limit=limit, offset=offset)
 
 
 def _csv_response(rows: list[list], header: list[str], filename: str) -> Response:
@@ -452,7 +478,7 @@ def _csv_response(rows: list[list], header: list[str], filename: str) -> Respons
     return Response(
         content=buf.getvalue(),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"},
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -511,13 +537,15 @@ def get_workspace_usage_breakdown_csv(
 
 @v2_router.get("/usage/recent-activity", response_model=RecentActivityOut)
 def get_workspace_recent_activity(
+    limit: int = Query(10, ge=1, le=100, description="Number of recent activity records to return"),
+    offset: int = Query(0, ge=0, description="Number of records to skip"),
     user: User = Depends(require_workspace_owner),
     db: Session = Depends(get_db),
 ):
-    """Last 10 spend transactions across the parent tenant + its direct
-    sub-accounts. Owner-only."""
+    """Spend transactions across the parent tenant + its direct
+    sub-accounts with pagination support. Owner-only."""
     parent, family = _workspace_family(db, user.current_tenant_id)
-    return _build_recent_activity(db, family)
+    return _build_recent_activity(db, family, limit=limit, offset=offset)
 
 
 @v2_router.get("/usage/minutes-by-month", response_model=MinutesByMonthOut)

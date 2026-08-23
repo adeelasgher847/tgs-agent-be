@@ -8953,7 +8953,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/FlowDataResponse'
+                $ref: '#/components/schemas/FlowDataSaveResponse'
         '422':
           description: Validation Error
           content:
@@ -8975,6 +8975,15 @@ paths:
           type: string
           format: uuid
           title: Flow Id
+      - name: mode
+        in: query
+        required: false
+        schema:
+          type: string
+          nullable: true
+        description: Pass 'readonly' to strip sensitive node fields (prompts, phone
+          numbers, webhook URLs) and omit the compiled plan from the response. Any
+          other value (or omitting the parameter) returns the full response.
       responses:
         '200':
           description: Successful Response
@@ -8988,12 +8997,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v2/flows/{flow_id}/flow-data/validate:
-    get:
+  /api/v2/flows/{flow_id}/validate:
+    post:
       tags:
       - Visual Flow Editor
-      summary: Validate the current (or posted) flow graph without saving
-      operationId: validate_flow_data_api_v2_flows__flow_id__flow_data_validate_get
+      summary: Validate the current (or proposed) flow graph without saving
+      operationId: validate_flow_data_api_v2_flows__flow_id__validate_post
       security:
       - HTTPBearer: []
       parameters:
@@ -9241,10 +9250,34 @@ paths:
       tags:
       - Workspace Settings
       summary: Get Workspace Recent Activity
-      description: 'Last 10 spend transactions across the parent tenant + its direct
+      description: 'Spend transactions across the parent tenant + its direct
 
-        sub-accounts. Owner-only.'
+        sub-accounts with pagination support. Owner-only.'
       operationId: get_workspace_recent_activity_api_v2_workspace_usage_recent_activity_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Number of recent activity records to return
+          default: 10
+          title: Limit
+        description: Number of recent activity records to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of records to skip
+          default: 0
+          title: Offset
+        description: Number of records to skip
       responses:
         '200':
           description: Successful Response
@@ -9252,8 +9285,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecentActivityOut'
-      security:
-      - HTTPBearer: []
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/workspace/usage/minutes-by-month:
     get:
       tags:
@@ -13189,6 +13226,35 @@ components:
       type: object
       title: FlowDataResponse
       description: Response body for the flow-data GET/PUT endpoints.
+    FlowDataSaveResponse:
+      properties:
+        version:
+          type: integer
+          title: Version
+        validated:
+          type: boolean
+          title: Validated
+          default: true
+        flowData:
+          additionalProperties: true
+          type: object
+          nullable: true
+        flowDataCompiled:
+          additionalProperties: true
+          type: object
+          nullable: true
+      type: object
+      required:
+      - version
+      title: FlowDataSaveResponse
+      description: 'Response body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
+
+
+        Ticket-literal shape: ``{version: int, validated: true}``, optionally including
+
+        ``flowData`` and ``flowDataCompiled`` for compatibility with frontends expecting
+
+        the full graph upon save.'
     FlowDataSchema:
       properties:
         nodes:
@@ -13243,21 +13309,42 @@ components:
       - message
       title: FlowValidationError
       description: A single validation failure for a visual flow graph.
+    FlowValidationErrorItem:
+      properties:
+        node_id:
+          type: string
+          nullable: true
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - message
+      title: FlowValidationErrorItem
+      description: A single node-level error, per the ticket's literal ``/validate``
+        shape.
     FlowValidationResponse:
       properties:
         valid:
           type: boolean
           title: Valid
-        validationErrors:
+        errors:
           items:
-            $ref: '#/components/schemas/FlowValidationError'
+            $ref: '#/components/schemas/FlowValidationErrorItem'
           type: array
-          title: Validationerrors
+          title: Errors
       type: object
       required:
       - valid
       title: FlowValidationResponse
-      description: Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``.
+      description: 'Response body for ``POST /api/v2/flows/{flow_id}/validate``.
+
+
+        Ticket-literal shape: ``{valid: bool, errors: [{node_id, message}]}`` — no
+
+        camelCase aliasing, no ``code`` field, deliberately narrower than
+
+        ``FlowValidationError``/``FlowDataResponse`` used elsewhere in this file.'
     FolderCreate:
       properties:
         name:
@@ -16092,6 +16179,15 @@ components:
             $ref: '#/components/schemas/RecentActivityItemOut'
           type: array
           title: Items
+        total:
+          type: integer
+          nullable: true
+        limit:
+          type: integer
+          nullable: true
+        offset:
+          type: integer
+          nullable: true
       type: object
       required:
       - items

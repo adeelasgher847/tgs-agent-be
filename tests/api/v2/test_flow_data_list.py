@@ -104,7 +104,7 @@ def _flow(db, tenant, agent, *, name="Flow", is_deleted=False, flow_data=None, f
         direction="inbound",
         is_deleted=is_deleted,
         flow_data=flow_data,
-        flow_data_compiled=flow_data_compiled,
+        compiled_plan=flow_data_compiled,
     )
     db.add(f)
     db.commit()
@@ -120,8 +120,11 @@ class TestListFlowData:
             workspace,
             agent,
             name="My Flow",
-            flow_data={"nodes": [{"id": "start", "type": "start", "data": {}}]},
-            flow_data_compiled={"start": {"node": {"type": "start"}}},
+            flow_data={
+                "entry_node_id": "greet",
+                "nodes": [{"id": "greet", "type": "greeting", "data": {}}],
+            },
+            flow_data_compiled={"greet": {"type": "greeting", "data": {}, "next_nodes": {}}},
         )
 
         client = _build_app(db, _principal(workspace.id))
@@ -136,8 +139,13 @@ class TestListFlowData:
 
         item = next(i for i in body["data"] if i["flowId"] == str(flow.id))
         assert item["name"] == "My Flow"
-        assert item["flowData"] == {"nodes": [{"id": "start", "type": "start", "data": {}}]}
-        assert item["flowDataCompiled"] == {"start": {"node": {"type": "start"}}}
+        assert item["flowData"] == {
+            "entry_node_id": "greet",
+            "nodes": [{"id": "greet", "type": "greeting", "data": {}}],
+        }
+        assert item["flowDataCompiled"] == {
+            "greet": {"type": "greeting", "data": {}, "next_nodes": {}}
+        }
         assert "updatedAt" in item
         # confirm no snake_case leakage
         assert "flow_id" not in item

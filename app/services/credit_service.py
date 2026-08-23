@@ -406,9 +406,10 @@ class CreditService:
         Returns:
             Tuple of (success, remaining_credits)
         """
-        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
+        billing_tenant_id = self._resolve_billing_tenant_id(db, tenant_id)
+        tenant = db.query(Tenant).filter(Tenant.id == billing_tenant_id).first()
         if not tenant:
-            logger.error(f"Tenant {tenant_id} not found")
+            logger.error(f"Tenant {billing_tenant_id} not found")
             return (False, 0.0)
 
         current_credits = float(tenant.credits or 0)
@@ -416,7 +417,7 @@ class CreditService:
         # Check if we have sufficient credits to deduct
         if current_credits <= 0:
             logger.warning(
-                f"Insufficient credits for tenant {tenant_id}: {current_credits} <= 0"
+                f"Insufficient credits for tenant {billing_tenant_id}: {current_credits} <= 0"
             )
             return (False, current_credits)
 
@@ -461,8 +462,9 @@ class CreditService:
         credits_exhausted = new_credits == 0 and current_credits > 0
 
         logger.info(
-            f"✅ Deducted {amount:.4f} credits from tenant {tenant_id}. "
-            f"Remaining: {float(tenant.credits):.4f} (updated in DB). "
+            f"✅ Deducted {amount:.4f} credits from tenant {billing_tenant_id}"
+            + (f" (for sub-account {tenant_id})" if billing_tenant_id != tenant_id else "")
+            + f". Remaining: {float(tenant.credits):.4f} (updated in DB). "
             f"Call: {call_session_id}. "
             f"Description: {description}"
         )
@@ -477,11 +479,11 @@ class CreditService:
         # `CallSessionService.update_call_session_status()`'s other post-hooks.
         try:
             self._maybe_trigger_wallet_auto_recharge(
-                db, tenant_id, float(tenant.credits)
+                db, billing_tenant_id, float(tenant.credits)
             )
         except Exception as exc:
             logger.error(
-                f"Wallet auto-recharge trigger check failed for tenant {tenant_id}: {exc}",
+                f"Wallet auto-recharge trigger check failed for tenant {billing_tenant_id}: {exc}",
                 exc_info=True,
             )
 
@@ -661,7 +663,10 @@ class CreditService:
         happens in the SAME commit as the credit grant.
         """
         from app.db.session import SessionLocal
-        from app.services.stripe_service import StripeService
+        from app.services.stripe_service import (
+            StripeService,
+            StripeAuthenticationRequiredError,
+        )
 
         db = SessionLocal()
         try:
@@ -692,6 +697,20 @@ class CreditService:
                     },
                     idempotency_key=idempotency_key,
                 )
+            except StripeAuthenticationRequiredError as exc:
+                logger.warning(
+                    f"⚠️ AUTO-RECHARGE AUTHENTICATION REQUIRED for tenant {tenant_id} "
+                    f"(config {config_id}, amount ${recharge_amount}): Card requires 3DS/SCA authentication. "
+                    f"Customer action required to re-authenticate card: {exc}"
+                )
+                self._record_trigger_outcome(
+                    db,
+                    config_id,
+                    status="failed",
+                    error=f"authentication_required: {str(exc)}"[:500],
+                    payment_intent_id=exc.payment_intent_id,
+                )
+                return
             except Exception as exc:
                 logger.error(
                     f"💳 AUTO-RECHARGE CHARGE FAILED for tenant {tenant_id} "

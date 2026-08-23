@@ -373,14 +373,40 @@ class FlowDataResponse(BaseModel):
     )
 
 
+class FlowValidationErrorItem(BaseModel):
+    """A single node-level error, per the ticket's literal ``/validate`` shape."""
+
+    node_id: str | None = None
+    message: str
+
+
 class FlowValidationResponse(BaseModel):
-    """Response body for ``GET /api/v2/flows/{flow_id}/flow-data/validate``."""
+    """Response body for ``POST /api/v2/flows/{flow_id}/validate``.
+
+    Ticket-literal shape: ``{valid: bool, errors: [{node_id, message}]}`` — no
+    camelCase aliasing, no ``code`` field, deliberately narrower than
+    ``FlowValidationError``/``FlowDataResponse`` used elsewhere in this file.
+    """
+
+    valid: bool
+    errors: List[FlowValidationErrorItem] = Field(default_factory=list)
+
+
+class FlowDataSaveResponse(BaseModel):
+    """Response body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
+
+    Ticket-literal shape: ``{version: int, validated: true}``, optionally including
+    ``flowData`` and ``flowDataCompiled`` for compatibility with frontends expecting
+    the full graph upon save.
+    """
 
     model_config = ConfigDict(populate_by_name=True)
 
-    valid: bool
-    validation_errors: List[FlowValidationError] = Field(
-        default_factory=list, serialization_alias="validationErrors"
+    version: int
+    validated: bool = True
+    flow_data: Dict[str, Any] | None = Field(None, serialization_alias="flowData")
+    flow_data_compiled: Dict[str, Any] | None = Field(
+        None, serialization_alias="flowDataCompiled"
     )
 
 

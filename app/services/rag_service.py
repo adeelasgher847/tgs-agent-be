@@ -91,7 +91,18 @@ class RagService:
         top_k: int = 5,
         trace: dict | None = None,
         db_session: Session | None = None,
+        kb_id: uuid.UUID | str | None = None,
     ) -> List[RagChunkDTO]:
+        """
+        Retrieve the top-k most relevant KB chunks for ``user_text``.
+
+        Always scoped to ``tenant_id`` (== KnowledgeBase.workspace_id). When
+        ``kb_id`` is provided, results are additionally restricted to that
+        single knowledge base — the ``kb.workspace_id == tenant_id`` filter is
+        still applied unconditionally, so a caller cannot use ``kb_id`` to
+        reach a KB owned by a different tenant; a ``kb_id`` for another
+        tenant simply matches zero rows.
+        """
         query_text = (user_text or "").strip()
         if not query_text or not tenant_id:
             return []
@@ -110,30 +121,31 @@ class RagService:
 
         db, should_close = self._session(db_session)
         try:
-            stmt = text(
-                """
-                SELECT
-                    c.id::text            AS id,
-                    c.content,
-                    c.metadata            AS chunk_metadata,
-                    kb.name               AS kb_name,
-                    1 - (c.embedding::vector <=> CAST(:vec AS vector)) AS score
-                FROM kbchunk c
-                JOIN knowledgebase kb ON c.kb_id = kb.id
-                WHERE kb.workspace_id = :workspace_id
-                  AND c.embedding IS NOT NULL
-                ORDER BY c.embedding::vector <=> CAST(:vec AS vector)
-                LIMIT :top_k
-                """
+            params: dict = {
+                "vec": vec_str,
+                "workspace_id": str(tenant_id),
+                "top_k": top_k,
+            }
+            # Construct parameterized query using static string concatenation (no f-string interpolation).
+            base_sql = (
+                "SELECT\n"
+                "    c.id::text            AS id,\n"
+                "    c.content,\n"
+                "    c.metadata            AS chunk_metadata,\n"
+                "    kb.name               AS kb_name,\n"
+                "    1 - (c.embedding::vector <=> CAST(:vec AS vector)) AS score\n"
+                "FROM kbchunk c\n"
+                "JOIN knowledgebase kb ON c.kb_id = kb.id\n"
+                "WHERE kb.workspace_id = :workspace_id\n"
+                "  AND c.embedding IS NOT NULL\n"
             )
-            rows = db.execute(
-                stmt,
-                {
-                    "vec": vec_str,
-                    "workspace_id": str(tenant_id),
-                    "top_k": top_k,
-                },
-            ).fetchall()
+            if kb_id:
+                base_sql += "  AND kb.id = :kb_id\n"
+                params["kb_id"] = str(kb_id)
+            base_sql += "ORDER BY c.embedding::vector <=> CAST(:vec AS vector)\nLIMIT :top_k\n"
+
+            stmt = text(base_sql)
+            rows = db.execute(stmt, params).fetchall()
         except Exception as e:
             logger.error("pgvector retrieval failed: %s", e, exc_info=True)
             if trace is not None:

@@ -181,6 +181,14 @@ class TestAuthorization:
             require_workspace_owner(user=non_owner_admin, db=db)
         assert exc.value.status_code == 403
 
+    def test_require_workspace_owner_rejects_api_key_principal(self, db, parent):
+        from app.core.request_auth import ApiKeyPrincipal
+        principal = ApiKeyPrincipal(current_tenant_id=parent.id, api_key_id=uuid.uuid4())
+        with pytest.raises(HTTPException) as exc:
+            require_workspace_owner(user=principal, db=db)
+        assert exc.value.status_code == 403
+        assert "API key" in exc.value.detail or "user session" in exc.value.detail
+
 
 # ─────────────────────────────────────────────────────────── breakdown ──
 
@@ -246,10 +254,21 @@ class TestBreakdown:
 
         assert csv_res.status_code == 200
         assert csv_res.headers["content-type"].startswith("text/csv")
-        assert "attachment; filename=" in csv_res.headers["content-disposition"]
+        assert csv_res.headers["content-disposition"] == 'attachment; filename="workspace-usage-breakdown.csv"'
 
         json_total = str(json_res.json()["this_month_total"])
         assert json_total in csv_res.text
+
+    def test_sums_by_workspace_batches_large_tenant_lists(self, db, parent, now):
+        from app.api.v2.routers.workspace import _sums_by_workspace
+        _usage(db, parent.id, recorded_at=now, credits=Decimal("15.00"))
+
+        # Generate a large list of dummy UUIDs (e.g. 505 items) to test chunking
+        dummy_ids = [uuid.uuid4() for _ in range(504)]
+        all_ids = [parent.id] + dummy_ids
+
+        result = _sums_by_workspace(db, all_ids, batch_size=200)
+        assert result.get(parent.id) == Decimal("15.00")
 
 
 # ────────────────────────────────────────────────────────── activity ──
@@ -275,6 +294,27 @@ class TestRecentActivity:
         assert Decimal(str(items[0]["amount"])) == Decimal("-1.00")
         assert items[0]["type"] == "call_usage"
         assert items[0]["description"].startswith("Call ID - ")
+
+    def test_pagination_with_limit_and_offset(self, db, parent, sub_account, owner, now):
+        for i in range(15):
+            _usage(
+                db,
+                parent.id if i % 2 == 0 else sub_account.id,
+                recorded_at=now - timedelta(hours=i),
+                credits=Decimal(f"{i + 1}.00"),
+                call_id=None,
+            )
+
+        client = _client(db, owner)
+        res = client.get("/workspace/usage/recent-activity?limit=5&offset=5")
+        assert res.status_code == 200
+        data = res.json()
+        items = data["items"]
+        assert len(items) == 5
+        # Offset 5 skips records 0..4; the 6th newest (i=5, credits=6.00) is first
+        assert Decimal(str(items[0]["amount"])) == Decimal("-6.00")
+        assert data["limit"] == 5
+        assert data["offset"] == 5
 
 
 # ────────────────────────────────────────────────────── minutes-by-month ──
@@ -320,5 +360,6 @@ class TestMinutesByMonth:
 
         assert csv_res.status_code == 200
         assert csv_res.headers["content-type"].startswith("text/csv")
+        assert csv_res.headers["content-disposition"] == 'attachment; filename="workspace-minutes-by-month.csv"'
         current_month_label = json_res.json()["months"][-1]["label"]
         assert current_month_label in csv_res.text

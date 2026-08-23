@@ -14,6 +14,7 @@ from app.core.request_auth import ApiKeyPrincipal
 from app.models.user import User
 from app.schemas.call_flow import (
     FlowDataResponse,
+    FlowDataSaveResponse,
     FlowDataUpdate,
     FlowValidationResponse,
     PaginatedFlowDataResponse,
@@ -47,7 +48,7 @@ def list_flow_data(
 
 @router.put(
     "/{flow_id}/flow-data",
-    response_model=FlowDataResponse,
+    response_model=FlowDataSaveResponse,
     status_code=status.HTTP_200_OK,
     summary="Validate, pre-compile, and save a visual flow graph",
 )
@@ -57,7 +58,7 @@ def update_flow_data(
     request: Request,
     principal: User | ApiKeyPrincipal = Depends(require_config_or_api_key),
     db: Session = Depends(get_db),
-) -> FlowDataResponse:
+) -> FlowDataSaveResponse:
     tenant_id = _tenant_id(principal)
     result = call_flow_service.update_flow_data(db, flow_id, tenant_id, body)
 
@@ -68,11 +69,7 @@ def update_flow_data(
         action="flow_data.updated",
         resource_type="call_flow",
         resource_id=flow_id,
-        new_value={
-            "node_count": (
-                len(result.flow_data.get("nodes", [])) if result.flow_data else 0
-            )
-        },
+        new_value={"node_count": len(body.flow_data.nodes)},
         actor_user_id=principal.id,
     )
     return result
@@ -86,17 +83,27 @@ def update_flow_data(
 )
 def get_flow_data(
     flow_id: uuid.UUID,
+    mode: str | None = Query(
+        None,
+        description=(
+            "Pass 'readonly' to strip sensitive node fields (prompts, phone numbers, "
+            "webhook URLs) and omit the compiled plan from the response. "
+            "Any other value (or omitting the parameter) returns the full response."
+        ),
+    ),
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> FlowDataResponse:
-    return call_flow_service.get_flow_data(db, flow_id, _tenant_id(principal))
+    return call_flow_service.get_flow_data(
+        db, flow_id, _tenant_id(principal), readonly=(mode == "readonly")
+    )
 
 
-@router.get(
-    "/{flow_id}/flow-data/validate",
+@router.post(
+    "/{flow_id}/validate",
     response_model=FlowValidationResponse,
     status_code=status.HTTP_200_OK,
-    summary="Validate the current (or posted) flow graph without saving",
+    summary="Validate the current (or proposed) flow graph without saving",
 )
 def validate_flow_data(
     flow_id: uuid.UUID,
@@ -106,4 +113,23 @@ def validate_flow_data(
 ) -> FlowValidationResponse:
     return call_flow_service.validate_flow_data(
         db, flow_id, _tenant_id(principal), body
+    )
+
+
+@router.get(
+    "/{flow_id}/flow-data/validate",
+    response_model=FlowValidationResponse,
+    status_code=status.HTTP_200_OK,
+    deprecated=True,
+    include_in_schema=False,
+    summary="[Deprecated] Validate current flow graph",
+)
+def validate_flow_data_deprecated(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> FlowValidationResponse:
+    """Deprecated alias for GET /{flow_id}/flow-data/validate to support transition to POST /{flow_id}/validate."""
+    return call_flow_service.validate_flow_data(
+        db, flow_id, _tenant_id(principal), body=None
     )

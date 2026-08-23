@@ -227,6 +227,9 @@ class RecentActivityItemOut(BaseModel):
 
 class RecentActivityOut(BaseModel):
     items: list[RecentActivityItemOut]
+    total: int | None = None
+    limit: int | None = None
+    offset: int | None = None
 
 
 class MonthlyMinutesUsageOut(BaseModel):

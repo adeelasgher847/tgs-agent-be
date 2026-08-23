@@ -1064,6 +1064,36 @@ def test_auto_recharge_failed_charge_does_not_raise_or_grant_credits(
     assert tenant.credits == Decimal("7")
 
 
+def test_auto_recharge_authentication_required_logged_as_warning_and_tracked(
+    db, tenant, service
+):
+    from app.services.stripe_service import StripeAuthenticationRequiredError
+
+    tenant.credits = Decimal("9")
+    tenant.stripe_customer_id = "cus_test_sca"
+    db.commit()
+    config = _auto_recharge_config(db, tenant, min_balance="8", recharge_amount="5")
+
+    with patch(
+        "app.services.stripe_service.StripeService.create_off_session_payment_intent",
+        side_effect=StripeAuthenticationRequiredError(
+            "Card requires 3D Secure / SCA authentication",
+            payment_intent_id="pi_sca_123",
+        ),
+    ):
+        success, remaining = service.deduct_credits(
+            db=db, tenant_id=tenant.id, amount=2.0, description="tick"
+        )
+
+    assert success is True
+    assert remaining == pytest.approx(7.0)
+
+    db.refresh(config)
+    assert config.last_trigger_status == "failed"
+    assert config.last_payment_intent_id == "pi_sca_123"
+    assert "authentication_required" in (config.last_trigger_error or "")
+
+
 def test_auto_recharge_success_threads_idempotency_key_and_persists_trigger_trail(
     db, tenant, service
 ):
@@ -1407,6 +1437,38 @@ def test_auto_recharge_triggers_against_parent_config_for_wallet_sharing_sub_acc
     mock_charge.assert_called_once()
     args, _ = mock_charge.call_args
     assert args[0] == tenant.id  # triggered for the PARENT, not the sub-account
+
+
+def test_auto_recharge_triggers_when_deduct_credits_called_directly_with_sub_account_id(
+    db, tenant, service
+):
+    """When deduct_credits is called directly with a sub-account ID (e.g. from
+    a one-off deduction outside the monitoring loop), it must resolve the
+    parent's billing tenant, deduct from parent.credits, and trigger the
+    parent's auto-recharge config."""
+    sub = _sub_account(db, tenant, uses_master_wallet=True)
+    tenant.credits = Decimal("9")
+    tenant.stripe_customer_id = "cus_test_parent"
+    sub.credits = Decimal("0")
+    db.commit()
+    _auto_recharge_config(db, tenant, min_balance="8", recharge_amount="5")
+
+    with patch.object(service, "_execute_auto_recharge_charge") as mock_charge:
+        # Called directly with the SUB-ACCOUNT id
+        success, remaining = service.deduct_credits(
+            db=db, tenant_id=sub.id, amount=2.0, description="direct sub-account deduction"
+        )
+
+    assert success is True
+    assert remaining == pytest.approx(7.0)
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("7")
+    db.refresh(sub)
+    assert sub.credits == Decimal("0")
+
+    mock_charge.assert_called_once()
+    args, _ = mock_charge.call_args
+    assert args[0] == tenant.id  # triggered for the PARENT
 
 
 async def test_auto_recharge_task_tracked_and_cleaned_up_on_completion(

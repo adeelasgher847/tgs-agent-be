@@ -1,37 +1,39 @@
 """Visual Flow Editor graph validation and pre-compilation.
 
 Pure, CPU-bound functions operating on the raw React-Flow-shaped
-``{"nodes": [...], "edges": [...]}`` payload — no DB/IO. Node shape:
-``{"id": str, "type": str, "data": dict}``. Edge shape:
-``{"id": str, "source": str, "target": str, "condition": {"type": str, ...}}``.
+``{"nodes": [...], "edges": [...], "entry_node_id": str}`` payload — no DB/IO.
+Node shape: ``{"id": str, "type": str, "data": dict}``. Edge shape:
+``{"id": str, "source": str, "target": str, "sourceHandle": str | None}``.
+
+Per the BE6-S6-01 ticket spec: every flow has exactly one ``greeting`` node,
+which is always the entry point, referenced by the flow document's top-level
+``entry_node_id`` field — there is no separate "start" node type.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict, List
+
+logger = logging.getLogger(__name__)
 
 # Nodes that leave the flow entirely (hang up or hand off) — exempt from the
 # "must have an outgoing edge" rule.
 TERMINAL_NODE_TYPES = {"end_call", "transfer"}
 
-# Lower number == evaluated first at call time (see FlowExecutor.next_node_id).
-_EDGE_PRIORITY = {"intent_match": 1, "keyword": 2}
-_DEFAULT_EDGE_PRIORITY = 99
+ENTRY_NODE_TYPE = "greeting"
 
-
-def _is_start_node(node: Dict[str, Any]) -> bool:
-    if node.get("type") == "start":
-        return True
-    data = node.get("data") or {}
-    return bool(data.get("isStart") or data.get("is_start"))
+# Edge sourceHandle used when a raw edge doesn't specify one.
+DEFAULT_HANDLE = "default"
 
 
 def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Validate a flow graph. Returns a list of error dicts (empty if valid).
 
-    Checks: exactly one start node, no directed cycles (DFS + recursion
-    stack, O(V+E)), no orphan nodes (unreachable from the start node), and
-    every non-end node has at least one outgoing edge.
+    Checks: exactly one ``greeting`` node, a valid ``entry_node_id`` pointing
+    at that node, no directed cycles (DFS + recursion stack, O(V+E)), no
+    orphan nodes (unreachable from the entry node), and every non-terminal
+    node has at least one outgoing edge.
     """
     errors: List[Dict[str, Any]] = []
     nodes = flow_data.get("nodes") or []
@@ -61,24 +63,54 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
         return errors
 
-    start_nodes = [n for n in node_by_id.values() if _is_start_node(n)]
-    if len(start_nodes) == 0:
+    greeting_nodes = [
+        n for n in node_by_id.values() if n.get("type") == ENTRY_NODE_TYPE
+    ]
+    if len(greeting_nodes) == 0:
         errors.append(
             {
-                "code": "no_start_node",
-                "message": "Flow must contain exactly one start node",
+                "code": "no_greeting_node",
+                "message": "Flow must contain exactly one greeting node",
                 "node_id": None,
             }
         )
-    elif len(start_nodes) > 1:
+    elif len(greeting_nodes) > 1:
         errors.append(
             {
-                "code": "multiple_start_nodes",
-                "message": f"Flow must contain exactly one start node, found {len(start_nodes)}",
+                "code": "multiple_greeting_nodes",
+                "message": f"Flow must contain exactly one greeting node, found {len(greeting_nodes)}",
                 "node_id": None,
             }
         )
 
+    entry_node_id = flow_data.get("entry_node_id")
+    entry_node = node_by_id.get(entry_node_id) if entry_node_id else None
+    if not entry_node_id:
+        errors.append(
+            {
+                "code": "missing_entry_node_id",
+                "message": "Flow must declare an 'entry_node_id'",
+                "node_id": None,
+            }
+        )
+    elif entry_node is None:
+        errors.append(
+            {
+                "code": "invalid_entry_node_id",
+                "message": f"entry_node_id '{entry_node_id}' does not reference an existing node",
+                "node_id": None,
+            }
+        )
+    elif entry_node.get("type") != ENTRY_NODE_TYPE:
+        errors.append(
+            {
+                "code": "entry_node_not_greeting",
+                "message": f"entry_node_id '{entry_node_id}' must reference the flow's greeting node",
+                "node_id": entry_node_id,
+            }
+        )
+
+    seen_handles: Dict[str, set] = {node_id: set() for node_id in node_by_id}
     adjacency: Dict[str, List[str]] = {node_id: [] for node_id in node_by_id}
     for edge in edges:
         source = edge.get("source")
@@ -92,6 +124,17 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 }
             )
             continue
+        handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if handle in seen_handles[source]:
+            errors.append(
+                {
+                    "code": "duplicate_edge_handle",
+                    "message": f"Node '{source}' has duplicate outgoing edges for handle '{handle}'",
+                    "node_id": source,
+                }
+            )
+        else:
+            seen_handles[source].add(handle)
         adjacency[source].append(target)
 
     for node_id, node in node_by_id.items():
@@ -131,11 +174,10 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             )
             break
 
-    # Orphan/reachability check, only meaningful with a single, unambiguous start node.
-    if len(start_nodes) == 1:
-        start_id = start_nodes[0].get("id")
+    # Orphan/reachability check, only meaningful with a single, valid entry node.
+    if entry_node is not None:
         visited: set = set()
-        stack = [start_id]
+        stack = [entry_node_id]
         while stack:
             current = stack.pop()
             if current in visited:
@@ -147,7 +189,7 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
                 errors.append(
                     {
                         "code": "orphan_node",
-                        "message": f"Node {node_id} is not reachable from the start node",
+                        "message": f"Node {node_id} is not reachable from the entry node",
                         "node_id": node_id,
                     }
                 )
@@ -155,30 +197,47 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return errors
 
 
-def _edge_priority(edge: Dict[str, Any]) -> int:
-    condition = edge.get("condition") or {}
-    return _EDGE_PRIORITY.get(condition.get("type"), _DEFAULT_EDGE_PRIORITY)
-
-
 def compile_graph(flow_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Compile raw flow_data into a lookup-friendly decision tree.
+    """Compile raw flow_data into the pre-compiled executor lookup.
 
-    Returns ``{node_id: {"node": node_dict, "outgoing_edges": [sorted_edges]}}``,
-    where outgoing edges are sorted by condition specificity
-    (intent_match=1, keyword=2, everything else incl. fallback=99).
+    Returns ``{node_id: {"type": str, "data": dict, "next_nodes": {handle:
+    target_node_id}}}`` — a flat, call-time lookup with no re-parsing of the
+    raw graph. ``next_nodes`` keys are each outgoing edge's ``sourceHandle``
+    (``"yes"``/``"no"`` for ``branch`` nodes, ``"default"`` for every other
+    node type when the edge doesn't specify a handle).
+
+    Branch conditions are *not* attached to edges here — ``condition_variable``
+    /``operator``/``condition_value`` live on the ``branch`` node's own
+    ``data`` and are evaluated directly against it at call time (see
+    ``FlowExecutor.next_node_id``), matching the ticket's per-node-type
+    executor logic table.
     """
     nodes = flow_data.get("nodes") or []
     edges = flow_data.get("edges") or []
 
-    outgoing: Dict[str, List[Dict[str, Any]]] = {node["id"]: [] for node in nodes}
+    next_nodes: Dict[str, Dict[str, str]] = {node["id"]: {} for node in nodes}
     for edge in edges:
         source = edge.get("source")
-        if source in outgoing:
-            outgoing[source].append(edge)
+        target = edge.get("target")
+        if source not in next_nodes:
+            continue
+        handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if handle in next_nodes[source]:
+            logger.warning(
+                "Node '%s' has duplicate outgoing edges for handle '%s'; overwriting target '%s' with '%s'",
+                source,
+                handle,
+                next_nodes[source][handle],
+                target,
+            )
+        next_nodes[source][handle] = target
 
     compiled: Dict[str, Any] = {}
     for node in nodes:
         node_id = node["id"]
-        sorted_edges = sorted(outgoing.get(node_id, []), key=_edge_priority)
-        compiled[node_id] = {"node": node, "outgoing_edges": sorted_edges}
+        compiled[node_id] = {
+            "type": node.get("type", ""),
+            "data": node.get("data") or {},
+            "next_nodes": next_nodes.get(node_id, {}),
+        }
     return compiled

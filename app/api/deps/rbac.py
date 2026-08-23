@@ -155,7 +155,7 @@ require_member_or_admin = require_readonly
 
 
 def require_workspace_owner(
-    user: User = Depends(require_user_tenant),
+    user: User | ApiKeyPrincipal = Depends(require_user_tenant),
     db: Session = Depends(get_db),
 ) -> User:
     """Workspace *creator* only — gates cross-sub-account billing/reporting
@@ -176,6 +176,11 @@ def require_workspace_owner(
     (see `_workspace_family` in workspace.py, which re-derives the same
     invariant as defense-in-depth, not as the sole enforcement point).
     """
+    if isinstance(user, ApiKeyPrincipal) or not isinstance(user, User):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Owner-only reporting requires a user session, not an API key.",
+        )
     if not user.current_tenant_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
