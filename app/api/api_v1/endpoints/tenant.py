@@ -74,7 +74,9 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
         existing_schema = db.query(Tenant).filter(Tenant.schema_name == schema_name).first()
         counter += 1
     
-    # Create new tenant with pending_payment status
+    # Create new tenant with pending_payment status.
+    # Note: New tenants intentionally start with 0 credits under the billing plan;
+    # credits/allowance are granted via subscription activation or credit purchase.
     db_tenant = Tenant(
         name=tenant_in.name,
         schema_name=schema_name,

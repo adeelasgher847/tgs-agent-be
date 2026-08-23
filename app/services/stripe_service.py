@@ -12,6 +12,20 @@ from app.core.logger import logger
 stripe.api_key = settings.STRIPE_SECRET_KEY
 
 
+class StripeAuthenticationRequiredError(Exception):
+    """Raised when an off-session charge fails because Strong Customer Authentication (SCA/3DS) is required."""
+
+    def __init__(
+        self,
+        message: str,
+        payment_intent_id: str | None = None,
+        code: str = "authentication_required",
+    ):
+        super().__init__(message)
+        self.payment_intent_id = payment_intent_id
+        self.code = code
+
+
 class StripeService:
 
     @staticmethod
@@ -405,7 +419,33 @@ class StripeService:
                 create_kwargs["idempotency_key"] = idempotency_key
             intent = stripe.PaymentIntent.create(**create_kwargs)
             return intent
+        except stripe.error.CardError as e:
+            err_code = getattr(e, "code", None) or (
+                getattr(e, "error", None) and getattr(e.error, "code", None)
+            )
+            pi_id = getattr(e, "payment_intent", None) and getattr(e.payment_intent, "id", None)
+            if not pi_id and getattr(e, "error", None) and getattr(e.error, "payment_intent", None):
+                pi = e.error.payment_intent
+                pi_id = getattr(pi, "id", None) or (pi.get("id") if isinstance(pi, dict) else None)
+            if err_code == "authentication_required":
+                raise StripeAuthenticationRequiredError(
+                    f"Card requires 3D Secure / SCA authentication: {str(e)}",
+                    payment_intent_id=pi_id,
+                )
+            raise Exception(f"Failed to create off-session PaymentIntent: {str(e)}")
         except stripe.error.StripeError as e:
+            err_code = getattr(e, "code", None) or (
+                getattr(e, "error", None) and getattr(e.error, "code", None)
+            )
+            pi_id = getattr(e, "payment_intent", None) and getattr(e.payment_intent, "id", None)
+            if not pi_id and getattr(e, "error", None) and getattr(e.error, "payment_intent", None):
+                pi = e.error.payment_intent
+                pi_id = getattr(pi, "id", None) or (pi.get("id") if isinstance(pi, dict) else None)
+            if err_code == "authentication_required":
+                raise StripeAuthenticationRequiredError(
+                    f"Card requires 3D Secure / SCA authentication: {str(e)}",
+                    payment_intent_id=pi_id,
+                )
             raise Exception(f"Failed to create off-session PaymentIntent: {str(e)}")
 
     @staticmethod

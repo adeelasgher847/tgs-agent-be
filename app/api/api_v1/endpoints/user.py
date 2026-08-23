@@ -75,7 +75,9 @@ def register_user(user_in: UserCreate, db: Session = Depends(get_db)):
     schema_name = re.sub(r'_+', '_', schema_name).strip('_')
     schema_name = f"{schema_name}_schema"
     
-    # Create new tenant
+    # Create new tenant.
+    # Note: New tenants intentionally start with 0 credits under the billing plan;
+    # credits/allowance are granted via subscription activation or credit purchase.
     db_tenant = Tenant(
         name=tenant_name,
         schema_name=schema_name,
@@ -300,7 +302,9 @@ def google_login(
         db.commit()
         db.refresh(db_user)
 
-        # Create a personal tenant (same as normal register)
+        # Create a personal tenant (same as normal register).
+        # Note: New tenants intentionally start with 0 credits under the billing plan;
+        # credits/allowance are granted via subscription activation or credit purchase.
         tenant_name = email
         schema_name = re.sub(r'[^a-zA-Z0-9]', '_', tenant_name.lower())
         schema_name = re.sub(r'_+', '_', schema_name).strip('_')

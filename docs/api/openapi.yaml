@@ -9250,10 +9250,34 @@ paths:
       tags:
       - Workspace Settings
       summary: Get Workspace Recent Activity
-      description: 'Last 10 spend transactions across the parent tenant + its direct
+      description: 'Spend transactions across the parent tenant + its direct
 
-        sub-accounts. Owner-only.'
+        sub-accounts with pagination support. Owner-only.'
       operationId: get_workspace_recent_activity_api_v2_workspace_usage_recent_activity_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          description: Number of recent activity records to return
+          default: 10
+          title: Limit
+        description: Number of recent activity records to return
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          description: Number of records to skip
+          default: 0
+          title: Offset
+        description: Number of records to skip
       responses:
         '200':
           description: Successful Response
@@ -9261,8 +9285,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/RecentActivityOut'
-      security:
-      - HTTPBearer: []
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/workspace/usage/minutes-by-month:
     get:
       tags:
@@ -16139,6 +16167,15 @@ components:
             $ref: '#/components/schemas/RecentActivityItemOut'
           type: array
           title: Items
+        total:
+          type: integer
+          nullable: true
+        limit:
+          type: integer
+          nullable: true
+        offset:
+          type: integer
+          nullable: true
       type: object
       required:
       - items
