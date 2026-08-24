@@ -7,10 +7,9 @@ Verifies:
 3. 20ms frame pacing (160 bytes per frame) is strictly maintained.
 4. Opt-in agents (background_enabled: True) still properly receive mixed background audio.
 """
-import asyncio
 import base64
 import uuid
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 import pytest
 
 from app.routers.bidirectional_stream import BidirectionalStreamHandler

@@ -284,7 +284,6 @@ class ElevenLabsService:
         Yields raw audio bytes without blocking the event loop.
         Used in the hot TTS path to eliminate sync-request stutter.
         """
-        import httpx
 
         api_key = self.get_api_key(api_key_override)
         safe_optimize = max(0, min(4, int(optimize_streaming_latency)))

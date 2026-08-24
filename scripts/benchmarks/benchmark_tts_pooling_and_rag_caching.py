@@ -12,7 +12,6 @@ Measures:
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import time
 import uuid
@@ -20,10 +19,7 @@ import httpx
 
 from app.services.elevenlabs_service import ElevenLabsService
 from app.services.kb_retrieval_service import (
-    build_embedding_cache_key,
     build_retrieval_cache_key,
-    get_kb_revision,
-    invalidate_kb_cache,
 )
 
 

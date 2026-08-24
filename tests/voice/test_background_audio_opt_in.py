@@ -8,7 +8,6 @@ Verifies:
 4. Background audio is never enabled for non-ElevenLabs providers (Google, Deepgram, etc.).
 """
 from unittest.mock import MagicMock
-import pytest
 
 from app.voice.tts_stream_mixin import TtsStreamMixin
 
