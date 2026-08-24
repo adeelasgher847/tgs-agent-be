@@ -71,7 +71,12 @@ _SKIP_PREFIXES = (
     # flow), whose handler enforces token validity/expiry/budget instead of an
     # Origin allowlist — see app/routers/sdk.py::demo_call_token.
     "/api/v1/sdk/",
+    # OAuth callbacks (public browser redirects; authenticated via signed state)
     "/api/v1/integrations/hubspot/callback",
+    "/api/v1/integrations/slack/callback",
+    "/api/v1/integrations/salesforce/callback",
+    "/api/v1/integrations/leadconnector/callback",
+    "/api/v2/integrations/calendly/callback",
     "/health",
     # v2 public endpoints — no auth required
     "/api/v2/health",

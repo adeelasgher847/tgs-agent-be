@@ -88,6 +88,26 @@ def _app() -> FastAPI:
     def public_sdk_token():
         return {"ok": True}
 
+    @mini.get("/api/v1/integrations/slack/callback")
+    def public_slack_callback():
+        return {"ok": True}
+
+    @mini.get("/api/v1/integrations/hubspot/callback")
+    def public_hubspot_callback():
+        return {"ok": True}
+
+    @mini.get("/api/v1/integrations/salesforce/callback")
+    def public_salesforce_callback():
+        return {"ok": True}
+
+    @mini.get("/api/v1/integrations/leadconnector/callback")
+    def public_ghl_callback():
+        return {"ok": True}
+
+    @mini.get("/api/v2/integrations/calendly/callback")
+    def public_calendly_callback():
+        return {"ok": True}
+
     @mini.get("/health")
     def health():
         return {"ok": True}
@@ -223,6 +243,26 @@ class TestSkipPaths:
         resp = client.get("/")
         # FastAPI 404 is fine — the point is middleware does not block it
         assert resp.status_code != 401
+
+    def test_slack_oauth_callback_no_auth(self, client):
+        resp = client.get("/api/v1/integrations/slack/callback")
+        assert resp.status_code == 200
+
+    def test_hubspot_oauth_callback_no_auth(self, client):
+        resp = client.get("/api/v1/integrations/hubspot/callback")
+        assert resp.status_code == 200
+
+    def test_salesforce_oauth_callback_no_auth(self, client):
+        resp = client.get("/api/v1/integrations/salesforce/callback")
+        assert resp.status_code == 200
+
+    def test_ghl_oauth_callback_no_auth(self, client):
+        resp = client.get("/api/v1/integrations/leadconnector/callback")
+        assert resp.status_code == 200
+
+    def test_calendly_oauth_callback_no_auth(self, client):
+        resp = client.get("/api/v2/integrations/calendly/callback")
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------

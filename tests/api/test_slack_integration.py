@@ -535,3 +535,48 @@ class TestSlackSetChannelRequestValidation:
 
         with pytest.raises(ValidationError):
             SlackSetChannelRequest(channel_id=None, channel_name="general")
+
+
+class TestIntegrationListIncludesSlack:
+    @pytest.mark.anyio
+    async def test_list_integrations_includes_slack_status(self):
+        from datetime import datetime, timezone
+        from app.routers.integrations import list_integrations
+
+        request = MagicMock()
+        tenant = MagicMock()
+        tenant.id = _TENANT_ID
+        tenant.workspace_settings = {}
+
+        db = MagicMock()
+        db.query.return_value.filter.return_value.first.return_value = tenant
+
+        connected_at = datetime(2026, 6, 1, tzinfo=timezone.utc)
+
+        with (
+            patch(
+                "app.core.request_auth.get_workspace_from_request",
+                return_value=MagicMock(id=_TENANT_ID),
+            ),
+            patch(
+                "app.services.hubspot_service.get_connection_status",
+                return_value=(False, None),
+            ),
+            patch(
+                "app.services.salesforce_service.get_connection_status",
+                return_value=(False, None),
+            ),
+            patch(
+                "app.services.ghl_service.get_connection_status",
+                return_value=(False, None),
+            ),
+            patch(
+                "app.services.slack_service.get_connection_status",
+                return_value=(True, connected_at),
+            ),
+        ):
+            result = await list_integrations(request=request, user=_principal(), db=db)
+
+        slack_item = next(i for i in result.integrations if i.name == "slack")
+        assert slack_item.connected is True
+        assert slack_item.connected_at == connected_at

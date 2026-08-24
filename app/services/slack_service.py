@@ -264,6 +264,15 @@ async def get_valid_access_token(db: Session, tenant_id: uuid.UUID) -> str | Non
     return decrypt_slack_token(row.access_token, db)
 
 
+def get_connection_status(
+    db: Session, tenant_id: uuid.UUID
+) -> tuple[bool, datetime | None]:
+    row = get_integration(db, tenant_id)
+    if row is None:
+        return False, None
+    return True, row.created_at
+
+
 def get_integration_status(db: Session, tenant_id: uuid.UUID) -> dict:
     row = get_integration(db, tenant_id)
     if row is None:
