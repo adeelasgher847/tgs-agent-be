@@ -1141,7 +1141,15 @@ class LiveKitBrowserCallHandler:
                         "[LiveKitBrowserCall] LiveKit playback: streaming TTS chunk "
                         "incrementally (call_session_id=%s)", self.call_session_id,
                     )
-                    await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
+                    try:
+                        await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as stream_exc:
+                        logger.warning(
+                            "[LiveKitBrowserCall] streaming TTS chunk playback error: %s",
+                            stream_exc,
+                        )
                     # NOTE (Phase 4D-2): previously wrote `text` into
                     # self._elevenlabs_prev_tts_text here, post-playback, as the
                     # "previous_text" source for the NEXT chunk. That write raced
