@@ -795,18 +795,15 @@ async def get_crm_context_block_for_call(db: Session, call_session: CallSession)
         )
         context_block = ""
 
+    # Cache on call_session.call_metadata in memory so subsequent turns during this call
+    # read the cached string in 0ms without synchronous database write/flush on the hot path.
+    updated_metadata = dict(call_session.call_metadata or {})
+    updated_metadata["ghl_crm_context"] = context_block
+    call_session.call_metadata = updated_metadata
     try:
-        with db.begin_nested():
-            updated_metadata = dict(call_session.call_metadata or {})
-            updated_metadata["ghl_crm_context"] = context_block
-            call_session.call_metadata = updated_metadata
-            flag_modified(call_session, "call_metadata")
-            db.add(call_session)
-            db.flush()
+        flag_modified(call_session, "call_metadata")
     except Exception:
-        logger.warning(
-            "Failed to cache GHL CRM context on call_session (non-critical)", exc_info=True
-        )
+        pass
 
     return context_block
 

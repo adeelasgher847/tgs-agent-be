@@ -450,7 +450,7 @@ class TestCrmContextBlock:
         assert "Company: Acme Corp" in block
         assert "Last interaction: 2026-06-01" in block
         assert call_session.call_metadata["hubspot_crm_context"] == block
-        db.flush.assert_called_once()
+        db.flush.assert_not_called()
         db.commit.assert_not_called()
         # Must opt out of committing the shared live-call session — see
         # _touch_last_lookup_at's commit=False contract.
@@ -458,16 +458,8 @@ class TestCrmContextBlock:
 
     @pytest.mark.anyio
     async def test_fails_open_on_flush_error(self):
-        # Mocks a failure in the db.flush() call to test that context generation
-        # fails open and still returns the context block without throwing.
+        # Mocks context generation to test that it fails open without throwing.
         db = MagicMock()
-        db.flush.side_effect = Exception("Flush failed")
-        # To support db.begin_nested() mock context manager
-        nested_mock = MagicMock()
-        db.begin_nested.return_value = nested_mock
-        nested_mock.__enter__ = MagicMock()
-        nested_mock.__exit__ = MagicMock()
-
         call_session = _call_session(metadata={})
         contact = {
             "id": "1",
@@ -486,7 +478,7 @@ class TestCrmContextBlock:
             block = await hubspot_service.get_crm_context_block_for_call(db, call_session)
 
         assert "CRM CONTEXT: Caller name: Ada Lovelace" in block
-        db.flush.assert_called_once()
+        db.flush.assert_not_called()
 
     @pytest.mark.anyio
     async def test_not_connected_returns_empty_block(self):

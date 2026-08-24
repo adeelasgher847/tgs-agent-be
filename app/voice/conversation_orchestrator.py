@@ -193,8 +193,11 @@ class ConversationOrchestrator:
         """
         Send instant acknowledgement for longer queries while generating full response.
         Probability-based so we don't say "Got it" every time — more natural.
-        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
+        Disabled by default (VOICE_QUICK_ACK_PROBABILITY=0.0) in Sprint 1 to prevent
+        semantically incorrect fillers and TTS concurrency load.
         """
+        if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
+            return
         text = (user_text or "").strip()
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
@@ -334,7 +337,7 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -413,7 +416,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
@@ -452,7 +455,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 
@@ -852,10 +855,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._h._tts_pipeline.reset_previous_text_continuity()
             self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            # Send quick acknowledgement for longer queries (instant from cache!)
-            await self.send_quick_acknowledgement(user_text)
+            # If quick ack is enabled (>0 probability), fire in background — never block prompt generation
+            if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) > 0.0:
+                asyncio.create_task(self.send_quick_acknowledgement(user_text))
+
+            _vm = getattr(self._h, "_voice_metrics", None)
+            if _vm:
+                _vm.transport = "livekit_demo" if "LiveKit" in self._h.__class__.__name__ else "telephony"
+                _agent = getattr(self._h, "agent", None)
+                _vm.agent_id = str(getattr(_agent, "id", "")) if _agent else None
+                _vm.mark_rag_start()
 
             system_prompt = await self.build_system_prompt(user_text, confidence)
+            if _vm:
+                _vm.mark_prompt_ready()
 
             from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
@@ -865,6 +878,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             temperature = llm_runtime.temperature
             max_tokens = llm_runtime.max_tokens
             llm_service = llm_service_for_provider(llm_runtime.provider_slug)
+            if _vm:
+                _vm.provider = llm_runtime.provider_slug
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
@@ -880,6 +895,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 "[LLM] request sent: provider=%s model=%s user_text_len=%s",
                 llm_runtime.provider_slug, model_name, len(user_text or ""),
             )
+            if _vm:
+                _vm.mark_llm_request()
 
             async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
                 nonlocal chunk_counter
@@ -1028,6 +1045,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 ).replace("[END_CALL]", "").strip()
                 if transcript_text:
                     await self._h._add_to_transcript("agent", transcript_text, "agent_response")
+
+            if _vm:
+                _vm.mark_turn_complete()
+                _vm.log_turn_summary(
+                    logger,
+                    user_preview=user_text,
+                    session_hint=str(getattr(self._h, "call_session_id", "") or ""),
+                )
 
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)

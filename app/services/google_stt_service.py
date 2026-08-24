@@ -86,22 +86,24 @@ class GoogleSttService:
 
         def __init__(
             self,
-            language_code: str,
-            sample_rate_hz: int,
-            encoding: str,
-            interim_results: bool,
-            api_config: Dict[str, Any],
-            silence_threshold_ms: int,
+            language_code: str = "en-US",
+            sample_rate_hz: int = 8000,
+            encoding: str = "MULAW",
+            interim_results: bool = True,
+            api_config: Dict[str, Any] | None = None,
+            silence_threshold_ms: int = 500,
         ) -> None:
             self._language_code = language_code
             self._sample_rate_hz = sample_rate_hz
             self._encoding = encoding.upper()
             self._interim_results = interim_results
-            self._api_config = api_config
+            self._api_config = api_config or {}
             self._silence_threshold_ms = silence_threshold_ms
 
             self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
             self._results_q: "queue.Queue[Dict[str, Any]]" = queue.Queue()
+            self._async_results_q: "asyncio.Queue[Dict[str, Any]]" = asyncio.Queue()
+            self._loop: asyncio.AbstractEventLoop | None = None
             self._audio_finished = False
             self._closed = False
             self._task_started = False
@@ -114,6 +116,14 @@ class GoogleSttService:
             self._error_restart_count: int = 0
             self._error_restart_window_start: float = 0.0
             self._speech_end_mono: float = 0.0
+
+        def _push_result(self, item: Dict[str, Any]) -> None:
+            self._results_q.put(item)
+            if self._loop is not None and self._loop.is_running():
+                try:
+                    self._loop.call_soon_threadsafe(self._async_results_q.put_nowait, item)
+                except RuntimeError:
+                    pass
 
         def push_audio(self, audio_chunk: bytes) -> None:
             if self._audio_finished or self._closed:
@@ -135,14 +145,16 @@ class GoogleSttService:
             if self._task_started:
                 return
             self._task_started = True
+            self._loop = asyncio.get_running_loop()
             self._thread = threading.Thread(
                 target=self._run_blocking_stream, daemon=True
             )
             self._thread.start()
 
         async def get_result(self) -> Dict[str, Any]:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._results_q.get)
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
+            return await self._async_results_q.get()
 
         def _make_recognition_config(self):
             from google.cloud import speech_v1p1beta1 as speech
@@ -183,7 +195,7 @@ class GoogleSttService:
                 self._error_restart_count = 0
 
             self._error_restart_count += 1
-            self._results_q.put(
+            self._push_result(
                 {
                     "error": message,
                     "recoverable": self._error_restart_count <= _MAX_ERROR_RESTARTS,
@@ -299,7 +311,7 @@ class GoogleSttService:
                         }
                         if speech_end_to_final_ms is not None:
                             payload["stt_speech_end_to_final_ms"] = speech_end_to_final_ms
-                        self._results_q.put(payload)
+                        self._push_result(payload)
 
             except OutOfRange as exc:
                 logger.info("[Google STT] stream time limit (OutOfRange): %s", exc)
@@ -313,7 +325,7 @@ class GoogleSttService:
                     return False
             except (PermissionDenied, Unauthenticated) as exc:
                 logger.error("[Google STT] auth error (non-recoverable): %s", exc)
-                self._results_q.put(
+                self._push_result(
                     {
                         "error": str(exc),
                         "recoverable": False,
@@ -381,7 +393,7 @@ class GoogleSttService:
 
             self._closed = True
             logger.info("[Google STT] session_end restart_count=%d", restart_count)
-            self._results_q.put({"done": True})
+            self._push_result({"done": True})
 
 
 google_stt_service = GoogleSttService()

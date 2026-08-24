@@ -68,6 +68,8 @@ class DeepgramSTTService:
 
             self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
             self._results_q: "queue.Queue[dict]" = queue.Queue()
+            self._async_results_q: "asyncio.Queue[dict]" = asyncio.Queue()
+            self._loop: asyncio.AbstractEventLoop | None = None
             self._closed = False
             self._task_started = False
             self._thread: threading.Thread | None = None
@@ -86,6 +88,14 @@ class DeepgramSTTService:
             # doesn't drop everything but the last segment.
             self._pending_finalized_prefix = ""
 
+        def _push_result(self, item: dict) -> None:
+            self._results_q.put(item)
+            if self._loop is not None and self._loop.is_running():
+                try:
+                    self._loop.call_soon_threadsafe(self._async_results_q.put_nowait, item)
+                except RuntimeError:
+                    pass
+
         def push_audio(self, audio_chunk: bytes) -> None:
             if self._closed:
                 return
@@ -100,6 +110,7 @@ class DeepgramSTTService:
             if self._task_started:
                 return
             self._task_started = True
+            self._loop = asyncio.get_running_loop()
             self._session_started_monotonic = time.perf_counter()
             logger.info(
                 "[Deepgram STT] session_start model=%s language=%s sample_rate=%s encoding=%s",
@@ -113,10 +124,10 @@ class DeepgramSTTService:
 
         def _run_blocking_stream(self) -> None:
             if not self._client:
-                self._results_q.put(
+                self._push_result(
                     {"error": "Deepgram client not initialized", "transcript": "", "confidence": 0.0, "is_final": True}
                 )
-                self._results_q.put({"done": True})
+                self._push_result({"done": True})
                 return
 
             dg_encoding = "mulaw" if self._encoding == "MULAW" else "linear16"
@@ -130,7 +141,7 @@ class DeepgramSTTService:
                         # covers phone-line noise (static, hold music, cross-talk) that
                         # can otherwise block silence-based endpointing indefinitely.
                         if self._pending_transcript:
-                            self._results_q.put(
+                            self._push_result(
                                 {
                                     "transcript": self._pending_transcript,
                                     "confidence": self._pending_confidence,
@@ -158,6 +169,33 @@ class DeepgramSTTService:
                         self._pending_finalized_prefix = ""
                         if not transcript:
                             return
+
+                        # Extract exact acoustic speech end offset from word timings
+                        speech_end_audio_sec = None
+                        words = getattr(alt, "words", None) or []
+                        if words:
+                            last_w = words[-1]
+                            end_val = getattr(last_w, "end", None)
+                            if end_val is None and isinstance(last_w, dict):
+                                end_val = last_w.get("end")
+                            if end_val is not None:
+                                try:
+                                    speech_end_audio_sec = float(end_val)
+                                except (TypeError, ValueError):
+                                    pass
+                        if speech_end_audio_sec is None:
+                            start_sec = getattr(message, "start", None)
+                            dur_sec = getattr(message, "duration", None)
+                            if start_sec is not None and dur_sec is not None:
+                                try:
+                                    speech_end_audio_sec = float(start_sec) + float(dur_sec)
+                                except (TypeError, ValueError):
+                                    pass
+
+                        acoustic_speech_end_mono = None
+                        if speech_end_audio_sec is not None and self._session_started_monotonic is not None:
+                            acoustic_speech_end_mono = self._session_started_monotonic + speech_end_audio_sec
+
                         if (
                             self._session_started_monotonic is not None
                             and not self._first_final_logged
@@ -166,12 +204,19 @@ class DeepgramSTTService:
                                 (time.perf_counter() - self._session_started_monotonic) * 1000
                             )
                             logger.info(
-                                "[Deepgram STT] final_latency_ms=%s",
+                                "[Deepgram STT] final_latency_ms=%s speech_end_audio_sec=%s",
                                 final_latency_ms,
+                                speech_end_audio_sec,
                             )
                             self._first_final_logged = True
-                        self._results_q.put(
-                            {"transcript": transcript, "confidence": confidence, "is_final": True}
+                        self._push_result(
+                            {
+                                "transcript": transcript,
+                                "confidence": confidence,
+                                "is_final": True,
+                                "speech_end_audio_sec": speech_end_audio_sec,
+                                "acoustic_speech_end_mono": acoustic_speech_end_mono,
+                            }
                         )
                         return
 
@@ -208,7 +253,7 @@ class DeepgramSTTService:
                             first_interim_latency_ms,
                         )
                         self._first_interim_logged = True
-                    self._results_q.put(
+                    self._push_result(
                         {"transcript": transcript, "confidence": confidence, "is_final": False}
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -217,7 +262,7 @@ class DeepgramSTTService:
             def on_error(error: Any) -> None:
                 self._session_end_reason = "websocket_error"
                 logger.error("[Deepgram STT] websocket error: %s", error, exc_info=True)
-                self._results_q.put(
+                self._push_result(
                     {"error": str(error), "transcript": "", "confidence": 0.0, "is_final": True}
                 )
 
@@ -259,7 +304,7 @@ class DeepgramSTTService:
                         except Exception as exc:  # noqa: BLE001
                             self._session_end_reason = "send_media_failed"
                             logger.error("[Deepgram STT] send_media failed: %s", exc, exc_info=True)
-                            self._results_q.put(
+                            self._push_result(
                                 {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
                             )
                             break
@@ -302,16 +347,17 @@ class DeepgramSTTService:
             except Exception as exc:  # noqa: BLE001
                 self._session_end_reason = "stream_exception"
                 logger.error("[Deepgram STT] streaming session error: %s", exc, exc_info=True)
-                self._results_q.put(
+                self._push_result(
                     {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
                 )
             finally:
                 logger.info("[Deepgram STT] session_end reason=%s", self._session_end_reason)
-                self._results_q.put({"done": True})
+                self._push_result({"done": True})
 
         async def get_result(self) -> Dict[str, Any]:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._results_q.get)
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
+            return await self._async_results_q.get()
 
     class FluxStreamingSTTSession:
         """
@@ -351,6 +397,8 @@ class DeepgramSTTService:
 
             self._audio_q: "queue.Queue[bytes | None]" = queue.Queue()
             self._results_q: "queue.Queue[dict]" = queue.Queue()
+            self._async_results_q: "asyncio.Queue[dict]" = asyncio.Queue()
+            self._loop: asyncio.AbstractEventLoop | None = None
             self._closed = False
             self._task_started = False
             self._thread: threading.Thread | None = None
@@ -358,6 +406,14 @@ class DeepgramSTTService:
             self._first_interim_logged = False
             self._first_final_logged = False
             self._session_end_reason = "unknown"
+
+        def _push_result(self, item: dict) -> None:
+            self._results_q.put(item)
+            if self._loop is not None and self._loop.is_running():
+                try:
+                    self._loop.call_soon_threadsafe(self._async_results_q.put_nowait, item)
+                except RuntimeError:
+                    pass
 
         def push_audio(self, audio_chunk: bytes) -> None:
             if self._closed:
@@ -373,6 +429,7 @@ class DeepgramSTTService:
             if self._task_started:
                 return
             self._task_started = True
+            self._loop = asyncio.get_running_loop()
             self._session_started_monotonic = time.perf_counter()
             logger.info(
                 "[Deepgram Flux STT] session_start model=%s language=%s sample_rate=%s encoding=%s",
@@ -394,10 +451,10 @@ class DeepgramSTTService:
 
         def _run_blocking_stream(self) -> None:
             if not self._client:
-                self._results_q.put(
+                self._push_result(
                     {"error": "Deepgram client not initialized", "transcript": "", "confidence": 0.0, "is_final": True}
                 )
-                self._results_q.put({"done": True})
+                self._push_result({"done": True})
                 return
 
             dg_encoding = "mulaw" if self._encoding == "MULAW" else "linear16"
@@ -411,7 +468,7 @@ class DeepgramSTTService:
                             message.code,
                             message.description,
                         )
-                        self._results_q.put(
+                        self._push_result(
                             {
                                 "error": message.description or message.code,
                                 "transcript": "",
@@ -435,6 +492,23 @@ class DeepgramSTTService:
                     confidence = self._avg_word_confidence(message.words)
 
                     if event == "EndOfTurn":
+                        speech_end_audio_sec = None
+                        words = getattr(message, "words", None) or []
+                        if words:
+                            last_w = words[-1]
+                            end_val = getattr(last_w, "end", None)
+                            if end_val is None and isinstance(last_w, dict):
+                                end_val = last_w.get("end")
+                            if end_val is not None:
+                                try:
+                                    speech_end_audio_sec = float(end_val)
+                                except (TypeError, ValueError):
+                                    pass
+
+                        acoustic_speech_end_mono = None
+                        if speech_end_audio_sec is not None and self._session_started_monotonic is not None:
+                            acoustic_speech_end_mono = self._session_started_monotonic + speech_end_audio_sec
+
                         if (
                             self._session_started_monotonic is not None
                             and not self._first_final_logged
@@ -443,11 +517,19 @@ class DeepgramSTTService:
                                 (time.perf_counter() - self._session_started_monotonic) * 1000
                             )
                             logger.info(
-                                "[Deepgram Flux STT] final_latency_ms=%s", final_latency_ms
+                                "[Deepgram Flux STT] final_latency_ms=%s speech_end_audio_sec=%s",
+                                final_latency_ms,
+                                speech_end_audio_sec,
                             )
                             self._first_final_logged = True
-                        self._results_q.put(
-                            {"transcript": transcript, "confidence": confidence, "is_final": True}
+                        self._push_result(
+                            {
+                                "transcript": transcript,
+                                "confidence": confidence,
+                                "is_final": True,
+                                "speech_end_audio_sec": speech_end_audio_sec,
+                                "acoustic_speech_end_mono": acoustic_speech_end_mono,
+                            }
                         )
                         return
 
@@ -464,7 +546,7 @@ class DeepgramSTTService:
                             first_interim_latency_ms,
                         )
                         self._first_interim_logged = True
-                    self._results_q.put(
+                    self._push_result(
                         {"transcript": transcript, "confidence": confidence, "is_final": False}
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -473,7 +555,7 @@ class DeepgramSTTService:
             def on_error(error: Any) -> None:
                 self._session_end_reason = "websocket_error"
                 logger.error("[Deepgram Flux STT] websocket error: %s", error, exc_info=True)
-                self._results_q.put(
+                self._push_result(
                     {"error": str(error), "transcript": "", "confidence": 0.0, "is_final": True}
                 )
 
@@ -510,7 +592,7 @@ class DeepgramSTTService:
                             logger.error(
                                 "[Deepgram Flux STT] send_media failed: %s", exc, exc_info=True
                             )
-                            self._results_q.put(
+                            self._push_result(
                                 {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
                             )
                             break
@@ -536,16 +618,17 @@ class DeepgramSTTService:
             except Exception as exc:  # noqa: BLE001
                 self._session_end_reason = "stream_exception"
                 logger.error("[Deepgram Flux STT] streaming session error: %s", exc, exc_info=True)
-                self._results_q.put(
+                self._push_result(
                     {"error": str(exc), "transcript": "", "confidence": 0.0, "is_final": True}
                 )
             finally:
                 logger.info("[Deepgram Flux STT] session_end reason=%s", self._session_end_reason)
-                self._results_q.put({"done": True})
+                self._push_result({"done": True})
 
         async def get_result(self) -> Dict[str, Any]:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, self._results_q.get)
+            if self._loop is None:
+                self._loop = asyncio.get_running_loop()
+            return await self._async_results_q.get()
 
     def create_streaming_session(
         self,

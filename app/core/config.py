@@ -795,11 +795,9 @@ class Settings(BaseSettings):
     # testing available in this environment). Revisit after real listening.
     VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES: int = 3
     VOICE_QUICK_ACK_MIN_WORDS: int = 5
-    # Quick-ack: fires on slow-path queries only (fastpath is excluded at call site).
-    # In V2 TtsPipeline, LLM chunk synthesis runs in parallel with quick-ack playback
-    # so the "shutter then silence" gap only occurs when LLM TTFT > quick-ack duration.
-    # 0.35 = fires roughly every third slow-path turn; set 0.0 to disable entirely.
-    VOICE_QUICK_ACK_PROBABILITY: float = 0.35
+    # Quick-ack: disabled by default (0.0) to eliminate random/semantically incorrect fillers
+    # and TTS concurrency contention. Set > 0.0 only for experimental testing.
+    VOICE_QUICK_ACK_PROBABILITY: float = 0.0
     # Fast-path for very short/simple turns to reduce first-token latency:
     # skip heavy RAG/KB context for obvious non-booking smalltalk.
     VOICE_ENABLE_LATENCY_FASTPATH: bool = True

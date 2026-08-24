@@ -916,6 +916,11 @@ class TtsPipeline:
                         synth_elapsed,
                     )
 
+            if audio_bytes is not None:
+                _vm = getattr(self._handler, "_voice_metrics", None)
+                if _vm:
+                    _vm.mark_tts_first_audio()
+
             if isinstance(audio_bytes, bytes):
                 self._put_cached(cache_key, audio_bytes)
 
@@ -981,6 +986,9 @@ class TtsPipeline:
             # turn's audio is exhausted — exactly the semantics a single
             # is_final=True HTTP chunk would already have.
             effective_is_final = True if task.get("_ws_owner") else is_final
+            _vm = getattr(self._handler, "_voice_metrics", None)
+            if _vm:
+                _vm.mark_first_playback()
             await self._handler._stream_tts_chunk(  # type: ignore[attr-defined]
                 text,
                 use_ssml=use_ssml,

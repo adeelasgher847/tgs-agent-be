@@ -615,7 +615,12 @@ class VoiceOrchestrator:
                 "[VoiceOrchestrator] _on_interim callback error: %s", exc, exc_info=True
             )
 
-    async def _on_final(self, transcript: str, confidence: float) -> None:
+    async def _on_final(
+        self,
+        transcript: str,
+        confidence: float,
+        acoustic_speech_end_mono: float | None = None,
+    ) -> None:
         """
         STT final result callback.
         1. Log with PII redaction for audit trail.
@@ -638,6 +643,8 @@ class VoiceOrchestrator:
 
             async def _run_final() -> None:
                 try:
+                    await h._process_transcript(transcript, confidence, acoustic_speech_end_mono)
+                except TypeError:
                     await h._process_transcript(transcript, confidence)
                 except asyncio.CancelledError:
                     raise
