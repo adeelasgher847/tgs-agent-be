@@ -38,7 +38,7 @@ def _tenant_id(principal) -> uuid.UUID:
     return principal.current_tenant_id
 
 
-@router.get("/connect", include_in_schema=False)
+@router.get("/connect", include_in_schema=True)
 async def slack_connect(
     request: Request,
     principal=Depends(require_admin),

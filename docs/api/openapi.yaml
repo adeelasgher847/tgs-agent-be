@@ -7381,6 +7381,31 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v1/integrations/slack/connect:
+    get:
+      tags:
+      - Slack Integration
+      summary: Slack Connect
+      description: 'Redirect to Slack''s OAuth v2 consent page. Scopes: channels:read,
+        groups:read, chat:write.
+
+
+        Frontend `fetch()` calls send `Accept: application/json` and can''t follow
+
+        a cross-origin 302 to Slack with our auth headers attached, so they get
+
+        the URL back as JSON instead and navigate to it themselves. Normal browser
+
+        navigation (no `Accept: application/json`) keeps the existing 302.'
+      operationId: slack_connect_api_v1_integrations_slack_connect_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+      security:
+      - HTTPBearer: []
   /api/v1/integrations/slack:
     get:
       tags:
