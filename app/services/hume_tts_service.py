@@ -158,26 +158,81 @@ class HumeTtsService:
         t0 = time.perf_counter()
         first_chunk = True
 
+        ws = None
         try:
-            ws = await asyncio.wait_for(
-                websockets.connect(url), timeout=_WS_CONNECT_TIMEOUT_S
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            raise HumeTtsServiceError(
-                f"failed to open Hume TTS WebSocket: {_redact(str(exc))}"
-            ) from exc
+            max_connect_attempts = 3
+            for attempt in range(1, max_connect_attempts + 1):
+                try:
+                    ws = await asyncio.wait_for(
+                        websockets.connect(url), timeout=_WS_CONNECT_TIMEOUT_S
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if attempt < max_connect_attempts and isinstance(
+                        exc,
+                        (
+                            websockets.ConnectionClosed,
+                            ConnectionResetError,
+                            OSError,
+                            asyncio.TimeoutError,
+                        ),
+                    ):
+                        logger.warning(
+                            "[Hume] transient WebSocket connect error (attempt %d/%d): %s — retrying",
+                            attempt,
+                            max_connect_attempts,
+                            _redact(str(exc)),
+                        )
+                        await asyncio.sleep(0.06 * attempt)
+                        continue
+                    raise HumeTtsServiceError(
+                        f"failed to open Hume TTS WebSocket: {_redact(str(exc))}"
+                    ) from exc
 
-        try:
-            try:
-                await ws.send(json.dumps(message))
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                raise HumeTtsServiceError(
-                    f"failed to send to Hume TTS WebSocket: {_redact(str(exc))}"
-                ) from exc
+                try:
+                    await ws.send(json.dumps(message))
+                    break
+                except asyncio.CancelledError:
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                    raise
+                except (
+                    websockets.ConnectionClosed,
+                    ConnectionResetError,
+                    OSError,
+                    asyncio.TimeoutError,
+                ) as exc:
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    if attempt < max_connect_attempts:
+                        logger.warning(
+                            "[Hume] transient WebSocket send error (attempt %d/%d): %s — retrying",
+                            attempt,
+                            max_connect_attempts,
+                            _redact(str(exc)),
+                        )
+                        await asyncio.sleep(0.06 * attempt)
+                        continue
+                    raise HumeTtsServiceError(
+                        f"failed to send to Hume TTS WebSocket: {_redact(str(exc))}"
+                    ) from exc
+                except Exception as exc:
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                    raise HumeTtsServiceError(
+                        f"failed to send to Hume TTS WebSocket: {_redact(str(exc))}"
+                    ) from exc
 
             while True:
                 try:

@@ -3,6 +3,8 @@ ElevenLabs Service Module
 Handles text-to-speech operations using ElevenLabs API
 """
 
+import asyncio
+import httpx
 import requests
 from app.core.config import settings
 from app.core.logger import logger
@@ -15,6 +17,38 @@ class ElevenLabsService:
         self._api_key = None
         self._base_url = "https://api.elevenlabs.io/v1"
         self._session = requests.Session()
+        self._async_clients: dict[int, httpx.AsyncClient] = {}
+
+    def _get_async_client(self, timeout_sec: float = 25.0) -> httpx.AsyncClient:
+        """
+        Get or create a cached httpx.AsyncClient keyed by the active event loop.
+        Pools TCP/TLS connections to avoid recreating handshakes per TTS chunk.
+        """
+        loop = asyncio.get_running_loop()
+        loop_id = id(loop)
+        client = self._async_clients.get(loop_id)
+        if client is None or client.is_closed:
+            client = httpx.AsyncClient(
+                timeout=httpx.Timeout(connect=5.0, read=timeout_sec, write=10.0, pool=10.0),
+                http2=False,
+                limits=httpx.Limits(
+                    max_connections=50,
+                    max_keepalive_connections=20,
+                    keepalive_expiry=30.0,
+                ),
+            )
+            self._async_clients[loop_id] = client
+        return client
+
+    async def aclose(self) -> None:
+        """Explicit lifecycle cleanup: close all cached AsyncClients."""
+        for client in list(self._async_clients.values()):
+            try:
+                if not client.is_closed:
+                    await client.aclose()
+            except Exception:
+                pass
+        self._async_clients.clear()
     
     def get_api_key(self, override: str | None = None) -> str:
         """Get ElevenLabs API key (tenant BYO override or platform env)."""
@@ -250,7 +284,6 @@ class ElevenLabsService:
         Yields raw audio bytes without blocking the event loop.
         Used in the hot TTS path to eliminate sync-request stutter.
         """
-        import httpx
 
         api_key = self.get_api_key(api_key_override)
         safe_optimize = max(0, min(4, int(optimize_streaming_latency)))
@@ -276,13 +309,11 @@ class ElevenLabsService:
             "output_format": output_format,
             "optimize_streaming_latency": safe_optimize,
         }
+        client = self._get_async_client(timeout_sec=float(request_timeout_seconds))
         try:
-            async with (
-                httpx.AsyncClient(timeout=float(request_timeout_seconds)) as client,
-                client.stream(
-                    "POST", url, headers=headers, params=params, json=data
-                ) as response,
-            ):
+            async with client.stream(
+                "POST", url, headers=headers, params=params, json=data
+            ) as response:
                 response.raise_for_status()
                 async for chunk in response.aiter_bytes(chunk_size):
                     if chunk:

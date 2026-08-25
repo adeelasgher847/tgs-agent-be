@@ -442,6 +442,13 @@ class LiveKitBrowserCallHandler:
         self._twilio_buffer_primed = True
         self._use_ssml = True
 
+        from app.voice.metrics import VoiceTurnMetrics
+        self._voice_metrics = VoiceTurnMetrics(
+            call_sid=self.stream_sid,
+            transport="livekit_demo",
+            agent_id=self.agent_id,
+        )
+
         self._llm_response_task: asyncio.Task | None = None
         self._turn_response_started = False
 
@@ -784,7 +791,12 @@ class LiveKitBrowserCallHandler:
             except Exception:  # noqa: S110 - best-effort barge-in abort
                 pass
 
-    async def _process_transcript(self, transcript: str, confidence: float) -> None:
+    async def _process_transcript(
+        self,
+        transcript: str,
+        confidence: float,
+        acoustic_speech_end_mono: float | None = None,
+    ) -> None:
         """STT final callback (wired via VoiceOrchestrator._on_final)."""
         try:
             text = (transcript or "").strip()
@@ -794,6 +806,9 @@ class LiveKitBrowserCallHandler:
             if self._is_tts_playing:
                 logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
                 await self._cancel_inflight_llm_response()
+
+            if hasattr(self, "_voice_metrics") and self._voice_metrics:
+                self._voice_metrics.begin_turn_at_stt_final(acoustic_speech_end_mono)
 
             await self._add_to_transcript("client", text, "speech", confidence)
             self._update_booking_memory_from_user_turn(text)
@@ -1126,7 +1141,15 @@ class LiveKitBrowserCallHandler:
                         "[LiveKitBrowserCall] LiveKit playback: streaming TTS chunk "
                         "incrementally (call_session_id=%s)", self.call_session_id,
                     )
-                    await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
+                    try:
+                        await self._publish_mulaw_stream(publisher, source, self._tts_cancel)
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as stream_exc:
+                        logger.warning(
+                            "[LiveKitBrowserCall] streaming TTS chunk playback error: %s",
+                            stream_exc,
+                        )
                     # NOTE (Phase 4D-2): previously wrote `text` into
                     # self._elevenlabs_prev_tts_text here, post-playback, as the
                     # "previous_text" source for the NEXT chunk. That write raced

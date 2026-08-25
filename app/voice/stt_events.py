@@ -31,6 +31,8 @@ class SttFinalEvent:
     transcript: str = ""
     confidence: float = 0.0
     is_silence: bool = False
+    acoustic_speech_end_mono: float | None = None
+    speech_end_audio_sec: float | None = None
 
 
 @dataclass(frozen=True)

@@ -114,13 +114,12 @@ def test_retrieve_redis_cache_hit_skips_embedding():
     transcript = "What is your return policy?"
     kb_ids = [kb_id]
 
-    import hashlib
+    from app.services.kb_retrieval_service import build_retrieval_cache_key
 
-    cache_key = (
-        "kb:ctx:"
-        + hashlib.sha256(
-            (transcript + ":" + ":".join(sorted(str(k) for k in kb_ids))).encode()
-        ).hexdigest()
+    cache_key = build_retrieval_cache_key(
+        transcript=transcript,
+        kb_ids=kb_ids,
+        kb_revisions={str(kb_id): "v1"},
     )
 
     redis_client = AsyncMock()

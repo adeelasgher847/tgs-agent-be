@@ -539,7 +539,7 @@ class TestCrmContextBlock:
             "Tags: vip, lead, Pipeline: Negotiation"
         )
         assert call_session.call_metadata["ghl_crm_context"] == block
-        db.flush.assert_called_once()
+        db.flush.assert_not_called()
         db.commit.assert_not_called()
         assert mock_get_contact.call_args.kwargs.get("commit_lookup_timestamp") is False
 

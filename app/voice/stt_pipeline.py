@@ -320,19 +320,26 @@ class SttPipeline:
                         self._last_final_norm_mono = now_mono
 
                     is_silence = self._is_silence()
+                    acoustic_speech_end_mono = result.get("acoustic_speech_end_mono")
+                    speech_end_audio_sec = result.get("speech_end_audio_sec")
                     logger.debug(
                         "[STT] final transcript received: %r confidence=%.2f "
-                        "(call_session_id=%s)",
-                        transcript[:80], confidence, self._call_session_id,
+                        "(call_session_id=%s, speech_end_audio_sec=%s)",
+                        transcript[:80], confidence, self._call_session_id, speech_end_audio_sec,
                     )
                     await self._event_bus.emit(
                         SttFinalEvent(
                             transcript=transcript,
                             confidence=confidence,
                             is_silence=is_silence,
+                            acoustic_speech_end_mono=acoustic_speech_end_mono,
+                            speech_end_audio_sec=speech_end_audio_sec,
                         )
                     )
-                    await self._on_final(transcript, confidence)
+                    try:
+                        await self._on_final(transcript, confidence, acoustic_speech_end_mono)
+                    except TypeError:
+                        await self._on_final(transcript, confidence)
                 else:
                     logger.debug(
                         "[STT] partial transcript received: %r confidence=%.2f "

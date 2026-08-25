@@ -29,12 +29,37 @@ class RetrievedChunk:
 
 # ── Embedding cache ───────────────────────────────────────────────────────────
 
+def build_embedding_cache_key(
+    transcript: str,
+    model_id: str | None = None,
+    embedding_provider: str | None = None,
+) -> str:
+    """
+    Build isolated cache key for text embedding vectors.
+    Includes text, embedding provider, model version, and vector dimension.
+    """
+    norm_text = (transcript or "").strip().lower()
+    provider_slug = embedding_provider or ("openai" if settings.OPENAI_API_KEY else "gemini")
+    model = model_id or (
+        settings.RAG_EMBEDDING_MODEL
+        if provider_slug == "openai"
+        else settings.RAG_FALLBACK_EMBEDDING_MODEL
+    )
+    dim = settings.VECTOR_DIMENSION
+    raw = f"{provider_slug}:{model}:{dim}:{norm_text}"
+    return "kb:emb:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 async def _get_embedding_cached(
     transcript: str,
     redis_client,
+    model_id: str | None = None,
+    embedding_provider: str | None = None,
 ) -> list[float]:
     """Embed transcript text, caching the vector in Redis for 300 s."""
-    cache_key = "kb:emb:" + hashlib.sha256(transcript.encode()).hexdigest()
+    cache_key = build_embedding_cache_key(
+        transcript, model_id=model_id, embedding_provider=embedding_provider
+    )
 
     if redis_client:
         try:
@@ -135,18 +160,111 @@ def format_kb_context_block(chunks: List[RetrievedChunk]) -> str:
     return "\n".join(parts)
 
 
+# ── Retrieval result cache ───────────────────────────────────────────────────
+
+def build_retrieval_cache_key(
+    transcript: str,
+    kb_ids: List[uuid.UUID | str],
+    top_k: int | None = None,
+    score_threshold: float | None = None,
+    kb_revisions: dict[str, str] | None = None,
+    tenant_id: str | uuid.UUID | None = None,
+    agent_id: str | uuid.UUID | None = None,
+    model_id: str | None = None,
+    embedding_provider: str | None = None,
+) -> str:
+    """
+    Build robust, fully-isolated cache key for RAG context retrieval results.
+    Includes normalized query, embedding model version, sorted KB IDs, top_k,
+    similarity threshold, sorted KB content revisions, and tenant/agent scope.
+    """
+    norm_text = (transcript or "").strip().lower()
+    provider_slug = embedding_provider or ("openai" if settings.OPENAI_API_KEY else "gemini")
+    model = model_id or (
+        settings.RAG_EMBEDDING_MODEL
+        if provider_slug == "openai"
+        else settings.RAG_FALLBACK_EMBEDDING_MODEL
+    )
+    k_val = top_k if top_k is not None else settings.RAG_TOP_K
+    thresh_val = score_threshold if score_threshold is not None else settings.RAG_SCORE_THRESHOLD
+    sorted_kbs = sorted(str(k) for k in kb_ids)
+
+    revs_str = ""
+    if kb_revisions:
+        revs_str = "|".join(f"{k}:{kb_revisions.get(k, 'v1')}" for k in sorted_kbs)
+
+    key_components = [
+        f"q:{norm_text}",
+        f"emb:{provider_slug}:{model}",
+        f"kbs:{','.join(sorted_kbs)}",
+        f"top_k:{k_val}",
+        f"thresh:{thresh_val:.4f}",
+    ]
+    if revs_str:
+        key_components.append(f"revs:{revs_str}")
+    if tenant_id:
+        key_components.append(f"tenant:{tenant_id}")
+    if agent_id:
+        key_components.append(f"agent:{agent_id}")
+
+    raw = "|".join(key_components)
+    return "kb:ctx:" + hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+async def get_kb_revision(kb_id: uuid.UUID | str, redis_client=None) -> str | None:
+    """
+    Fetch current content revision string for a given KB.
+    Returns None if Redis is unavailable or on error (signaling cache bypass).
+    """
+    if not redis_client:
+        return None
+    try:
+        rev = await redis_client.get(f"kb:rev:{kb_id}")
+        if rev is None:
+            return "v1"
+        return rev if isinstance(rev, str) else rev.decode("utf-8")
+    except Exception as e:
+        logger.warning("Failed to read kb revision from Redis for kb_id=%s (bypassing cache): %s", kb_id, e)
+        return None
+
+
+async def invalidate_kb_cache(kb_id: uuid.UUID | str, redis_client=None) -> str | None:
+    """
+    Atomically update KB revision in Redis, invalidating all future retrieval
+    lookups for any query hitting this KB across all tenants and workers.
+    Returns the new revision string on success, or None on Redis failure.
+    """
+    if not redis_client:
+        logger.warning("Cannot invalidate KB cache for kb_id=%s: Redis client is not available", kb_id)
+        return None
+    new_rev = str(time.time_ns())
+    try:
+        await redis_client.set(f"kb:rev:{kb_id}", new_rev)
+        logger.info("Invalidated KB cache for kb_id=%s new_revision=%s", kb_id, new_rev)
+        return new_rev
+    except Exception as e:
+        logger.error("Failed to invalidate KB cache in Redis for kb_id=%s: %s", kb_id, e)
+        return None
+
+
 # ── Main entry point ──────────────────────────────────────────────────────────
 
 async def retrieve_kb_context_for_turn(
     transcript: str,
     kb_ids: List[uuid.UUID],
     redis_client=None,
+    tenant_id: uuid.UUID | str | None = None,
+    agent_id: uuid.UUID | str | None = None,
+    top_k: int | None = None,
+    score_threshold: float | None = None,
+    kb_revisions: dict[str, str] | None = None,
 ) -> tuple[str, float]:
     """
     Embed transcript, query all attached KBs in parallel, return (context_block, latency_ms).
 
-    Cache key: sha256(transcript + ':' + ':'.join(sorted(kb_ids))), TTL 300 s.
-    Fails open: returns ("", latency_ms) on any error so the call is never blocked.
+    Cache key: sha256 of all query, model, KB ID, threshold, and revision parameters (TTL 300s).
+    Fails open on errors (returns ("", latency_ms) so the call is never blocked).
+    Fails closed on Redis revision unavailability (bypasses cache and queries DB directly).
     """
     if not transcript or not kb_ids:
         return "", 0.0
@@ -164,14 +282,35 @@ async def retrieve_kb_context_for_turn(
     kb_ids = normalised_ids
     t0 = time.perf_counter()
 
-    cache_key = (
-        "kb:ctx:"
-        + hashlib.sha256(
-            (transcript + ":" + ":".join(sorted(str(k) for k in kb_ids))).encode()
-        ).hexdigest()
+    effective_top_k = top_k if top_k is not None else settings.RAG_TOP_K
+    effective_threshold = (
+        score_threshold if score_threshold is not None else settings.RAG_SCORE_THRESHOLD
     )
 
-    if redis_client:
+    # Fetch KB revisions if not explicitly supplied
+    if kb_revisions is None and redis_client:
+        try:
+            rev_tasks = [get_kb_revision(k, redis_client) for k in kb_ids]
+            rev_list = await asyncio.gather(*rev_tasks)
+            if all(r is not None for r in rev_list):
+                kb_revisions = {str(k): str(r) for k, r in zip(kb_ids, rev_list)}
+            else:
+                # One or more KB revisions failed to resolve -> bypass cache
+                kb_revisions = None
+        except Exception:
+            kb_revisions = None
+
+    cache_key = None
+    if redis_client and kb_revisions is not None:
+        cache_key = build_retrieval_cache_key(
+            transcript=transcript,
+            kb_ids=kb_ids,
+            top_k=effective_top_k,
+            score_threshold=effective_threshold,
+            kb_revisions=kb_revisions,
+            tenant_id=tenant_id,
+            agent_id=agent_id,
+        )
         try:
             cached = await redis_client.get(cache_key)
             if cached:
@@ -199,12 +338,11 @@ async def retrieve_kb_context_for_turn(
     embedding_latency_ms = (time.perf_counter() - t_embed_start) * 1000
 
     vec_str = "[" + ",".join(str(f) for f in embedding) + "]"
-    top_k = settings.RAG_TOP_K
 
     # Query all KBs in parallel; each call opens its own session (thread-safe).
     t_search_start = time.perf_counter()
     raw_results = await asyncio.gather(
-        *[_query_single_kb(kb_id, vec_str, top_k) for kb_id in kb_ids],
+        *[_query_single_kb(kb_id, vec_str, effective_top_k) for kb_id in kb_ids],
         return_exceptions=True,
     )
     vector_search_latency_ms = (time.perf_counter() - t_search_start) * 1000
@@ -224,14 +362,8 @@ async def retrieve_kb_context_for_turn(
     all_chunks.sort(key=lambda c: c.score, reverse=True)
     candidates_found = len(all_chunks)
 
-    # Relevance floor: `score` is 1 - cosine_distance (i.e. similarity, higher is
-    # better) — same direction as rag_context.py's use of RAG_SCORE_THRESHOLD for
-    # the Twilio path, so we reuse that constant rather than duplicating semantics.
-    # Without this, _query_single_kb's plain `ORDER BY ... LIMIT top_k` always
-    # returns its top-k rows regardless of how weak the match is, forcing
-    # low-relevance chunks into the prompt.
-    threshold = settings.RAG_SCORE_THRESHOLD
-    relevant_chunks = [c for c in all_chunks if c.score >= threshold]
+    # Relevance floor
+    relevant_chunks = [c for c in all_chunks if c.score >= effective_threshold]
     top_chunks = relevant_chunks[:5]
 
     context_block = format_kb_context_block(top_chunks)
@@ -248,10 +380,10 @@ async def retrieve_kb_context_for_turn(
         len(kb_ids),
         candidates_found,
         len(relevant_chunks),
-        threshold,
+        effective_threshold,
     )
 
-    if redis_client and context_block:
+    if redis_client and cache_key and context_block:
         try:
             await redis_client.set(cache_key, json.dumps(context_block), ex=300)
         except Exception as e:

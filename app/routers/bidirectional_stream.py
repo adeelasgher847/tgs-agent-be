@@ -1058,7 +1058,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             (transcript or "")[:40],
         )
 
-    async def _process_transcript(self, transcript: str, confidence: float):
+    async def _process_transcript(
+        self,
+        transcript: str,
+        confidence: float,
+        acoustic_speech_end_mono: float | None = None,
+    ):
         """Process a transcript (final result)"""
         try:
             # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
@@ -1105,7 +1110,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     logger.info("STT: suppressing agent self-echo: %r", tstrip)
                     return
 
-                self._voice_metrics.begin_turn_at_stt_final()
+                self._voice_metrics.begin_turn_at_stt_final(acoustic_speech_end_mono)
                 self._metric_stt_final_ts = time.perf_counter()
 
                 # 🎯 Check for goodbye words FIRST - end call if detected
@@ -1305,9 +1310,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         """
         Send instant acknowledgement for longer queries while generating full response.
         Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time — more natural.
-        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
+        Disabled by default (VOICE_QUICK_ACK_PROBABILITY=0.0) in Sprint 1 to prevent
+        semantically incorrect fillers and TTS concurrency load.
         """
         import random
+
+        if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
+            return
         
         text = (user_text or "").strip()
         if not text:
@@ -1763,7 +1772,7 @@ You are {agent_name}, having a real-time phone call with a human.
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -1822,7 +1831,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
@@ -1864,7 +1873,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 {output_plain_text_rule}
 {no_bracket_tags_line}{greeting_instruction_block}
 # CONVERSATION STATE
@@ -2069,6 +2078,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             self._is_tts_playing = False        # Audio not yet streaming for this turn
             self._tts_play_start_ts = 0.0     # Clear dead-zone anchor from previous utterance
 
+            if self._voice_metrics:
+                self._voice_metrics.transport = "telephony"
+                self._voice_metrics.agent_id = str(self.agent.id) if self.agent else None
+                self._voice_metrics.mark_rag_start()
+
             _sp_result = await self._build_system_prompt_full(user_text, confidence)
             system_prompt = _sp_result.system_prompt
             turn_context = _sp_result.turn_context
@@ -2078,6 +2092,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             _vertex_kb_context = _sp_result.vertex_kb_context
             _llm_runtime = _sp_result.llm_runtime
             rag_trace = _sp_result.rag_trace
+
+            if self._voice_metrics:
+                self._voice_metrics.mark_prompt_ready()
 
             # Model/provider/temperature resolved early for Vertex prompt shaping.
             model_name = _llm_runtime.model_name
@@ -2093,6 +2110,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 max_tokens = min(max_tokens, 80)
 
             llm_service = llm_service_for_provider(_provider_slug)
+            if self._voice_metrics:
+                self._voice_metrics.provider = _provider_slug
+                self._voice_metrics.mark_llm_request()
             
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0

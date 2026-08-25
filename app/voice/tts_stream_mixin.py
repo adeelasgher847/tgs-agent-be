@@ -79,7 +79,7 @@ class TtsStreamMixin:
         """
         Enable ambient background only when:
         - agent TTS provider is ElevenLabs
-        - tts_settings_json.background_enabled is not explicitly false
+        - tts_settings_json.background_enabled is explicitly true (opt-in)
         - tts_settings_json.background_profile is "office" (or omitted)
         """
         if not self.agent:
@@ -89,9 +89,9 @@ class TtsStreamMixin:
             return False
 
         settings_json = dict(getattr(self.agent, "tts_settings_json", None) or {})
-        enabled_raw = settings_json.get("background_enabled", True)
+        enabled_raw = settings_json.get("background_enabled", False)
         if isinstance(enabled_raw, str):
-            enabled = enabled_raw.strip().lower() not in {"false", "0", "off", "no"}
+            enabled = enabled_raw.strip().lower() in {"true", "1", "on", "yes"}
         else:
             enabled = bool(enabled_raw)
         if not enabled:

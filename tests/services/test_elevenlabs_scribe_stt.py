@@ -87,7 +87,7 @@ def test_create_streaming_session_uses_defaults_and_overrides():
 
     default_session = svc.create_streaming_session()
     assert default_session._model == "scribe_v2_realtime"
-    assert default_session._vad_silence_threshold_secs == pytest.approx(1.5)
+    assert default_session._vad_silence_threshold_secs == pytest.approx(0.85)
     assert default_session._vad_threshold == pytest.approx(0.4)
     assert default_session._encoding == "MULAW"
 
