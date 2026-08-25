@@ -11,7 +11,9 @@ PUT  /api/v2/flows/{flow_id}/ab-test/winner
 PUT  /api/v2/flows/{flow_id}/caller-memory-settings
 PUT  /api/v2/flows/{flow_id}/post-call-actions-settings
 PUT  /api/v2/flows/{flow_id}/system-webhooks-settings
+GET  /api/v2/flows/{flow_id}/system-webhooks-settings
 POST /api/v2/flows/{flow_id}/system-webhooks/test
+GET  /api/v2/flows/{flow_id}/system-webhooks/deliveries
 
 Visual Flow Editor endpoints (flow-data, flow-data/validate) live in
 app.api.v2.routers.flow_data — a separate router under the same prefix.
@@ -25,7 +27,7 @@ from __future__ import annotations
 
 import uuid
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import (
@@ -45,8 +47,10 @@ from app.schemas.ab_testing import (
 from app.schemas.call_flow import (
     CallerMemorySettingsResponse,
     CallerMemorySettingsUpdate,
+    PaginatedSystemWebhookDeliveries,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
+    SystemWebhookKindEnum,
     SystemWebhooksSettingsResponse,
     SystemWebhooksSettingsUpdate,
     SystemWebhookTestRequest,
@@ -273,6 +277,30 @@ def update_system_webhooks_settings(
     return result
 
 
+@router.get(
+    "/{flow_id}/system-webhooks-settings",
+    response_model=SystemWebhooksSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved System Webhooks settings for a call flow",
+    description=(
+        "Returns the currently-saved System Webhooks configuration for this call "
+        "flow, in the same shape the PUT endpoint returns after a save — for "
+        "loading the settings form on page load. Never echoes back decrypted "
+        "header values, matching the PUT response; only whether headers are "
+        "configured (`*_headers_configured`). Read-only rank is sufficient since "
+        "no secrets are exposed either way."
+    ),
+)
+def get_system_webhooks_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> SystemWebhooksSettingsResponse:
+    return call_flow_service.get_system_webhooks_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
 @router.post(
     "/{flow_id}/system-webhooks/test",
     response_model=SystemWebhookTestResult,
@@ -300,4 +328,35 @@ async def test_system_webhook(
         response_body=log.response_body,
         error=log.error,
         duration_ms=log.duration_ms,
+    )
+
+
+@router.get(
+    "/{flow_id}/system-webhooks/deliveries",
+    response_model=PaginatedSystemWebhookDeliveries,
+    status_code=status.HTTP_200_OK,
+    summary="List System Webhook delivery history for a call flow",
+    description=(
+        "Paginated delivery log for this call flow's System Webhooks (pre_inbound, "
+        "post_call, status), most recent first. Optionally filter by `webhook_kind`. "
+        "Requires admin rank — delivery history can reveal response bodies from the "
+        "tenant's own endpoint, the same sensitivity level as the test-delivery "
+        "endpoint."
+    ),
+)
+def list_system_webhook_deliveries(
+    flow_id: uuid.UUID,
+    webhook_kind: SystemWebhookKindEnum | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100, alias="pageSize"),
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> PaginatedSystemWebhookDeliveries:
+    return call_flow_service.list_system_webhook_deliveries(
+        db,
+        flow_id,
+        _tenant_id(principal),
+        webhook_kind.value if webhook_kind is not None else None,
+        page,
+        page_size,
     )

@@ -51,7 +51,10 @@ from app.schemas.call_flow import (
     PostCallAnalysisSettingsUpdate,
     SystemWebhooksSettingsResponse,
     SystemWebhooksSettingsUpdate,
+    SystemWebhookDeliveryOut,
+    PaginatedSystemWebhookDeliveries,
 )
+from app.models.system_webhook_log import SystemWebhookDeliveryLog
 from app.core.db_encryption import encrypt_webhook_headers
 from app.schemas.prompt_version import PromptVersionOut
 from app.services.flow_graph_service import compile_graph, validate_graph
@@ -863,6 +866,81 @@ class CallFlowService:
                 flow.status_webhook_headers_encrypted
             ),
             status_webhook_query_params=list(flow.status_webhook_query_params or []),
+        )
+
+    def get_system_webhooks_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> SystemWebhooksSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return SystemWebhooksSettingsResponse(
+            pre_inbound_webhook_url=flow.pre_inbound_webhook_url,
+            pre_inbound_webhook_headers_configured=bool(
+                flow.pre_inbound_webhook_headers_encrypted
+            ),
+            pre_inbound_webhook_query_params=list(
+                flow.pre_inbound_webhook_query_params or []
+            ),
+            pre_inbound_webhook_static_metadata=dict(
+                flow.pre_inbound_webhook_static_metadata or {}
+            ),
+            dynamic_inbound_routing_enabled=flow.dynamic_inbound_routing_enabled,
+            post_call_webhook_url=flow.post_call_webhook_url,
+            post_call_webhook_headers_configured=bool(
+                flow.post_call_webhook_headers_encrypted
+            ),
+            post_call_webhook_query_params=list(
+                flow.post_call_webhook_query_params or []
+            ),
+            post_call_webhook_custom_payload_enabled=(
+                flow.post_call_webhook_custom_payload_enabled
+            ),
+            post_call_webhook_custom_payload_template=(
+                flow.post_call_webhook_custom_payload_template
+            ),
+            status_webhook_enabled=flow.status_webhook_enabled,
+            status_webhook_url=flow.status_webhook_url,
+            status_webhook_headers_configured=bool(
+                flow.status_webhook_headers_encrypted
+            ),
+            status_webhook_query_params=list(flow.status_webhook_query_params or []),
+        )
+
+    def list_system_webhook_deliveries(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        webhook_kind: str | None,
+        page: int,
+        page_size: int,
+    ) -> PaginatedSystemWebhookDeliveries:
+        # Confirms the flow exists in this tenant before querying deliveries —
+        # same 404 scoping as every other system-webhooks endpoint.
+        self._get_flow_or_404(db, flow_id, tenant_id)
+
+        query = db.query(SystemWebhookDeliveryLog).filter(
+            SystemWebhookDeliveryLog.tenant_id == tenant_id,
+            SystemWebhookDeliveryLog.call_flow_id == flow_id,
+        )
+        if webhook_kind is not None:
+            query = query.filter(SystemWebhookDeliveryLog.webhook_kind == webhook_kind)
+
+        total = query.count()
+        items = (
+            query.order_by(SystemWebhookDeliveryLog.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return PaginatedSystemWebhookDeliveries(
+            items=[SystemWebhookDeliveryOut.model_validate(d) for d in items],
+            total=total,
+            page=page,
+            page_size=page_size,
         )
 
     def update_post_call_analysis_settings(

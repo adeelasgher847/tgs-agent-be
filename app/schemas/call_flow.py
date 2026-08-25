@@ -376,6 +376,36 @@ class SystemWebhookTestResult(BaseModel):
     duration_ms: int | None = None
 
 
+class SystemWebhookDeliveryOut(BaseModel):
+    """A single System Webhook delivery log entry, for the deliveries-list
+    endpoint. Omits `tenant_id`/`call_flow_id`/`call_session_id` since the
+    URL already scopes to one flow; does not include request headers/params/
+    body — `SystemWebhookDeliveryLog` never stores those (may carry secrets)."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    webhook_kind: SystemWebhookKindEnum
+    event_type: str | None = None
+    url: str
+    status: str
+    status_code: int | None = None
+    response_body: str | None = None
+    error: str | None = None
+    attempt_count: int
+    duration_ms: int | None = None
+    created_at: datetime
+
+
+class PaginatedSystemWebhookDeliveries(BaseModel):
+    """Response body for ``GET /api/v2/flows/{flow_id}/system-webhooks/deliveries``."""
+
+    items: List[SystemWebhookDeliveryOut]
+    total: int
+    page: int
+    page_size: int
+
+
 class CallFlowOut(BaseModel):
     """Full flow response including all prompt versions."""
 

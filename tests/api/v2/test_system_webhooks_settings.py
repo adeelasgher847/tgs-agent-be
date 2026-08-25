@@ -1,5 +1,6 @@
-"""Tests for PUT /api/v2/flows/{flow_id}/system-webhooks-settings and
-POST /api/v2/flows/{flow_id}/system-webhooks/test.
+"""Tests for PUT/GET /api/v2/flows/{flow_id}/system-webhooks-settings,
+POST /api/v2/flows/{flow_id}/system-webhooks/test, and
+GET /api/v2/flows/{flow_id}/system-webhooks/deliveries.
 
 Mirrors tests/api/v2/test_post_call_actions_settings.py's fixture/app-factory
 pattern for RBAC + tenant isolation + audit-log coverage.
@@ -15,11 +16,20 @@ Coverage:
     presence-booleans / URLs / toggles / query-param keys
   - POST .../system-webhooks/test delegates to run_webhook_test and returns
     the SystemWebhookTestResult shape
+  - GET .../system-webhooks-settings mirrors the PUT response shape,
+    round-trips saved config, returns schema defaults for an unconfigured
+    flow, 404s on unknown/foreign flow_id, and is accessible to a
+    readonly-rank principal (the RBAC floor)
+  - GET .../system-webhooks/deliveries is tenant/flow scoped, supports the
+    `webhook_kind` filter, paginates with `pageSize` capped/rejected above
+    100, orders most-recent-first, 404s on unknown/foreign flow_id, and
+    requires admin rank (a readonly-rank principal is rejected with 403)
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -51,6 +61,64 @@ def _build_app(db_override, principal, *, forbidden=False):
     mini.dependency_overrides[get_db] = lambda: db_override
 
     return TestClient(mini, raise_server_exceptions=False)
+
+
+def _build_readonly_app(db_override, principal, *, forbidden=False):
+    """Same shape as `_build_app` but overrides the readonly-rank dependency
+    (used by GET .../system-webhooks-settings) instead of the admin one."""
+    from app.api.deps import get_db, require_readonly_or_api_key
+    from app.api.v2.routers.flows import router
+
+    mini = FastAPI()
+    register_exception_handlers(mini)
+    mini.include_router(router)
+
+    if forbidden:
+
+        def _raise_forbidden():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden"
+            )
+
+        mini.dependency_overrides[require_readonly_or_api_key] = _raise_forbidden
+    else:
+        mini.dependency_overrides[require_readonly_or_api_key] = lambda: principal
+
+    mini.dependency_overrides[get_db] = lambda: db_override
+
+    return TestClient(mini, raise_server_exceptions=False)
+
+
+def _build_app_for_real_rank_check(db_override, principal):
+    """Companion to `_with_effective_role` below — builds an app where only
+    `require_tenant` is overridden (as upstream auth normally would be
+    resolved), leaving the REAL rank-checking logic in
+    `_require_rank_or_api_key` (app/api/deps/rbac.py) to run unmodified for
+    both the admin- and readonly-gated routes on this router.
+    """
+    from app.api.deps import get_db, require_tenant
+    from app.api.v2.routers.flows import router
+
+    mini = FastAPI()
+    register_exception_handlers(mini)
+    mini.include_router(router)
+
+    mini.dependency_overrides[require_tenant] = lambda: principal
+    mini.dependency_overrides[get_db] = lambda: db_override
+
+    return TestClient(mini, raise_server_exceptions=False)
+
+
+def _with_effective_role(role_name: str):
+    """Context manager: pretend `rbac_cache_service.get_effective_role`
+    resolves the caller's role to `role_name`, so the real rank-checking
+    dependency (`_require_rank_or_api_key`) can be exercised end-to-end
+    against a controlled rank without standing up real
+    user_tenant_association rows."""
+    return patch(
+        "app.api.deps.rbac.rbac_cache_service.get_effective_role",
+        return_value=role_name,
+    )
 
 
 @pytest.fixture(autouse=True)
@@ -534,3 +602,350 @@ class TestSystemWebhookTestEndpoint:
         )
 
         assert resp.status_code == 400
+
+
+_DEFAULT_SETTINGS_BODY = {
+    "pre_inbound_webhook_url": None,
+    "pre_inbound_webhook_headers_configured": False,
+    "pre_inbound_webhook_query_params": [],
+    "pre_inbound_webhook_static_metadata": {},
+    "dynamic_inbound_routing_enabled": False,
+    "post_call_webhook_url": None,
+    "post_call_webhook_headers_configured": False,
+    "post_call_webhook_query_params": [],
+    "post_call_webhook_custom_payload_enabled": False,
+    "post_call_webhook_custom_payload_template": None,
+    "status_webhook_enabled": False,
+    "status_webhook_url": None,
+    "status_webhook_headers_configured": False,
+    "status_webhook_query_params": [],
+}
+
+
+@pytest.mark.usefixtures("db")
+class TestGetSystemWebhooksSettings:
+    def test_get_returns_defaults_for_unconfigured_flow(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/system-webhooks-settings")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == _DEFAULT_SETTINGS_BODY
+
+    def test_get_round_trips_a_prior_put(self, db, workspace, flow):
+        admin_client = _build_app(db, _admin_principal(workspace.id))
+        put_resp = admin_client.put(
+            f"/flows/{flow.id}/system-webhooks-settings", json=_FULL_PAYLOAD
+        )
+        assert put_resp.status_code == 200, put_resp.text
+        put_body = put_resp.json()
+
+        readonly_client = _build_readonly_app(db, _admin_principal(workspace.id))
+        get_resp = readonly_client.get(f"/flows/{flow.id}/system-webhooks-settings")
+
+        assert get_resp.status_code == 200, get_resp.text
+        get_body = get_resp.json()
+        assert get_body == put_body
+        assert get_body["pre_inbound_webhook_headers_configured"] is True
+        assert get_body["post_call_webhook_headers_configured"] is True
+        assert get_body["status_webhook_headers_configured"] is True
+
+    def test_unknown_flow_returns_404(self, db, workspace):
+        principal = _admin_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{uuid.uuid4()}/system-webhooks-settings")
+
+        assert resp.status_code == 404
+
+    def test_flow_from_other_tenant_returns_404(self, db, flow):
+        from app.models.tenant import Tenant
+
+        other_tenant = Tenant(
+            name=f"OtherSysWebhooksGetWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_sys_webhooks_get_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        principal = _admin_principal(other_tenant.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/system-webhooks-settings")
+
+        assert resp.status_code == 404
+
+    def test_readonly_rank_can_access_get(self, db, workspace, flow):
+        """Readonly is the floor for this endpoint — a genuinely readonly-rank
+        principal (real rank-check dependency, not just a dependency-swap)
+        must still succeed."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app_for_real_rank_check(db, principal)
+
+        with _with_effective_role("read_only"):
+            resp = client.get(f"/flows/{flow.id}/system-webhooks-settings")
+
+        assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.usefixtures("db")
+class TestListSystemWebhookDeliveries:
+    def _make_log(
+        self,
+        db,
+        *,
+        tenant_id,
+        call_flow_id,
+        webhook_kind="pre_inbound",
+        status_="success",
+        created_at=None,
+    ):
+        from app.models.system_webhook_log import SystemWebhookDeliveryLog
+
+        log = SystemWebhookDeliveryLog(
+            tenant_id=tenant_id,
+            call_flow_id=call_flow_id,
+            webhook_kind=webhook_kind,
+            url="https://example.com/hook",
+            status=status_,
+            status_code=200 if status_ == "success" else None,
+            attempt_count=1,
+            duration_ms=50,
+            created_at=created_at or datetime.now(timezone.utc),
+        )
+        db.add(log)
+        db.commit()
+        db.refresh(log)
+        return log
+
+    def test_returns_only_target_flow_and_tenant_rows(self, db, workspace, flow, agent):
+        from app.models.call_flow import CallFlow
+        from app.models.tenant import Tenant
+
+        other_tenant = Tenant(
+            name=f"OtherDeliveriesWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_deliveries_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        from app.models.agent import Agent
+
+        other_agent = Agent(
+            tenant_id=other_tenant.id,
+            name="Other Tenant Agent",
+            status="active",
+            llm_model="gpt-4o-mini",
+            tts_provider_slug="elevenlabs",
+            tts_voice_external_id="voice-x",
+            tts_language="en",
+        )
+        db.add(other_agent)
+        db.commit()
+        db.refresh(other_agent)
+
+        other_flow = CallFlow(
+            tenant_id=other_tenant.id,
+            agent_id=other_agent.id,
+            name="Other Tenant Flow",
+            direction="inbound",
+        )
+        db.add(other_flow)
+        db.commit()
+        db.refresh(other_flow)
+
+        # A second flow within the SAME tenant, to confirm flow-scoping too
+        # (not just tenant-scoping).
+        sibling_flow = CallFlow(
+            tenant_id=workspace.id,
+            agent_id=agent.id,
+            name="Sibling Flow",
+            direction="inbound",
+        )
+        db.add(sibling_flow)
+        db.commit()
+        db.refresh(sibling_flow)
+
+        target_log = self._make_log(db, tenant_id=workspace.id, call_flow_id=flow.id)
+        self._make_log(db, tenant_id=other_tenant.id, call_flow_id=other_flow.id)
+        self._make_log(db, tenant_id=workspace.id, call_flow_id=sibling_flow.id)
+
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/system-webhooks/deliveries")
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["id"] == str(target_log.id)
+
+    def test_webhook_kind_filter_narrows_results(self, db, workspace, flow):
+        self._make_log(
+            db, tenant_id=workspace.id, call_flow_id=flow.id, webhook_kind="pre_inbound"
+        )
+        self._make_log(
+            db, tenant_id=workspace.id, call_flow_id=flow.id, webhook_kind="post_call"
+        )
+        self._make_log(
+            db, tenant_id=workspace.id, call_flow_id=flow.id, webhook_kind="status"
+        )
+
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"webhook_kind": "post_call"},
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total"] == 1
+        assert len(body["items"]) == 1
+        assert body["items"][0]["webhook_kind"] == "post_call"
+
+    def test_pagination_and_ordering_most_recent_first(self, db, workspace, flow):
+        now = datetime.now(timezone.utc)
+        logs = []
+        for i in range(5):
+            logs.append(
+                self._make_log(
+                    db,
+                    tenant_id=workspace.id,
+                    call_flow_id=flow.id,
+                    created_at=now - timedelta(minutes=i),
+                )
+            )
+        # logs[0] is most recent (created "now"), logs[4] is oldest.
+
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        page1 = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"page": 1, "pageSize": 2},
+        )
+        assert page1.status_code == 200, page1.text
+        body1 = page1.json()
+        assert body1["total"] == 5
+        assert body1["page"] == 1
+        assert body1["page_size"] == 2
+        assert [item["id"] for item in body1["items"]] == [
+            str(logs[0].id),
+            str(logs[1].id),
+        ]
+
+        page2 = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"page": 2, "pageSize": 2},
+        )
+        assert page2.status_code == 200, page2.text
+        body2 = page2.json()
+        assert [item["id"] for item in body2["items"]] == [
+            str(logs[2].id),
+            str(logs[3].id),
+        ]
+
+        page3 = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"page": 3, "pageSize": 2},
+        )
+        assert page3.status_code == 200, page3.text
+        body3 = page3.json()
+        assert [item["id"] for item in body3["items"]] == [str(logs[4].id)]
+
+    def test_page_size_over_100_is_rejected(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"pageSize": 101},
+        )
+
+        # This app's registered exception handlers map FastAPI/Pydantic
+        # validation errors to 400 (see app.core.exception_handlers), not
+        # the framework default 422 — matches test_extra_fields_rejected /
+        # test_non_https_url_rejected above for this same router.
+        assert resp.status_code == 400
+
+    def test_page_size_of_100_is_accepted(self, db, workspace, flow):
+        self._make_log(db, tenant_id=workspace.id, call_flow_id=flow.id)
+
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(
+            f"/flows/{flow.id}/system-webhooks/deliveries",
+            params={"pageSize": 100},
+        )
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["page_size"] == 100
+
+    def test_empty_result_set_returns_cleanly(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/system-webhooks/deliveries")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {"items": [], "total": 0, "page": 1, "page_size": 20}
+
+    def test_unknown_flow_returns_404(self, db, workspace):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(f"/flows/{uuid.uuid4()}/system-webhooks/deliveries")
+
+        assert resp.status_code == 404
+
+    def test_flow_from_other_tenant_returns_404(self, db, flow):
+        from app.models.tenant import Tenant
+
+        other_tenant = Tenant(
+            name=f"OtherDeliveriesFlowWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_deliveries_flow_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        principal = _admin_principal(other_tenant.id)
+        client = _build_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/system-webhooks/deliveries")
+
+        assert resp.status_code == 404
+
+    def test_readonly_rank_principal_is_rejected_with_403(self, db, workspace, flow):
+        """Unlike the settings GET, this endpoint requires admin rank. Uses
+        the real rank-checking dependency (not a dependency-swap) so a
+        genuinely readonly-rank principal is actually exercised against
+        `require_admin_or_api_key`."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app_for_real_rank_check(db, principal)
+
+        with _with_effective_role("read_only"):
+            resp = client.get(f"/flows/{flow.id}/system-webhooks/deliveries")
+
+        assert resp.status_code == 403
+
+    def test_admin_rank_principal_is_allowed(self, db, workspace, flow):
+        """Control case for the above — same real rank-check dependency,
+        admin rank succeeds."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app_for_real_rank_check(db, principal)
+
+        with _with_effective_role("admin"):
+            resp = client.get(f"/flows/{flow.id}/system-webhooks/deliveries")
+
+        assert resp.status_code == 200, resp.text
