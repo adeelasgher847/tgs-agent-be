@@ -1,4 +1,4 @@
-"""Tests for PUT /api/v2/flows/{flow_id}/post-call-analysis-settings.
+"""Tests for PUT and GET /api/v2/flows/{flow_id}/post-call-analysis-settings.
 
 Coverage:
   - Admin/API-key principal can configure variables_to_extract + analysis_model
@@ -9,11 +9,14 @@ Coverage:
     body and each variable spec
   - analysis_model accepts a valid active model-catalog entry and rejects an
     unknown/archived one with the invalid_llm_model error shape + allowedValues
-  - Config-rank (non-admin) principal is forbidden — mirrors
+  - Config-rank (non-admin) principal is forbidden on PUT — mirrors
     tests/api/v2/test_post_call_actions_settings.py's admin-gate coverage
-  - Unknown flow_id / other-tenant flow both return 404 (tenant isolation)
+  - Unknown flow_id / other-tenant flow both return 404 (tenant isolation) on PUT and GET
   - A successful update fires an audit event with the expected shape
   - The response echoes back the persisted two-field shape
+  - GET returns default unconfigured state on fresh flows and handles null DB columns
+  - GET round-trips prior PUT updates accurately
+  - Read-only rank is sufficient to view post-call analysis settings via GET
   - CallFlowService._resolve_analysis_model: valid active model resolves,
     archived/unknown model raises HTTPException(400, ...) with the "LLM
     model" detail substring the router pattern-matches on.
@@ -50,6 +53,60 @@ def _build_app(db_override, principal, *, forbidden=False):
     mini.dependency_overrides[get_db] = lambda: db_override
 
     return TestClient(mini, raise_server_exceptions=False)
+
+
+def _build_readonly_app(db_override, principal, *, forbidden=False):
+    from app.api.deps import get_db, require_readonly_or_api_key
+    from app.api.v2.routers.post_call_analysis import router
+
+    mini = FastAPI()
+    register_exception_handlers(mini)
+    mini.include_router(router)
+
+    if forbidden:
+
+        def _raise_forbidden():
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+
+        mini.dependency_overrides[require_readonly_or_api_key] = _raise_forbidden
+    else:
+        mini.dependency_overrides[require_readonly_or_api_key] = lambda: principal
+
+    mini.dependency_overrides[get_db] = lambda: db_override
+
+    return TestClient(mini, raise_server_exceptions=False)
+
+
+def _build_app_for_real_rank_check(db_override, principal):
+    """Companion to `_with_effective_role` below — builds an app where only
+    `require_tenant` is overridden (as upstream auth normally would be
+    resolved), leaving the REAL rank-checking logic in
+    `_require_rank_or_api_key` (app/api/deps/rbac.py) to run unmodified for
+    both the admin- and readonly-gated routes on this router.
+    """
+    from app.api.deps import get_db, require_tenant
+    from app.api.v2.routers.post_call_analysis import router
+
+    mini = FastAPI()
+    register_exception_handlers(mini)
+    mini.include_router(router)
+
+    mini.dependency_overrides[require_tenant] = lambda: principal
+    mini.dependency_overrides[get_db] = lambda: db_override
+
+    return TestClient(mini, raise_server_exceptions=False)
+
+
+def _with_effective_role(role_name: str):
+    """Context manager: pretend `rbac_cache_service.get_effective_role`
+    resolves the caller's role to `role_name`, so the real rank-checking
+    dependency (`_require_rank_or_api_key`) can be exercised end-to-end
+    against a controlled rank without standing up real
+    user_tenant_association rows."""
+    return patch(
+        "app.api.deps.rbac.rbac_cache_service.get_effective_role",
+        return_value=role_name,
+    )
 
 
 @pytest.fixture
@@ -128,6 +185,15 @@ def _admin_principal(tenant_id: uuid.UUID) -> MagicMock:
     principal = MagicMock()
     principal.id = uuid.uuid4()
     principal.current_tenant_id = tenant_id
+    principal.role = "admin"
+    return principal
+
+
+def _readonly_principal(tenant_id: uuid.UUID) -> MagicMock:
+    principal = MagicMock()
+    principal.id = uuid.uuid4()
+    principal.current_tenant_id = tenant_id
+    principal.role = "readonly"
     return principal
 
 
@@ -422,3 +488,155 @@ class TestResolveAnalysisModel:
 
         assert excinfo.value.status_code == 400
         assert "LLM model" in str(excinfo.value.detail)
+
+
+@pytest.mark.usefixtures("db")
+class TestGetPostCallAnalysisSettings:
+    def test_get_returns_defaults_for_unconfigured_flow(self, db, workspace, flow):
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "variables_to_extract": [],
+            "analysis_model": None,
+        }
+
+    def test_get_round_trips_a_prior_put(self, db, workspace, flow):
+        admin_client = _build_app(db, _admin_principal(workspace.id))
+        put_payload = {
+            "variables_to_extract": [
+                {"name": "service_type", "description": "What service was requested."},
+                {"name": "urgency", "description": "How urgent the request is."},
+            ],
+            "analysis_model": "gpt-4o-mini",
+        }
+        put_resp = admin_client.put(
+            f"/flows/{flow.id}/post-call-analysis-settings",
+            json=put_payload,
+        )
+        assert put_resp.status_code == 200, put_resp.text
+        put_body = put_resp.json()
+
+        readonly_client = _build_readonly_app(db, _readonly_principal(workspace.id))
+        get_resp = readonly_client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+
+        assert get_resp.status_code == 200, get_resp.text
+        get_body = get_resp.json()
+        assert get_body == put_body
+        assert len(get_body["variables_to_extract"]) == 2
+        assert get_body["variables_to_extract"][0] == {
+            "name": "service_type",
+            "description": "What service was requested.",
+        }
+        assert get_body["variables_to_extract"][1] == {
+            "name": "urgency",
+            "description": "How urgent the request is.",
+        }
+        assert get_body["analysis_model"] == "gpt-4o-mini"
+
+    def test_get_flow_from_other_tenant_returns_404(self, db, flow):
+        from app.models.tenant import Tenant
+
+        other_tenant = Tenant(
+            name=f"OtherAnalysisWS-{uuid.uuid4().hex[:8]}",
+            schema_name=f"other_analysis_ws_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        db.refresh(other_tenant)
+
+        principal = _readonly_principal(other_tenant.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+        assert resp.status_code == 404
+
+    def test_get_unknown_flow_returns_404(self, db, workspace):
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{uuid.uuid4()}/post-call-analysis-settings")
+        assert resp.status_code == 404
+
+    def test_readonly_principal_can_get(self, db, workspace, flow):
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+        assert resp.status_code == 200, resp.text
+
+    def test_readonly_rank_can_access_get(self, db, workspace, flow):
+        """Readonly is the floor for this endpoint — a genuinely readonly-rank
+        principal (real rank-check dependency, not just a dependency-swap)
+        must still succeed."""
+        principal = _admin_principal(workspace.id)
+        client = _build_app_for_real_rank_check(db, principal)
+
+        with _with_effective_role("read_only"):
+            resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+
+        assert resp.status_code == 200, resp.text
+
+    def test_forbidden_principal_cannot_get(self, db, workspace, flow):
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal, forbidden=True)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+        assert resp.status_code == 403
+
+    def test_get_handles_null_database_columns(self, db, workspace, agent):
+        from app.models.call_flow import CallFlow
+
+        flow = CallFlow(
+            tenant_id=workspace.id,
+            agent_id=agent.id,
+            name="Null Columns Flow",
+            direction="inbound",
+            post_call_analysis_variables=None,
+            post_call_analysis_model=None,
+        )
+        db.add(flow)
+        db.commit()
+        db.refresh(flow)
+
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "variables_to_extract": [],
+            "analysis_model": None,
+        }
+
+    def test_get_round_trips_with_variables_and_null_model(
+        self, db, workspace, flow
+    ):
+        admin_client = _build_app(db, _admin_principal(workspace.id))
+        put_payload = {
+            "variables_to_extract": [
+                {"name": "caller_intent", "description": "Why the caller called."}
+            ],
+            "analysis_model": None,
+        }
+        put_resp = admin_client.put(
+            f"/flows/{flow.id}/post-call-analysis-settings",
+            json=put_payload,
+        )
+        assert put_resp.status_code == 200, put_resp.text
+
+        readonly_client = _build_readonly_app(db, _readonly_principal(workspace.id))
+        get_resp = readonly_client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+
+        assert get_resp.status_code == 200, get_resp.text
+        assert get_resp.json() == {
+            "variables_to_extract": [
+                {"name": "caller_intent", "description": "Why the caller called."}
+            ],
+            "analysis_model": None,
+        }
+

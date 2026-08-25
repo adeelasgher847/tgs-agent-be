@@ -191,10 +191,10 @@ class PostCallActionsSettingsUpdate(BaseModel):
 class PostCallActionsSettingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    email_summary_enabled: bool
-    email_summary_recipients: List[str]
-    summary_to_business_owner_enabled: bool
-    slack_summary_enabled: bool
+    email_summary_enabled: bool = False
+    email_summary_recipients: List[str] = Field(default_factory=list)
+    summary_to_business_owner_enabled: bool = False
+    slack_summary_enabled: bool = False
     slack_channel_id: str | None = None
     slack_channel_name: str | None = None
 
@@ -259,8 +259,8 @@ class PostCallAnalysisSettingsUpdate(BaseModel):
 class PostCallAnalysisSettingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
-    variables_to_extract: List[PostCallAnalysisVariableSpec]
-    analysis_model: str | None
+    variables_to_extract: List[PostCallAnalysisVariableSpec] = Field(default_factory=list)
+    analysis_model: str | None = None
 
 
 class SystemWebhooksSettingsUpdate(BaseModel):

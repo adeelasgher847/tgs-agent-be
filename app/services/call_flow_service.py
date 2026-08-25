@@ -769,6 +769,23 @@ class CallFlowService:
             slack_channel_name=flow.slack_channel_name,
         )
 
+    def get_post_call_actions_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> PostCallActionsSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return PostCallActionsSettingsResponse(
+            email_summary_enabled=bool(flow.email_summary_enabled),
+            email_summary_recipients=list(flow.email_summary_recipients or []),
+            summary_to_business_owner_enabled=bool(flow.summary_to_business_owner_enabled),
+            slack_summary_enabled=bool(flow.slack_summary_enabled),
+            slack_channel_id=flow.slack_channel_id,
+            slack_channel_name=flow.slack_channel_name,
+        )
+
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──
 
     def update_system_webhooks_settings(
@@ -969,6 +986,19 @@ class CallFlowService:
         )
         db.commit()
         db.refresh(flow)
+        return PostCallAnalysisSettingsResponse(
+            variables_to_extract=list(flow.post_call_analysis_variables or []),
+            analysis_model=flow.post_call_analysis_model,
+        )
+
+    def get_post_call_analysis_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> PostCallAnalysisSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
         return PostCallAnalysisSettingsResponse(
             variables_to_extract=list(flow.post_call_analysis_variables or []),
             analysis_model=flow.post_call_analysis_model,
