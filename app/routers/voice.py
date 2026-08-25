@@ -8,6 +8,7 @@ from fastapi import (
     status,
 )
 from fastapi.responses import HTMLResponse, StreamingResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 from twilio.twiml.voice_response import VoiceResponse
 from datetime import datetime, timezone
@@ -152,16 +153,21 @@ def _resolve_default_inbound_call_flow(
     no-call-flow behavior is preserved in that case.
     """
     return (
-        db.query(CallFlow)
-        .filter(
-            CallFlow.tenant_id == tenant_id,
-            CallFlow.agent_id == agent_id,
-            CallFlow.direction.in_(["inbound", "bidirectional"]),
-            CallFlow.status == "active",
-            CallFlow.is_deleted.is_(False),
+        db.execute(
+            select(CallFlow)
+            .where(
+                CallFlow.tenant_id == tenant_id,
+                CallFlow.agent_id == agent_id,
+                CallFlow.direction.in_(["inbound", "bidirectional"]),
+                CallFlow.status == "active",
+                CallFlow.is_deleted.is_(False),
+            )
+            .order_by(
+                CallFlow.updated_at.desc().nullslast(), CallFlow.created_at.desc()
+            )
+            .limit(1)
         )
-        .order_by(CallFlow.updated_at.desc().nullslast(), CallFlow.created_at.desc())
-        .limit(1)
+        .scalars()
         .first()
     )
 
@@ -312,15 +318,13 @@ async def handle_incoming_call(
 
                 override_agent = None
                 if override_agent_id is not None:
-                    override_agent = (
-                        db.query(Agent)
-                        .filter(
+                    override_agent = db.execute(
+                        select(Agent).where(
                             Agent.id == override_agent_id,
                             Agent.tenant_id == phone_number.tenant_id,
                             ~Agent.is_deleted,
                         )
-                        .first()
-                    )
+                    ).scalar_one_or_none()
                     if override_agent is None:
                         logger.warning(
                             "Dynamic inbound routing: no active agent %s in tenant %s "

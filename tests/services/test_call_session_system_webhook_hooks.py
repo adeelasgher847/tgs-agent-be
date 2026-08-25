@@ -189,7 +189,9 @@ class TestStatusWebhookEndEventHook:
 
         assert updated is not None
         assert updated.status == status
-        mock_schedule.assert_called_once_with(session.id, "call.ended")
+        mock_schedule.assert_called_once_with(
+            session.id, "call.ended", extra={"outcome": status}
+        )
 
     def test_status_webhook_disabled_does_not_schedule(
         self, db, tenant, agent, cs_user
@@ -458,5 +460,7 @@ class TestPostCallWebhookScheduleHook:
             )
 
         assert updated is not None
-        mock_status.assert_called_once_with(session.id, "call.ended")
+        mock_status.assert_called_once_with(
+            session.id, "call.ended", extra={"outcome": "completed"}
+        )
         mock_post_call.assert_called_once_with(session.id)

@@ -404,7 +404,11 @@ class CallSessionService:
                                 schedule_status_webhook,
                             )
 
-                            schedule_status_webhook(call_session.id, "call.ended")
+                            schedule_status_webhook(
+                                call_session.id,
+                                "call.ended",
+                                extra={"outcome": status},
+                            )
                     except Exception as status_webhook_exc:  # pragma: no cover
                         logger.warning(
                             "Status webhook (end) schedule failed (non-critical): %s",

@@ -145,6 +145,58 @@ def _mock_response(status_code=200, json_body=None, text=""):
     return resp
 
 
+# ── _render_headers / _render_query_params ──────────────────────────────────
+
+
+class TestRenderHeaders:
+    """Direct unit tests for `_render_headers` — no DB needed. Covers the
+    Issue 1 fix: header NAMES are kept literal (never templated), while
+    header VALUES are still rendered against the context."""
+
+    def test_header_key_with_unresolvable_token_is_sent_literal(self):
+        from app.services.system_webhook_service import _render_headers
+
+        headers = {"X-{{token}}-Header": "static-value"}
+        result = _render_headers(headers, context={})
+
+        # The key must survive byte-for-byte, unresolved template and all —
+        # NOT emptied/rendered like a value would be.
+        assert "X-{{token}}-Header" in result
+        assert result["X-{{token}}-Header"] == "static-value"
+
+    def test_header_value_with_same_token_is_rendered(self):
+        from app.services.system_webhook_service import _render_headers
+
+        headers = {"X-Call-Id": "{{_system.callId}}"}
+        context = {"_system": {"callId": "abc-123"}}
+        result = _render_headers(headers, context)
+
+        assert result["X-Call-Id"] == "abc-123"
+
+    def test_header_value_with_unresolvable_token_renders_empty(self):
+        from app.services.system_webhook_service import _render_headers
+
+        headers = {"X-Token": "{{missing.thing}}"}
+        result = _render_headers(headers, context={})
+
+        assert result["X-Token"] == ""
+
+    def test_key_literal_value_rendered_in_same_call(self):
+        """The core of the fix: exercise both behaviors side by side so a key
+        that looks templatable and a value with the identical token diverge —
+        key stays literal, value renders (or empties if unresolvable)."""
+        from app.services.system_webhook_service import _render_headers
+
+        headers = {"{{_system.eventType}}": "{{_system.eventType}}"}
+        context = {"_system": {"eventType": "call.connected"}}
+        result = _render_headers(headers, context)
+
+        # Key untouched — still the raw template string.
+        assert "{{_system.eventType}}" in result
+        # Value resolved.
+        assert result["{{_system.eventType}}"] == "call.connected"
+
+
 # ── (1) fetch_pre_inbound_webhook_variables ─────────────────────────────────
 
 
@@ -302,6 +354,124 @@ class TestFetchPreInboundWebhookVariables:
             .count()
             == 0
         )
+
+    def test_sends_json_body_with_from_to_and_static_metadata(self, db, tenant, agent):
+        """Issue 2 fix: the outbound POST must carry a real JSON body with
+        `from`/`to` nested alongside (not clobbered by) static metadata:
+        `{"from": ..., "to": ..., "metadata": {...static_metadata}}`."""
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            pre_inbound_webhook_url="https://example.com/pre-inbound",
+            pre_inbound_webhook_static_metadata={"region": "us-east"},
+        )
+        from app.services.system_webhook_service import (
+            fetch_pre_inbound_webhook_variables,
+        )
+
+        resp = _mock_response(200, json_body={"variables": {}}, text="{}")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["json"] = json
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(
+                fetch_pre_inbound_webhook_variables(
+                    db, flow, from_number="+15551112222", to_number="+15553334444"
+                )
+            )
+
+        assert captured["json"] == {
+            "from": "+15551112222",
+            "to": "+15553334444",
+            "metadata": {"region": "us-east"},
+        }
+
+    def test_static_metadata_from_key_does_not_clobber_real_from_number(
+        self, db, tenant, agent
+    ):
+        """Collision-bug fix: a tenant's static metadata may legitimately
+        contain a key literally named `"from"` (or `"to"`) — it must land
+        nested under `metadata`, not overwrite the real caller-supplied
+        `from`/`to` fields via a flat dict-spread."""
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            pre_inbound_webhook_url="https://example.com/pre-inbound",
+            pre_inbound_webhook_static_metadata={
+                "from": "spoofed-value",
+                "other": "x",
+            },
+        )
+        from app.services.system_webhook_service import (
+            fetch_pre_inbound_webhook_variables,
+        )
+
+        resp = _mock_response(200, json_body={"variables": {}}, text="{}")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["json"] = json
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(
+                fetch_pre_inbound_webhook_variables(
+                    db, flow, from_number="+15551112222", to_number="+15553334444"
+                )
+            )
+
+        json_body = captured["json"]
+        assert json_body["from"] == "+15551112222"
+        assert json_body["to"] == "+15553334444"
+        assert json_body["metadata"]["from"] == "spoofed-value"
+        assert json_body["metadata"]["other"] == "x"
+
+    def test_header_key_literal_header_value_rendered_end_to_end(
+        self, db, tenant, agent
+    ):
+        """Issue 1 fix exercised through the real dispatch path: a header key
+        with an unresolvable token is sent unrendered, while a header value
+        with the same token renders (empties, since it's unresolvable)."""
+        flow = _make_flow(
+            db, tenant, agent, pre_inbound_webhook_url="https://example.com/pre-inbound"
+        )
+        from app.services.system_webhook_service import (
+            fetch_pre_inbound_webhook_variables,
+        )
+
+        resp = _mock_response(200, json_body={"variables": {}}, text="{}")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["headers"] = headers
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch(
+                "app.services.system_webhook_service._decrypt_headers_safe",
+                return_value={"X-{{token}}-Header": "{{token}}"},
+            ),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(fetch_pre_inbound_webhook_variables(db, flow, "+1", "+2"))
+
+        headers = captured["headers"]
+        # Key kept literal — sent exactly as configured.
+        assert "X-{{token}}-Header" in headers
+        # Value rendered — unresolvable token becomes empty string, not literal.
+        assert headers["X-{{token}}-Header"] == ""
 
     def test_ssrf_guard_invoked_with_rendered_url(self, db, tenant, agent):
         flow = _make_flow(
@@ -509,6 +679,199 @@ class TestPostCallWebhookDispatch:
         mock_retry.assert_not_awaited()
 
 
+# ── run_webhook_test(webhook_kind="post_call") header/query rendering ──────
+
+
+@pytest.mark.usefixtures("db")
+class TestRunWebhookTestPostCallHeaderContext:
+    """Issue 3 fix: `run_webhook_test`'s `post_call` branch renders
+    headers/query-params against a real field-catalog context
+    (`build_post_call_payload_context`), sourced from the tenant's most
+    recent `CallSession`, instead of the synthetic test payload dict."""
+
+    def test_resolves_against_tenants_most_recent_call_session(
+        self, db, tenant, agent, sw_user
+    ):
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            post_call_webhook_url="https://example.com/post-call",
+        )
+        session = _make_session(
+            db,
+            tenant,
+            agent,
+            sw_user,
+            call_flow=flow,
+            status="completed",
+            call_metadata={"webhook_variables": {"foo": "bar"}},
+        )
+        from app.services.system_webhook_service import run_webhook_test
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["headers"] = headers
+            captured["params"] = params
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch(
+                "app.services.system_webhook_service._decrypt_headers_safe",
+                return_value={
+                    "X-Call-Id": "{{call_metadata.call_id}}",
+                    "X-Foo": "{{header_variables.foo}}",
+                },
+            ),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(run_webhook_test(db, flow.id, tenant.id, "post_call"))
+
+        headers = captured["headers"]
+        assert headers["X-Call-Id"] == str(session.id)
+        assert headers["X-Foo"] == "bar"
+
+    def test_resolves_query_params_against_recent_call_session(
+        self, db, tenant, agent, sw_user
+    ):
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            post_call_webhook_url="https://example.com/post-call",
+            post_call_webhook_query_params=[
+                {"key": "call_id", "value": "{{call_metadata.call_id}}"},
+                {"key": "status", "value": "{{call_metadata.status}}"},
+            ],
+        )
+        session = _make_session(
+            db, tenant, agent, sw_user, call_flow=flow, status="completed"
+        )
+        from app.services.system_webhook_service import run_webhook_test
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["params"] = params
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(run_webhook_test(db, flow.id, tenant.id, "post_call"))
+
+        params = dict(captured["params"])
+        assert params["call_id"] == str(session.id)
+        assert params["status"] == "completed"
+
+    def test_no_calls_yet_resolves_field_catalog_templates_to_empty_string(
+        self, db, tenant, agent
+    ):
+        """Tenant has no `CallSession` rows at all — header/query templates
+        referencing the field catalog must resolve to empty string cleanly,
+        not raise."""
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            post_call_webhook_url="https://example.com/post-call",
+        )
+        from app.services.system_webhook_service import run_webhook_test
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["headers"] = headers
+            captured["params"] = params
+            return resp
+
+        with (
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch(
+                "app.services.system_webhook_service._decrypt_headers_safe",
+                return_value={"X-Call-Id": "{{call_metadata.call_id}}"},
+            ),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            log = _run(run_webhook_test(db, flow.id, tenant.id, "post_call"))
+
+        assert log.status == "success"
+        assert captured["headers"]["X-Call-Id"] == ""
+
+
+# ── _derive_status_field ─────────────────────────────────────────────────────
+
+
+class TestDeriveStatusField:
+    def test_transfer_with_non_completed_outcome_is_failed(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert (
+            _derive_status_field("call.transfer", {"outcome": "no-answer"}) == "failed"
+        )
+
+    def test_transfer_with_completed_outcome_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert (
+            _derive_status_field("call.transfer", {"outcome": "completed"}) == "success"
+        )
+
+    def test_transfer_with_no_extra_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.transfer", None) == "success"
+
+    def test_transfer_with_missing_outcome_key_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.transfer", {}) == "success"
+
+    def test_other_event_types_unconditionally_success(self):
+        """`call.connected`/`call.test` carry no outcome signal at all — they
+        always report success, even if (implausibly) passed an `extra` dict
+        that looks failure-like. `call.ended` is exercised separately below
+        since it now derives from `extra["outcome"]`, same as `call.transfer`."""
+        from app.services.system_webhook_service import _derive_status_field
+
+        for event_type in ("call.connected", "call.test"):
+            assert (
+                _derive_status_field(event_type, {"outcome": "no-answer"}) == "success"
+            )
+
+    def test_ended_with_completed_outcome_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.ended", {"outcome": "completed"}) == "success"
+
+    @pytest.mark.parametrize("outcome", ["no_answer", "failed", "busy"])
+    def test_ended_with_non_completed_outcome_is_failed(self, outcome):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.ended", {"outcome": outcome}) == "failed"
+
+    def test_ended_with_no_extra_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.ended", None) == "success"
+
+    def test_ended_with_empty_extra_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.ended", {}) == "success"
+
+    def test_ended_with_missing_outcome_key_is_success(self):
+        from app.services.system_webhook_service import _derive_status_field
+
+        assert _derive_status_field("call.ended", {"other": "x"}) == "success"
+
+
 # ── (4) Status Webhook ────────────────────────────────────────────────────────
 
 
@@ -614,6 +977,159 @@ class TestStatusWebhookDispatch:
             event_type="call.ended",
             extra=None,
         )
+
+    def test_payload_status_field_failed_for_non_completed_transfer(
+        self, db, tenant, agent, sw_user
+    ):
+        """Issue 4 fix: `status` is derived, not hardcoded to "success"."""
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            status_webhook_enabled=True,
+            status_webhook_url="https://example.com/status",
+        )
+        session = _make_session(db, tenant, agent, sw_user, call_flow=flow)
+        from app.services.system_webhook_service import _dispatch_status_webhook
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["json"] = json
+            return resp
+
+        with (
+            _session_local_returns(db),
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(
+                _dispatch_status_webhook(
+                    session.id, "call.transfer", extra={"outcome": "no-answer"}
+                )
+            )
+
+        assert captured["json"]["status"] == "failed"
+
+    def test_payload_status_field_success_for_completed_transfer(
+        self, db, tenant, agent, sw_user
+    ):
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            status_webhook_enabled=True,
+            status_webhook_url="https://example.com/status",
+        )
+        session = _make_session(db, tenant, agent, sw_user, call_flow=flow)
+        from app.services.system_webhook_service import _dispatch_status_webhook
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["json"] = json
+            return resp
+
+        with (
+            _session_local_returns(db),
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(
+                _dispatch_status_webhook(
+                    session.id, "call.transfer", extra={"outcome": "completed"}
+                )
+            )
+
+        assert captured["json"]["status"] == "success"
+
+    def test_payload_status_field_success_for_non_transfer_event(
+        self, db, tenant, agent, sw_user
+    ):
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            status_webhook_enabled=True,
+            status_webhook_url="https://example.com/status",
+        )
+        session = _make_session(db, tenant, agent, sw_user, call_flow=flow)
+        from app.services.system_webhook_service import _dispatch_status_webhook
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["json"] = json
+            return resp
+
+        with (
+            _session_local_returns(db),
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(_dispatch_status_webhook(session.id, "call.connected"))
+
+        assert captured["json"]["status"] == "success"
+
+    def test_header_query_context_resolves_system_fields_only(
+        self, db, tenant, agent, sw_user
+    ):
+        """Issue 5 fix: header/query templates render against a namespaced
+        `{"_system": {"callId": ..., "eventType": ...}}` context built fresh
+        for the status webhook — NOT against the outgoing payload dict. A
+        stray `{{status}}`/`{{apiName}}` token (payload fields, not `_system`
+        fields) must render empty rather than resolve."""
+        flow = _make_flow(
+            db,
+            tenant,
+            agent,
+            status_webhook_enabled=True,
+            status_webhook_url="https://example.com/status",
+            status_webhook_query_params=[
+                {"key": "call_id", "value": "{{_system.callId}}"},
+                {"key": "event", "value": "{{_system.eventType}}"},
+                {"key": "stray", "value": "{{status}}"},
+            ],
+        )
+        session = _make_session(db, tenant, agent, sw_user, call_flow=flow)
+        from app.services.system_webhook_service import _dispatch_status_webhook
+
+        resp = _mock_response(200, text="ok")
+        captured = {}
+
+        async def _fake_post(self, url, params=None, headers=None, json=None):
+            captured["headers"] = headers
+            captured["params"] = params
+            return resp
+
+        with (
+            _session_local_returns(db),
+            patch("app.services.system_webhook_service.assert_public_url"),
+            patch(
+                "app.services.system_webhook_service._decrypt_headers_safe",
+                return_value={
+                    "X-Call-Id": "{{_system.callId}}",
+                    "X-Event-Type": "{{_system.eventType}}",
+                    "X-Stray": "{{apiName}}",
+                },
+            ),
+            patch("httpx.AsyncClient.post", new=_fake_post),
+        ):
+            _run(_dispatch_status_webhook(session.id, "call.connected"))
+
+        headers = captured["headers"]
+        assert headers["X-Call-Id"] == str(session.id)
+        assert headers["X-Event-Type"] == "call.connected"
+        # Not resolvable against `_system`-only context — renders empty.
+        assert headers["X-Stray"] == ""
+
+        params = dict(captured["params"])
+        assert params["call_id"] == str(session.id)
+        assert params["event"] == "call.connected"
+        assert params["stray"] == ""
 
 
 def _run(coro):

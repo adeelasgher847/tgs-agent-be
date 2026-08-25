@@ -37,6 +37,7 @@ from typing import Any, Callable
 
 import httpx
 from fastapi import HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.db_encryption import decrypt_webhook_headers
@@ -188,10 +189,11 @@ def _decrypt_headers_safe(ciphertext: str | None, db: Session) -> dict[str, str]
 
 
 def _render_headers(headers: dict[str, str], context: dict[str, Any]) -> dict[str, str]:
-    return {
-        render_template(k, context): render_template(v, context)
-        for k, v in headers.items()
-    }
+    # Header NAMES are kept literal, not templated: an unresolved template in a
+    # header key would silently become "" (send a header with an empty name,
+    # which is a protocol error), and there's no legitimate tenant use case for
+    # a dynamic header name. Only the value is rendered.
+    return {k: render_template(v, context) for k, v in headers.items()}
 
 
 def _render_query_params(
@@ -298,7 +300,11 @@ async def fetch_pre_inbound_webhook_variables(
             url=url,
             headers=headers,
             query_params=query_params,
-            json_body=None,
+            json_body={
+                "from": from_number,
+                "to": to_number,
+                "metadata": static_metadata,
+            },
             timeout_seconds=_PRE_INBOUND_TIMEOUT_SECONDS,
             on_response=_parse_variables,
         )
@@ -354,29 +360,31 @@ async def _dispatch_post_call_webhook(call_session_id: uuid.UUID) -> bool:
 
     db: Session = SessionLocal()
     try:
-        call_session = (
-            db.query(CallSession).filter(CallSession.id == call_session_id).first()
-        )
+        call_session = db.execute(
+            select(CallSession).where(CallSession.id == call_session_id)
+        ).scalar_one_or_none()
         if not call_session or not call_session.call_flow_id:
             return True
 
-        call_flow = (
-            db.query(CallFlow)
-            .filter(
+        call_flow = db.execute(
+            select(CallFlow).where(
                 CallFlow.id == call_session.call_flow_id,
                 CallFlow.tenant_id == call_session.tenant_id,
             )
-            .first()
-        )
+        ).scalar_one_or_none()
         if not call_flow or not call_flow.post_call_webhook_url:
             return True
 
         call_log = (
-            db.query(CallLog)
-            .filter(
-                CallLog.call_session_id == call_session.id,
-                CallLog.tenant_id == call_session.tenant_id,
+            db.execute(
+                select(CallLog)
+                .where(
+                    CallLog.call_session_id == call_session.id,
+                    CallLog.tenant_id == call_session.tenant_id,
+                )
+                .limit(1)
             )
+            .scalars()
             .first()
         )
 
@@ -481,6 +489,33 @@ def schedule_status_webhook(
     asyncio.create_task(_enqueue())
 
 
+def _derive_status_field(event_type: str, extra: dict | None) -> str:
+    """Derive the outbound status-webhook payload's `status` field from
+    `event_type`/`extra` instead of hardcoding it, so it can't silently go
+    stale as more event types are added later.
+
+    As of this writing, every `schedule_status_webhook()` call site
+    (`app/routers/voice.py`, `app/voice/tts_stream_mixin.py`,
+    `app/services/call_session_service.py`) uses one of `call.connected`,
+    `call.ended`, `call.transfer`, or `call.test`. Two of those carry an
+    actual outcome signal in `extra["outcome"]`:
+    - `call.transfer`: the dial-completion outcome for the transfer attempt
+      (`"completed"` == success; anything else — busy/no-answer/failed —
+      is not a successful transfer).
+    - `call.ended`: the terminal `CallSession.status` the call actually ended
+      with (`"completed"` == success; `"failed"`/`"busy"`/`"no_answer"` are
+      not). Passed in from
+      `CallSessionService.update_call_session_status()`.
+    `call.connected` and `call.test` are unconditional lifecycle
+    notifications with no failure variant and always report `"success"`.
+    """
+    if event_type in ("call.transfer", "call.ended") and extra:
+        outcome = extra.get("outcome")
+        if outcome and outcome != "completed":
+            return "failed"
+    return "success"
+
+
 async def _dispatch_status_webhook(
     call_session_id: uuid.UUID, event_type: str, extra: dict | None = None
 ) -> bool:
@@ -488,20 +523,18 @@ async def _dispatch_status_webhook(
 
     db: Session = SessionLocal()
     try:
-        call_session = (
-            db.query(CallSession).filter(CallSession.id == call_session_id).first()
-        )
+        call_session = db.execute(
+            select(CallSession).where(CallSession.id == call_session_id)
+        ).scalar_one_or_none()
         if not call_session or not call_session.call_flow_id:
             return True
 
-        call_flow = (
-            db.query(CallFlow)
-            .filter(
+        call_flow = db.execute(
+            select(CallFlow).where(
                 CallFlow.id == call_session.call_flow_id,
                 CallFlow.tenant_id == call_session.tenant_id,
             )
-            .first()
-        )
+        ).scalar_one_or_none()
         if (
             not call_flow
             or not call_flow.status_webhook_enabled
@@ -513,7 +546,7 @@ async def _dispatch_status_webhook(
             "callId": str(call_session.id),
             "apiName": event_type,
             "apiUrl": None,
-            "status": "success",
+            "status": _derive_status_field(event_type, extra),
             "statusCode": None,
             "response": None,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -522,12 +555,26 @@ async def _dispatch_status_webhook(
         if extra:
             payload.update(extra)
 
+        # Render headers/query params from a namespaced context, consistent
+        # with the pre-inbound and post-call dispatch paths — NOT from the
+        # outgoing payload dict itself. A header template like
+        # `{{_metadata.apiKey}}` must resolve against tenant-configured
+        # static metadata, not against payload fields like callId/status.
+        # NOTE: unlike `pre_inbound_webhook_static_metadata`, `CallFlow` has
+        # no `status_webhook_static_metadata` column — adding one is a
+        # db-migration-scoped change, out of scope for this fix — so
+        # `_metadata`/`_variable` are intentionally omitted here rather than
+        # invented from an unrelated field.
+        context: dict[str, Any] = {
+            "_system": {"callId": str(call_session.id), "eventType": event_type},
+        }
+
         headers = _render_headers(
             _decrypt_headers_safe(call_flow.status_webhook_headers_encrypted, db),
-            payload,
+            context,
         )
         query_params = _render_query_params(
-            call_flow.status_webhook_query_params, payload
+            call_flow.status_webhook_query_params, context
         )
 
         log = await _deliver(
@@ -734,7 +781,11 @@ async def run_webhook_test(
             url=url,
             headers=headers,
             query_params=query_params,
-            json_body=None,
+            json_body={
+                "from": context["_system"]["fromNumber"],
+                "to": context["_system"]["phoneNumber"],
+                "metadata": static_metadata,
+            },
             timeout_seconds=_PRE_INBOUND_TIMEOUT_SECONDS,
         )
 
@@ -760,12 +811,62 @@ async def run_webhook_test(
             payload = render_json_template(
                 call_flow.post_call_webhook_custom_payload_template, payload
             )
+
+        # Headers/query-params must render against the same field-catalog
+        # context the real dispatch path uses (`build_post_call_payload_context`
+        # in `_dispatch_post_call_webhook`), NOT the synthetic `payload` dict
+        # above — otherwise a header/query template referencing
+        # `{{header_variables.x}}` or `{{conversation_data.x}}` looks broken
+        # when tested even though real dispatch resolves it fine. This
+        # endpoint only has `flow_id`/`tenant_id` (no `call_session_id`), so
+        # we can't scope to a call that actually belongs to this flow; the
+        # tenant's most recent call session (any call flow) is close enough
+        # to exercise real field values. If the tenant has no calls yet at
+        # all, fall back to an all-empty-namespaces context (rather than the
+        # synthetic `payload` dict) so field-catalog templates still render
+        # (as empty string) with the same *shape* real dispatch would use,
+        # instead of looking structurally different.
+        recent_call_session = (
+            db.execute(
+                select(CallSession)
+                .where(CallSession.tenant_id == tenant_id)
+                .order_by(CallSession.created_at.desc())
+                .limit(1)
+            )
+            .scalars()
+            .first()
+        )
+        if recent_call_session is not None:
+            recent_call_log = (
+                db.execute(
+                    select(CallLog)
+                    .where(
+                        CallLog.call_session_id == recent_call_session.id,
+                        CallLog.tenant_id == tenant_id,
+                    )
+                    .limit(1)
+                )
+                .scalars()
+                .first()
+            )
+            header_query_context = build_post_call_payload_context(
+                db, recent_call_session, recent_call_log
+            )
+        else:
+            header_query_context = {
+                "call_metadata": {},
+                "conversation_data": {},
+                "transcript": {},
+                "analytics": {},
+                "header_variables": {},
+            }
+
         headers = _render_headers(
             _decrypt_headers_safe(call_flow.post_call_webhook_headers_encrypted, db),
-            payload,
+            header_query_context,
         )
         query_params = _render_query_params(
-            call_flow.post_call_webhook_query_params, payload
+            call_flow.post_call_webhook_query_params, header_query_context
         )
         return await _deliver(
             db,
@@ -797,12 +898,18 @@ async def run_webhook_test(
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "duration": None,
         }
+        # Same namespaced-context rationale as `_dispatch_status_webhook` —
+        # header/query templates render against `_system`, not the outgoing
+        # payload dict.
+        test_context: dict[str, Any] = {
+            "_system": {"callId": "test-call-id", "eventType": "call.test"},
+        }
         headers = _render_headers(
             _decrypt_headers_safe(call_flow.status_webhook_headers_encrypted, db),
-            payload,
+            test_context,
         )
         query_params = _render_query_params(
-            call_flow.status_webhook_query_params, payload
+            call_flow.status_webhook_query_params, test_context
         )
         return await _deliver(
             db,
