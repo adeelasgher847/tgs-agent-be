@@ -10,6 +10,7 @@ GET  /api/v2/flows/{flow_id}/ab-results
 PUT  /api/v2/flows/{flow_id}/ab-test/winner
 PUT  /api/v2/flows/{flow_id}/caller-memory-settings
 PUT  /api/v2/flows/{flow_id}/post-call-actions-settings
+GET  /api/v2/flows/{flow_id}/post-call-actions-settings
 PUT  /api/v2/flows/{flow_id}/system-webhooks-settings
 GET  /api/v2/flows/{flow_id}/system-webhooks-settings
 POST /api/v2/flows/{flow_id}/system-webhooks/test
@@ -201,6 +202,27 @@ def update_post_call_actions_settings(
         actor_user_id=principal.id,
     )
     return result
+
+
+@router.get(
+    "/{flow_id}/post-call-actions-settings",
+    response_model=PostCallActionsSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Post-Call Actions settings for a call flow",
+    description=(
+        "Returns the currently-saved Post-Call Actions configuration for this "
+        "call flow (email summary, summary to business owner, Slack summary). "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_post_call_actions_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> PostCallActionsSettingsResponse:
+    return call_flow_service.get_post_call_actions_settings(
+        db, flow_id, _tenant_id(principal)
+    )
 
 
 @router.put(

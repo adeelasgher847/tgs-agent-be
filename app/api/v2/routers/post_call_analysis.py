@@ -6,6 +6,7 @@ rank as the neighboring caller-memory and post-call-actions settings in
 app.api.v2.routers.flows.
 
 PUT  /api/v2/flows/{flow_id}/post-call-analysis-settings
+GET  /api/v2/flows/{flow_id}/post-call-analysis-settings
 
 This is a separate router file (rather than folded into flows.py) per the
 "New feature gets its own router file" convention documented alongside the
@@ -20,7 +21,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db, require_admin_or_api_key
+from app.api.deps import (
+    get_db,
+    require_admin_or_api_key,
+    require_readonly_or_api_key,
+)
 from app.core.error_responses import build_api_error_payload
 from app.core.request_auth import ApiKeyPrincipal
 from app.models.user import User
@@ -117,3 +122,25 @@ def update_post_call_analysis_settings(
         actor_user_id=principal.id,
     )
     return result
+
+
+@router.get(
+    "/{flow_id}/post-call-analysis-settings",
+    response_model=PostCallAnalysisSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Post-Call Analysis settings for a call flow",
+    description=(
+        "Returns the currently-saved Post-Call Analysis configuration for this "
+        "call flow (custom variables to extract and extraction model). "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_post_call_analysis_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> PostCallAnalysisSettingsResponse:
+    return call_flow_service.get_post_call_analysis_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+

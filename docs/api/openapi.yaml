@@ -8911,6 +8911,37 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved Post-Call Actions settings for a call flow
+      description: Returns the currently-saved Post-Call Actions configuration for
+        this call flow (email summary, summary to business owner, Slack summary).
+        Read-only rank is sufficient since no secret keys are exposed.
+      operationId: get_post_call_actions_settings_api_v2_flows__flow_id__post_call_actions_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCallActionsSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -9281,6 +9312,37 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/PostCallAnalysisSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PostCallAnalysisSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - Post-Call Analysis
+      summary: Get the currently-saved Post-Call Analysis settings for a call flow
+      description: Returns the currently-saved Post-Call Analysis configuration for
+        this call flow (custom variables to extract and extraction model). Read-only
+        rank is sufficient since no secret keys are exposed.
+      operationId: get_post_call_analysis_settings_api_v2_flows__flow_id__post_call_analysis_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
       responses:
         '200':
           description: Successful Response
@@ -15959,6 +16021,7 @@ components:
         email_summary_enabled:
           type: boolean
           title: Email Summary Enabled
+          default: false
         email_summary_recipients:
           items:
             type: string
@@ -15967,9 +16030,11 @@ components:
         summary_to_business_owner_enabled:
           type: boolean
           title: Summary To Business Owner Enabled
+          default: false
         slack_summary_enabled:
           type: boolean
           title: Slack Summary Enabled
+          default: false
         slack_channel_id:
           type: string
           nullable: true
@@ -15977,11 +16042,6 @@ components:
           type: string
           nullable: true
       type: object
-      required:
-      - email_summary_enabled
-      - email_summary_recipients
-      - summary_to_business_owner_enabled
-      - slack_summary_enabled
       title: PostCallActionsSettingsResponse
     PostCallActionsSettingsUpdate:
       properties:
@@ -16044,9 +16104,6 @@ components:
           type: string
           nullable: true
       type: object
-      required:
-      - variables_to_extract
-      - analysis_model
       title: PostCallAnalysisSettingsResponse
     PostCallAnalysisSettingsUpdate:
       properties:
