@@ -110,6 +110,67 @@ class CallFlow(Base):
     )
     post_call_analysis_model = Column(String(100), nullable=True)
 
+    # System Webhooks: Pre-Inbound Call Webhook — fired before an inbound call
+    # connects; response `{"variables": {...}}` gets injected into the agent's
+    # prompt/greeting via `{{key}}` placeholders. Fail-open on any failure.
+    pre_inbound_webhook_url = Column(String(2048), nullable=True)
+    # pgcrypto ciphertext (encrypt_webhook_headers) of the full headers dict JSON
+    pre_inbound_webhook_headers_encrypted = Column(Text, nullable=True)
+    # [{key, value}] — values may contain `{{...}}` template tokens, not secret
+    pre_inbound_webhook_query_params = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa_text("'[]'"),
+    )
+    # Flat tenant-defined key/value map, available at render time under both
+    # `_metadata.*` and `_variable.*` template namespaces
+    pre_inbound_webhook_static_metadata = Column(
+        JSONB,
+        nullable=False,
+        default=dict,
+        server_default=sa_text("'{}'"),
+    )
+
+    # System Webhooks: Dynamic Inbound Call Routing — depends on the
+    # Pre-Inbound webhook above; if its response includes a valid
+    # `variables.agent_id`, route the call to that agent instead of the
+    # number's default agent.
+    dynamic_inbound_routing_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
+    # System Webhooks: Post-Call Webhook — fired after a call ends with
+    # `{callId, agentId, timestamp, data}`; optional custom payload mode lets
+    # the tenant define their own JSON body using `{{field}}` tokens.
+    post_call_webhook_url = Column(String(2048), nullable=True)
+    post_call_webhook_headers_encrypted = Column(Text, nullable=True)
+    post_call_webhook_query_params = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa_text("'[]'"),
+    )
+    post_call_webhook_custom_payload_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    # Arbitrary JSON object with `{{field}}` string tokens as leaf values
+    post_call_webhook_custom_payload_template = Column(JSONB, nullable=True)
+
+    # System Webhooks: Status Webhook — fired on call lifecycle sub-events
+    # (connect, transfer, end) with a status/outcome payload.
+    status_webhook_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    status_webhook_url = Column(String(2048), nullable=True)
+    status_webhook_headers_encrypted = Column(Text, nullable=True)
+    status_webhook_query_params = Column(
+        JSONB,
+        nullable=False,
+        default=list,
+        server_default=sa_text("'[]'"),
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

@@ -394,6 +394,27 @@ class CallSessionService:
                         ).total_seconds()
                         call_session.duration = int(duration)
 
+                    # Status Webhook — "end" event, fired once per terminal status
+                    # transition. Fire-and-forget (fail open) — see
+                    # app/services/system_webhook_service.py::schedule_status_webhook.
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and call_flow.status_webhook_enabled:
+                            from app.services.system_webhook_service import (
+                                schedule_status_webhook,
+                            )
+
+                            schedule_status_webhook(
+                                call_session.id,
+                                "call.ended",
+                                extra={"outcome": status},
+                            )
+                    except Exception as status_webhook_exc:  # pragma: no cover
+                        logger.warning(
+                            "Status webhook (end) schedule failed (non-critical): %s",
+                            status_webhook_exc,
+                        )
+
                 db.commit()
                 db.refresh(call_session)
 
@@ -536,6 +557,30 @@ class CallSessionService:
                         logger.warning(
                             "Slack summary schedule failed (non-critical): %s",
                             slack_exc,
+                        )
+
+                # Post-Call Webhook: tenant-defined webhook fired after this call
+                # completes, configured via the call flow's System Webhooks settings.
+                # schedule_post_call_webhook's ARQ job re-checks
+                # call_flow.post_call_webhook_url itself before delivering (it's a
+                # no-op if unset), but gating here too — same convention as the
+                # Slack-summary block above — avoids an unnecessary enqueue for the
+                # common case where nothing is configured. Fire-and-forget
+                # (fail open) — see
+                # app/services/system_webhook_service.py::schedule_post_call_webhook.
+                if status == "completed" and not is_inbound_crm_sync_call:
+                    try:
+                        call_flow = call_session.call_flow
+                        if call_flow and call_flow.post_call_webhook_url:
+                            from app.services.system_webhook_service import (
+                                schedule_post_call_webhook,
+                            )
+
+                            schedule_post_call_webhook(call_session.id)
+                    except Exception as webhook_exc:  # pragma: no cover
+                        logger.warning(
+                            "Post-call webhook schedule failed (non-critical): %s",
+                            webhook_exc,
                         )
 
                 # HubSpot post-call write-back: create a Call engagement with the

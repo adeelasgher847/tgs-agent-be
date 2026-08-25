@@ -49,7 +49,13 @@ from app.schemas.call_flow import (
     PostCallActionsSettingsUpdate,
     PostCallAnalysisSettingsResponse,
     PostCallAnalysisSettingsUpdate,
+    SystemWebhooksSettingsResponse,
+    SystemWebhooksSettingsUpdate,
+    SystemWebhookDeliveryOut,
+    PaginatedSystemWebhookDeliveries,
 )
+from app.models.system_webhook_log import SystemWebhookDeliveryLog
+from app.core.db_encryption import encrypt_webhook_headers
 from app.schemas.prompt_version import PromptVersionOut
 from app.services.flow_graph_service import compile_graph, validate_graph
 from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
@@ -57,6 +63,7 @@ from app.utils.gemini_prompt_sanitizer import sanitize_prompt_for_gemini
 _MAX_VERSIONS = 50
 _AB_MIN_CALLS_FOR_SIGNIFICANCE = 30
 _AB_SIGNIFICANCE_P_VALUE = 0.05
+
 
 def _strip_flow_data_for_readonly(flow_data: dict) -> dict:
     """Return a sanitised copy of *flow_data* safe for readonly callers.
@@ -762,6 +769,180 @@ class CallFlowService:
             slack_channel_name=flow.slack_channel_name,
         )
 
+    # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──
+
+    def update_system_webhooks_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: SystemWebhooksSettingsUpdate,
+    ) -> SystemWebhooksSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        fields = {
+            "pre_inbound_webhook_url": body.pre_inbound_webhook_url,
+            "pre_inbound_webhook_query_params": list(
+                body.pre_inbound_webhook_query_params or []
+            ),
+            "pre_inbound_webhook_static_metadata": dict(
+                body.pre_inbound_webhook_static_metadata or {}
+            ),
+            "dynamic_inbound_routing_enabled": body.dynamic_inbound_routing_enabled,
+            "post_call_webhook_url": body.post_call_webhook_url,
+            "post_call_webhook_query_params": list(
+                body.post_call_webhook_query_params or []
+            ),
+            "post_call_webhook_custom_payload_enabled": (
+                body.post_call_webhook_custom_payload_enabled
+            ),
+            "post_call_webhook_custom_payload_template": (
+                body.post_call_webhook_custom_payload_template
+            ),
+            "status_webhook_enabled": body.status_webhook_enabled,
+            "status_webhook_url": body.status_webhook_url,
+            "status_webhook_query_params": list(body.status_webhook_query_params or []),
+        }
+
+        # Headers are the one deliberate asymmetry from strict full-replace:
+        # the API never echoes back decrypted header values (see
+        # SystemWebhooksSettingsResponse), so the caller has nothing valid to
+        # resubmit on an otherwise-full-replace PUT. `None` in the request
+        # means "leave the stored ciphertext unchanged"; an explicit `{}`
+        # clears it back to NULL. Every other field above is a true
+        # full-replace, matching update_post_call_actions_settings's shape.
+        if body.pre_inbound_webhook_headers is not None:
+            fields["pre_inbound_webhook_headers_encrypted"] = (
+                encrypt_webhook_headers(body.pre_inbound_webhook_headers, db)
+                if body.pre_inbound_webhook_headers
+                else None
+            )
+        if body.post_call_webhook_headers is not None:
+            fields["post_call_webhook_headers_encrypted"] = (
+                encrypt_webhook_headers(body.post_call_webhook_headers, db)
+                if body.post_call_webhook_headers
+                else None
+            )
+        if body.status_webhook_headers is not None:
+            fields["status_webhook_headers_encrypted"] = (
+                encrypt_webhook_headers(body.status_webhook_headers, db)
+                if body.status_webhook_headers
+                else None
+            )
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(flow, fields)
+        db.commit()
+        db.refresh(flow)
+
+        return SystemWebhooksSettingsResponse(
+            pre_inbound_webhook_url=flow.pre_inbound_webhook_url,
+            pre_inbound_webhook_headers_configured=bool(
+                flow.pre_inbound_webhook_headers_encrypted
+            ),
+            pre_inbound_webhook_query_params=list(
+                flow.pre_inbound_webhook_query_params or []
+            ),
+            pre_inbound_webhook_static_metadata=dict(
+                flow.pre_inbound_webhook_static_metadata or {}
+            ),
+            dynamic_inbound_routing_enabled=flow.dynamic_inbound_routing_enabled,
+            post_call_webhook_url=flow.post_call_webhook_url,
+            post_call_webhook_headers_configured=bool(
+                flow.post_call_webhook_headers_encrypted
+            ),
+            post_call_webhook_query_params=list(
+                flow.post_call_webhook_query_params or []
+            ),
+            post_call_webhook_custom_payload_enabled=(
+                flow.post_call_webhook_custom_payload_enabled
+            ),
+            post_call_webhook_custom_payload_template=(
+                flow.post_call_webhook_custom_payload_template
+            ),
+            status_webhook_enabled=flow.status_webhook_enabled,
+            status_webhook_url=flow.status_webhook_url,
+            status_webhook_headers_configured=bool(
+                flow.status_webhook_headers_encrypted
+            ),
+            status_webhook_query_params=list(flow.status_webhook_query_params or []),
+        )
+
+    def get_system_webhooks_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> SystemWebhooksSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return SystemWebhooksSettingsResponse(
+            pre_inbound_webhook_url=flow.pre_inbound_webhook_url,
+            pre_inbound_webhook_headers_configured=bool(
+                flow.pre_inbound_webhook_headers_encrypted
+            ),
+            pre_inbound_webhook_query_params=list(
+                flow.pre_inbound_webhook_query_params or []
+            ),
+            pre_inbound_webhook_static_metadata=dict(
+                flow.pre_inbound_webhook_static_metadata or {}
+            ),
+            dynamic_inbound_routing_enabled=flow.dynamic_inbound_routing_enabled,
+            post_call_webhook_url=flow.post_call_webhook_url,
+            post_call_webhook_headers_configured=bool(
+                flow.post_call_webhook_headers_encrypted
+            ),
+            post_call_webhook_query_params=list(
+                flow.post_call_webhook_query_params or []
+            ),
+            post_call_webhook_custom_payload_enabled=(
+                flow.post_call_webhook_custom_payload_enabled
+            ),
+            post_call_webhook_custom_payload_template=(
+                flow.post_call_webhook_custom_payload_template
+            ),
+            status_webhook_enabled=flow.status_webhook_enabled,
+            status_webhook_url=flow.status_webhook_url,
+            status_webhook_headers_configured=bool(
+                flow.status_webhook_headers_encrypted
+            ),
+            status_webhook_query_params=list(flow.status_webhook_query_params or []),
+        )
+
+    def list_system_webhook_deliveries(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        webhook_kind: str | None,
+        page: int,
+        page_size: int,
+    ) -> PaginatedSystemWebhookDeliveries:
+        # Confirms the flow exists in this tenant before querying deliveries —
+        # same 404 scoping as every other system-webhooks endpoint.
+        self._get_flow_or_404(db, flow_id, tenant_id)
+
+        query = db.query(SystemWebhookDeliveryLog).filter(
+            SystemWebhookDeliveryLog.tenant_id == tenant_id,
+            SystemWebhookDeliveryLog.call_flow_id == flow_id,
+        )
+        if webhook_kind is not None:
+            query = query.filter(SystemWebhookDeliveryLog.webhook_kind == webhook_kind)
+
+        total = query.count()
+        items = (
+            query.order_by(SystemWebhookDeliveryLog.created_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+            .all()
+        )
+        return PaginatedSystemWebhookDeliveries(
+            items=[SystemWebhookDeliveryOut.model_validate(d) for d in items],
+            total=total,
+            page=page,
+            page_size=page_size,
+        )
+
     def update_post_call_analysis_settings(
         self,
         db: Session,
@@ -880,7 +1061,11 @@ class CallFlowService:
     ) -> FlowDataResponse:
         flow = self._get_flow_or_404(db, flow_id, tenant_id)
         if readonly:
-            raw = _strip_flow_data_for_readonly(flow.flow_data) if flow.flow_data else None
+            raw = (
+                _strip_flow_data_for_readonly(flow.flow_data)
+                if flow.flow_data
+                else None
+            )
             # Flow graph was already validated and pre-compiled at save time;
             # skip redundant O(V+E) graph traversal on readonly GET requests.
             return FlowDataResponse(
@@ -944,16 +1129,16 @@ class CallFlowService:
         # version increments on every save; compiled_at is set to the moment
         # the pre-compiled executor plan below is built — both are top-level
         # fields of the flow_data JSONB document itself, per the ticket schema.
-        previous_version = (flow.flow_data or {}).get("version", 0) if flow.flow_data else 0
+        previous_version = (
+            (flow.flow_data or {}).get("version", 0) if flow.flow_data else 0
+        )
         flow_data["version"] = (previous_version or 0) + 1
         flow_data["compiled_at"] = datetime.now(timezone.utc).isoformat()
 
         compiled = compile_graph(flow_data)
 
         repo = CallFlowRepository(db)
-        flow = repo.update(
-            flow, {"flow_data": flow_data, "compiled_plan": compiled}
-        )
+        flow = repo.update(flow, {"flow_data": flow_data, "compiled_plan": compiled})
         db.commit()
         db.refresh(flow)
         return FlowDataSaveResponse(
