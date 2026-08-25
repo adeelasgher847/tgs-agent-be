@@ -319,6 +319,30 @@ class VoicemailSettingsResponse(BaseModel):
     voicemail_detection_timeout: int = 5
 
 
+class CallScreeningActionEnum(str, Enum):
+    RESPOND = "respond"
+    HANG_UP = "hang_up"
+
+
+class CallScreeningSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/call-screening-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    call_screening_action: CallScreeningActionEnum = Field(
+        default=CallScreeningActionEnum.RESPOND,
+        description="Action to take when an automated call screener is detected: respond or hang_up.",
+    )
+
+
+class CallScreeningSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/call-screening-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    call_screening_action: str = "respond"
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

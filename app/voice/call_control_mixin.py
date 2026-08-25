@@ -479,6 +479,115 @@ class CallControlMixin:
                     return False
         
         return False
+
+    async def _check_and_handle_call_screener(self, transcript: str) -> bool:
+        """
+        Check if transcript contains automated call screening phrases and execute configured action.
+        Returns True if call was ended (hang_up action), False otherwise (respond action / no screener).
+
+        Supported call screening services:
+        - Google Call Screen / Assistant Call Screening
+        - Apple / iOS Call Screen
+        - Samsung Smart Call / Bixby Call Assist
+        - Automated IVR screening
+        """
+        if self._call_ended:
+            return False
+
+        screener_keywords = [
+            "using a screening service",
+            "screening service from google",
+            "screening service",
+            "google call screen",
+            "go ahead and say why you're calling",
+            "state your name and why you're calling",
+            "who is calling and why",
+            "please say your name and reason for calling",
+        ]
+
+        transcript_lower = transcript.lower().strip()
+        for keyword in screener_keywords:
+            if keyword in transcript_lower:
+                flow = getattr(self, "call_flow", None)
+                if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
+                    try:
+                        from app.models.call_flow import CallFlow
+
+                        flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+                    except Exception:
+                        flow = None
+
+                action = (
+                    getattr(flow, "call_screening_action", "respond")
+                    if flow
+                    else "respond"
+                )
+
+                if action == "hang_up":
+                    try:
+                        self._call_ended = True
+
+                        if self.call_session:
+                            updated = call_session_service.update_call_session_status(
+                                self.db,
+                                self.call_session.id,
+                                "completed",
+                                ended_reason="Call screener detected",
+                            )
+                            if updated:
+                                self.call_session = updated
+
+                        if self.call_sid and self.call_session:
+                            try:
+                                account_sid, auth_token = get_twilio_credentials_for_call(
+                                    self.db, self.call_session
+                                )
+                                twilio_service.end_call_with_credentials(
+                                    self.call_sid, account_sid, auth_token
+                                )
+                            except Exception as end_err:
+                                logger.warning(
+                                    "Could not end Twilio call with DB credentials "
+                                    "(call_sid=%s, session=%s): %s",
+                                    self.call_sid,
+                                    self.call_session.id if self.call_session else None,
+                                    end_err,
+                                )
+
+                        if self.call_session:
+                            try:
+                                await broadcast_call_status_update(
+                                    call_session_id=str(self.call_session.id),
+                                    status="completed",
+                                    metadata={
+                                        "call_sid": self.call_sid,
+                                        "stream_sid": self.stream_sid,
+                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "message": "call_ended",
+                                        "event": "call_screener_detected",
+                                        "detected_phrase": keyword,
+                                        "transcript": transcript,
+                                        "reason": "Call screener detected",
+                                    },
+                                )
+                            except Exception as e:
+                                logger.debug(f"WebSocket broadcast failed after screener detection: {e}")
+
+                        asyncio.create_task(self._full_shutdown())
+                        return True
+
+                    except Exception as e:
+                        logger.error(f"Error ending call after call screener detection: {e}", exc_info=True)
+                        return False
+                else:
+                    # action == "respond" -> do not hang up, allow conversation to proceed
+                    logger.info(
+                        "Call screener detected ('%s'); responding to screener per call flow configuration",
+                        keyword,
+                    )
+                    return False
+
+        return False
     
     async def _add_to_transcript(
         self,
