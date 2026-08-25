@@ -16,7 +16,7 @@ import re
 import uuid
 from typing import List, NamedTuple
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -44,10 +44,44 @@ def _sanitize_summary(text: str) -> str:
     return text
 
 
+def _extract_caller_identifier(call_session: CallSession | None) -> tuple[str, str] | None:
+    """
+    Resolve the caller's unique identity for cross-session memory lookup.
+
+    Returns:
+      - ("phone", phone_str) for telephone calls with non-empty from_number.
+      - ("visitor_id", visitor_id_str) for web demo widget/link calls with visitor_id
+        in call_metadata (under demo_link.visitor_id or top-level visitor_id).
+      - None if no identifier is present.
+    """
+    if call_session is None:
+        return None
+
+    if call_session.from_number:
+        phone = str(call_session.from_number).strip()
+        if phone:
+            return ("phone", phone)
+
+    metadata = call_session.call_metadata
+    if isinstance(metadata, dict):
+        demo_link = metadata.get("demo_link")
+        if isinstance(demo_link, dict):
+            visitor_id = demo_link.get("visitor_id")
+            if visitor_id and str(visitor_id).strip():
+                return ("visitor_id", str(visitor_id).strip())
+
+        visitor_id = metadata.get("visitor_id")
+        if visitor_id and str(visitor_id).strip():
+            return ("visitor_id", str(visitor_id).strip())
+
+    return None
+
+
 def _fetch_recent_summaries(
     tenant_id: uuid.UUID,
     call_flow_id: uuid.UUID,
-    from_number: str,
+    identifier_type: str,
+    identifier_value: str,
     current_session_id: uuid.UUID,
     window: int,
 ) -> List[CallerMemorySession]:
@@ -59,15 +93,26 @@ def _fetch_recent_summaries(
             .where(
                 CallSession.tenant_id == tenant_id,
                 CallSession.call_flow_id == call_flow_id,
-                CallSession.from_number == from_number,
                 CallSession.status == "completed",
                 CallSession.id != current_session_id,
                 CallSession.transcript_summary.isnot(None),
                 CallSession.transcript_summary != "",
             )
-            .order_by(CallSession.start_time.desc())
-            .limit(window)
         )
+        if identifier_type == "phone":
+            stmt = stmt.where(CallSession.from_number == identifier_value)
+        elif identifier_type == "visitor_id":
+            stmt = stmt.where(
+                CallSession.call_type == "web",
+                or_(
+                    CallSession.call_metadata["demo_link"]["visitor_id"].as_string() == identifier_value,
+                    CallSession.call_metadata["visitor_id"].as_string() == identifier_value,
+                ),
+            )
+        else:
+            return []
+
+        stmt = stmt.order_by(CallSession.start_time.desc()).limit(window)
         rows = db.execute(stmt).all()
         return [
             CallerMemorySession(start_time=row.start_time, transcript_summary=row.transcript_summary)
@@ -102,12 +147,17 @@ async def get_caller_memory_context_block_for_call(
     Fetch the caller-memory context block for a call's system prompt, once per call.
 
     Returns "" (no block injected) when: caller memory is disabled on the flow,
-    the call has no from_number, the lookup times out, or the lookup fails.
+    the call has no identifier (from_number or visitor_id), the lookup times out,
+    or the lookup fails.
     """
     if call_session is None or call_flow is None or not call_flow.caller_memory_enabled:
         return ""
-    if not call_session.from_number:
+
+    identifier = _extract_caller_identifier(call_session)
+    if identifier is None:
         return ""
+
+    identifier_type, identifier_value = identifier
 
     metadata = call_session.call_metadata or {}
     if _CACHE_KEY in metadata:
@@ -127,7 +177,8 @@ async def get_caller_memory_context_block_for_call(
                 _fetch_recent_summaries,
                 call_session.tenant_id,
                 call_session.call_flow_id,
-                call_session.from_number,
+                identifier_type,
+                identifier_value,
                 call_session.id,
                 window,
             ),
