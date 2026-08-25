@@ -13,6 +13,7 @@ The worker:
   3. Respects OUTBOUND_MAX_CONCURRENT_PER_WORKSPACE (checked inside initiate_call).
   4. Polls every BATCH_WORKER_POLL_INTERVAL_SEC for scheduled/pending jobs.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -58,7 +59,11 @@ async def process_batch_job(ctx: dict, batch_job_id: str) -> None:
             return
 
         if job.status in ("cancelled", "completed", "failed"):
-            logger.info("process_batch_job: BatchJob %s is %s — skipping", batch_job_id, job.status)
+            logger.info(
+                "process_batch_job: BatchJob %s is %s — skipping",
+                batch_job_id,
+                job.status,
+            )
             return
 
         # Respect scheduled_at — do not start early
@@ -111,7 +116,11 @@ async def process_batch_job(ctx: dict, batch_job_id: str) -> None:
 
         # Re-enqueue self if more waiting records remain
         job = db.get(BatchJob, job_id)  # refresh
-        if job and (job.waiting_count or 0) > 0 and job.status not in ("cancelled", "completed"):
+        if (
+            job
+            and (job.waiting_count or 0) > 0
+            and job.status not in ("cancelled", "completed")
+        ):
             logger.info(
                 "process_batch_job: %d records still waiting in BatchJob %s — re-enqueuing",
                 job.waiting_count,
@@ -207,7 +216,11 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
             return
 
         if kb_file.status != "processing":
-            logger.info("kb_ingestion_task: KbFile %s already %s — skipping", file_id, kb_file.status)
+            logger.info(
+                "kb_ingestion_task: KbFile %s already %s — skipping",
+                file_id,
+                kb_file.status,
+            )
             return
 
         # Download bytes from S3
@@ -224,7 +237,10 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
                 file_bytes = response["Body"].read()
             except Exception as e:
                 logger.error(
-                    "kb_ingestion_task: S3 download failed for file_id=%s: %s", file_id, e, exc_info=True
+                    "kb_ingestion_task: S3 download failed for file_id=%s: %s",
+                    file_id,
+                    e,
+                    exc_info=True,
                 )
                 kb_file.status = "error"
                 kb_file.error_message = f"S3 download failed: {str(e)[:500]}"
@@ -261,7 +277,10 @@ async def kb_ingestion_task(ctx: dict, file_id: str) -> None:
         except Exception as e:
             db.rollback()
             logger.error(
-                "kb_ingestion_task: ingestion failed for file_id=%s: %s", file_id, e, exc_info=True
+                "kb_ingestion_task: ingestion failed for file_id=%s: %s",
+                file_id,
+                e,
+                exc_info=True,
             )
             kb_file = db.get(KbFile, fid)
             if kb_file:
@@ -289,7 +308,9 @@ async def run_data_export_job(ctx: dict, export_job_id: str) -> None:
     try:
         job = db.get(DataExportJob, jid)
         if job is None:
-            logger.warning("run_data_export_job: DataExportJob %s not found", export_job_id)
+            logger.warning(
+                "run_data_export_job: DataExportJob %s not found", export_job_id
+            )
             return
         run_export_job(db, job)
     finally:
@@ -359,7 +380,70 @@ async def run_post_call_analysis(ctx: dict, call_session_id: str) -> None:
     _run_post_call_analysis_impl(_uuid.UUID(call_session_id))
 
 
-async def finalize_call_recording(ctx: dict, call_session_id: str, attempt: int = 1) -> None:
+async def run_post_call_webhook(ctx: dict, call_session_id: str) -> None:
+    """
+    ARQ job: fire the Post-Call Webhook (System Webhooks / Call Flow) for a
+    completed call. Enqueued by
+    app.services.system_webhook_service.schedule_post_call_webhook on call
+    completion.
+    """
+    import uuid as _uuid
+
+    from app.services.system_webhook_service import (
+        run_post_call_webhook as _run_post_call_webhook,
+    )
+
+    await _run_post_call_webhook(_uuid.UUID(call_session_id))
+
+
+async def run_status_webhook(
+    ctx: dict, call_session_id: str, event_type: str, extra: dict | None = None
+) -> None:
+    """
+    ARQ job: fire the Status Webhook (System Webhooks / Call Flow) for a call
+    lifecycle sub-event (connect/transfer/end). Enqueued by
+    app.services.system_webhook_service.schedule_status_webhook.
+    """
+    import uuid as _uuid
+
+    from app.services.system_webhook_service import (
+        run_status_webhook as _run_status_webhook,
+    )
+
+    await _run_status_webhook(_uuid.UUID(call_session_id), event_type, extra)
+
+
+async def retry_system_webhook_delivery(
+    ctx: dict,
+    kind: str,
+    call_session_id: str,
+    attempt_number: int,
+    event_type: str | None = None,
+    extra: dict | None = None,
+) -> None:
+    """
+    ARQ job: bounded retry (2 attempts, 1min/5min) for a failed post_call or
+    status System Webhook delivery. Shared across both kinds — see
+    app.services.system_webhook_service.retry_system_webhook_delivery.
+    """
+    import uuid as _uuid
+
+    from app.services.system_webhook_service import (
+        retry_system_webhook_delivery as _retry,
+    )
+
+    await _retry(
+        kind,
+        _uuid.UUID(call_session_id),
+        attempt_number,
+        event_type=event_type,
+        extra=extra,
+    )
+
+
+async def finalize_call_recording(
+    ctx: dict, call_session_id: str, attempt: int = 1
+) -> None:
     """
     ARQ job: poll LiveKit egress status and finalize a call recording, retrying
     with backoff while the egress is still ENDING. Enqueued by
@@ -367,7 +451,9 @@ async def finalize_call_recording(ctx: dict, call_session_id: str, attempt: int 
     re-enqueues itself (via ctx["redis"]) on each non-terminal status until
     COMPLETE, a genuine failure, or attempts are exhausted.
     """
-    from app.services.call_recording_upload_service import _finalize_call_recording_arq_task
+    from app.services.call_recording_upload_service import (
+        _finalize_call_recording_arq_task,
+    )
 
     await _finalize_call_recording_arq_task(ctx, call_session_id, attempt)
 
@@ -568,6 +654,7 @@ async def startup_recover_callbacks(ctx: dict) -> None:
 
 # ── Outbound number reputation monitoring ───────────────────────────────────
 
+
 async def check_all_phone_numbers_reputation(ctx: dict) -> None:
     """
     Daily cron: refresh the reputation record for every active phone number
@@ -584,22 +671,29 @@ async def check_all_phone_numbers_reputation(ctx: dict) -> None:
     try:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
 
-        rows = db.execute(
-            select(PhoneNumber)
-            .outerjoin(
-                PhoneNumberReputation,
-                PhoneNumberReputation.phone_number_id == PhoneNumber.id,
+        rows = (
+            db.execute(
+                select(PhoneNumber)
+                .outerjoin(
+                    PhoneNumberReputation,
+                    PhoneNumberReputation.phone_number_id == PhoneNumber.id,
+                )
+                .where(
+                    PhoneNumber.status == "active",
+                    or_(
+                        PhoneNumberReputation.last_checked_at.is_(None),
+                        PhoneNumberReputation.last_checked_at < cutoff,
+                    ),
+                )
             )
-            .where(
-                PhoneNumber.status == "active",
-                or_(
-                    PhoneNumberReputation.last_checked_at.is_(None),
-                    PhoneNumberReputation.last_checked_at < cutoff,
-                ),
-            )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
 
-        logger.info("check_all_phone_numbers_reputation: %d number(s) due for a check", len(rows))
+        logger.info(
+            "check_all_phone_numbers_reputation: %d number(s) due for a check",
+            len(rows),
+        )
 
         checked = 0
         for phone_number_obj in rows:
@@ -615,12 +709,17 @@ async def check_all_phone_numbers_reputation(ctx: dict) -> None:
                 )
                 db.rollback()
 
-        logger.info("check_all_phone_numbers_reputation: checked %d/%d number(s)", checked, len(rows))
+        logger.info(
+            "check_all_phone_numbers_reputation: checked %d/%d number(s)",
+            checked,
+            len(rows),
+        )
     finally:
         db.close()
 
 
 # ── WorkerSettings ────────────────────────────────────────────────────────────
+
 
 async def purge_old_audit_logs(ctx: dict) -> None:
     """
@@ -643,7 +742,10 @@ async def purge_old_audit_logs(ctx: dict) -> None:
                 )
             )
             db.commit()
-            logger.info("audit_log retention: deleted %d rows older than 90 days", result.rowcount)
+            logger.info(
+                "audit_log retention: deleted %d rows older than 90 days",
+                result.rowcount,
+            )
     except Exception as exc:
         logger.error("audit_log retention job failed: %s", exc, exc_info=True)
 
@@ -673,6 +775,9 @@ class WorkerSettings:
         generate_call_summary,
         send_post_call_email_summary,
         run_post_call_analysis,
+        run_post_call_webhook,
+        run_status_webhook,
+        retry_system_webhook_delivery,
         finalize_call_recording,
         purge_old_audit_logs,
         run_data_export_job,

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import json
 import logging
 import os
 from contextlib import contextmanager
@@ -172,6 +173,70 @@ def decrypt_webhook_secret(ciphertext: str, db: Session) -> str:
         return result or ""  # type: ignore[return-value]
     except Exception as exc:
         raise ValueError(f"Webhook secret decryption failed: {exc}") from exc
+
+
+def encrypt_webhook_headers(headers: dict, db: Session) -> str | None:
+    """Encrypt a headers *dict* (JSON-serialized) via pgp_sym_encrypt; return
+    base64 ciphertext. Used for System Webhooks (Call Flow) header columns —
+    same key/approach as :func:`encrypt_webhook_secret`.
+
+    Returns ``None`` for a falsy/empty *headers* dict — callers should skip
+    persisting ciphertext entirely (leave the DB column ``NULL``) rather than
+    encrypting the literal string ``"{}"``, to avoid a wasted pgcrypto
+    round-trip and keep "no headers configured" queryable as `IS NULL`.
+
+    Raises ``ValueError`` if ``WEBHOOK_SECRET_ENCRYPTION_KEY`` is not configured.
+    """
+    if not headers:
+        return None
+    key = settings.WEBHOOK_SECRET_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "WEBHOOK_SECRET_ENCRYPTION_KEY is not configured — "
+            "cannot encrypt webhook headers."
+        )
+    plaintext = json.dumps(headers)
+    result = _pgcrypto_scalar(
+        db,
+        "SELECT encode(pgp_sym_encrypt(:pt, :key), 'base64')",
+        {"pt": plaintext, "key": key},
+    )
+    return result  # type: ignore[return-value]
+
+
+def decrypt_webhook_headers(ciphertext: str, db: Session) -> dict:
+    """Decrypt base64 ciphertext produced by :func:`encrypt_webhook_headers`.
+
+    Raises ``ValueError`` if ``WEBHOOK_SECRET_ENCRYPTION_KEY`` is not configured,
+    the ciphertext is corrupt / encrypted with a different key, or the
+    decrypted plaintext is not a valid JSON object.
+    """
+    key = settings.WEBHOOK_SECRET_ENCRYPTION_KEY
+    if not key:
+        raise ValueError(
+            "WEBHOOK_SECRET_ENCRYPTION_KEY is not configured — "
+            "cannot decrypt webhook headers."
+        )
+    try:
+        result = _pgcrypto_scalar(
+            db,
+            "SELECT pgp_sym_decrypt(decode(:ct, 'base64'), :key)",
+            {"ct": ciphertext, "key": key},
+        )
+    except Exception as exc:
+        raise ValueError(f"Webhook headers decryption failed: {exc}") from exc
+
+    if not result:
+        return {}
+    try:
+        parsed = json.loads(result)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Webhook headers decryption produced invalid JSON: {exc}"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Webhook headers ciphertext did not decrypt to a JSON object")
+    return parsed
 
 
 def decrypt_stored_webhook_secret(

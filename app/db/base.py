@@ -57,6 +57,9 @@ from app.models.batch_call_record import BatchCallRecord
 # Custom webhooks
 from app.models.webhook import WebhookEndpoint, WebhookDelivery
 
+# Call Flow System Webhooks (pre-inbound / post-call / status) delivery log
+from app.models.system_webhook_log import SystemWebhookDeliveryLog  # noqa: F401
+
 # Branding, pricing, RBAC
 from app.models.branding_configs import BrandingConfig  # noqa: F401
 from app.models.pricing_configs import PricingConfig  # noqa: F401

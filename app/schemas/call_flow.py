@@ -15,6 +15,7 @@ from pydantic import (
 )
 
 from app.schemas.prompt_version import PromptVersionOut
+from app.utils.ssrf import assert_public_url
 
 
 class DirectionEnum(str, Enum):
@@ -260,6 +261,119 @@ class PostCallAnalysisSettingsResponse(BaseModel):
 
     variables_to_extract: List[PostCallAnalysisVariableSpec]
     analysis_model: str | None
+
+
+class SystemWebhooksSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
+
+    Covers all four System Webhooks sub-features in one PUT: Pre-Inbound Call
+    Webhook, Dynamic Inbound Call Routing, Post-Call Webhook, Status Webhook.
+
+    Full-replace semantics for every field EXCEPT the three `*_headers`
+    fields: those are plaintext-in / never-plaintext-out (the response only
+    reports whether headers are configured, not their values), so `None`
+    means "leave the stored headers unchanged" rather than "clear them" — see
+    `CallFlowService.update_system_webhooks_settings` for the exact rule
+    (an explicit `{}` DOES clear them). Every other field is a true
+    full-replace: send the current value for anything you don't want to change.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    # Pre-Inbound Call Webhook
+    pre_inbound_webhook_url: str | None = None
+    pre_inbound_webhook_headers: Dict[str, str] | None = None
+    pre_inbound_webhook_query_params: List[Dict[str, str]] | None = None
+    pre_inbound_webhook_static_metadata: Dict[str, str] | None = None
+
+    # Dynamic Inbound Call Routing
+    dynamic_inbound_routing_enabled: bool = False
+
+    # Post-Call Webhook
+    post_call_webhook_url: str | None = None
+    post_call_webhook_headers: Dict[str, str] | None = None
+    post_call_webhook_query_params: List[Dict[str, str]] | None = None
+    post_call_webhook_custom_payload_enabled: bool = False
+    post_call_webhook_custom_payload_template: Dict[str, Any] | None = None
+
+    # Status Webhook
+    status_webhook_enabled: bool = False
+    status_webhook_url: str | None = None
+    status_webhook_headers: Dict[str, str] | None = None
+    status_webhook_query_params: List[Dict[str, str]] | None = None
+
+    @field_validator(
+        "pre_inbound_webhook_url", "post_call_webhook_url", "status_webhook_url"
+    )
+    @classmethod
+    def _validate_webhook_url(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if not v.startswith("https://"):
+            raise ValueError("Webhook URL must use HTTPS")
+        # Raises SSRFBlockedError (a ValueError subclass) which Pydantic
+        # converts to a validation error message.
+        assert_public_url(v)
+        return v
+
+
+class SystemWebhooksSettingsResponse(BaseModel):
+    """Response body for the System Webhooks settings endpoint.
+
+    Never echoes back decrypted header values — only whether headers are
+    configured for each of the three webhooks (`*_headers_configured`).
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    pre_inbound_webhook_url: str | None = None
+    pre_inbound_webhook_headers_configured: bool = False
+    pre_inbound_webhook_query_params: List[Dict[str, str]] = Field(default_factory=list)
+    pre_inbound_webhook_static_metadata: Dict[str, str] = Field(default_factory=dict)
+
+    dynamic_inbound_routing_enabled: bool = False
+
+    post_call_webhook_url: str | None = None
+    post_call_webhook_headers_configured: bool = False
+    post_call_webhook_query_params: List[Dict[str, str]] = Field(default_factory=list)
+    post_call_webhook_custom_payload_enabled: bool = False
+    post_call_webhook_custom_payload_template: Dict[str, Any] | None = None
+
+    status_webhook_enabled: bool = False
+    status_webhook_url: str | None = None
+    status_webhook_headers_configured: bool = False
+    status_webhook_query_params: List[Dict[str, str]] = Field(default_factory=list)
+
+
+class SystemWebhookKindEnum(str, Enum):
+    pre_inbound = "pre_inbound"
+    post_call = "post_call"
+    status = "status"
+
+
+class SystemWebhookTestRequest(BaseModel):
+    """Request body for ``POST /api/v2/flows/{flow_id}/system-webhooks/test``.
+
+    Tests whatever is CURRENTLY SAVED for `webhook_kind` on this flow — there
+    is no "test unsaved draft" mechanism.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    webhook_kind: SystemWebhookKindEnum
+
+
+class SystemWebhookTestResult(BaseModel):
+    """Response body for the System Webhooks test-delivery endpoint — the
+    outcome of one synchronous delivery attempt, not the full DB log row."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str
+    status_code: int | None = None
+    response_body: str | None = None
+    error: str | None = None
+    duration_ms: int | None = None
 
 
 class CallFlowOut(BaseModel):

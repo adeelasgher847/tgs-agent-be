@@ -119,12 +119,20 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.openai_service import openai_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
-from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
+from app.core.agent_runtime import (
+    resolve_llm_runtime,
+    resolve_stt_runtime,
+    llm_service_for_provider,
+)
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
 )
-from app.voice.turn_signals import TurnContext, build_turn_context, build_user_signals_block
+from app.voice.turn_signals import (
+    TurnContext,
+    build_turn_context,
+    build_user_signals_block,
+)
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
 from app.core.config import settings
 from app.utils.tts_preprocessing import preprocess_for_tts, quick_clean
@@ -141,9 +149,8 @@ from app.voice.tts_only_session import TtsOnlySession
 from app.voice.metrics import VoiceTurnMetrics
 
 # Import utilities and services
-from app.utils.ssml_utils import (
-    strip_ssml_tags
-)
+from app.utils.ssml_utils import strip_ssml_tags
+from app.utils.webhook_templating import render_template
 from app.services.bidirectional_stream_service import (
     generate_mulaw_tts,
     build_streaming_twiml,  # noqa: F401 - re-exported for app.routers.voice / voice_gather
@@ -166,7 +173,9 @@ router = APIRouter()
 
 # Voice screening / hangup tokens (case-insensitive; models vary casing/spacing)
 _RE_VOICE_END_CALL = re.compile(r"\[\s*END_CALL\s*\]", re.IGNORECASE)
-_RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE)
+_RE_VOICE_SCREENING_QUALIFIED = re.compile(
+    r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE
+)
 
 # User utterance indicates opt-out / wrong call — force hangup (recruitment outbound safety net)
 _SCREENING_USER_DECLINE_RE = re.compile(
@@ -187,21 +196,66 @@ _SCREENING_USER_DECLINE_RE = re.compile(
 # hit rate eliminates TTS synthesis latency for those turns entirely.
 _SPECULATIVE_OPENER_RULES: list[tuple[re.Pattern, str]] = [
     # Booking / scheduling (specific before generic "what")
-    (re.compile(r"\b(book|schedule|appointment|reserve|reserv|slot|meeting|available|availability|reschedule)\b", re.I), "Sure, let me check that."),
+    (
+        re.compile(
+            r"\b(book|schedule|appointment|reserve|reserv|slot|meeting|available|availability|reschedule)\b",
+            re.I,
+        ),
+        "Sure, let me check that.",
+    ),
     # Pricing / cost
-    (re.compile(r"\b(price|cost|how much|fee|rate|charge|pricing|quote)\b", re.I), "Sure,"),
+    (
+        re.compile(r"\b(price|cost|how much|fee|rate|charge|pricing|quote)\b", re.I),
+        "Sure,",
+    ),
     # Simple yes / affirmation (full utterance match)
-    (re.compile(r"^(yes|yeah|yep|yup|sure|absolutely|of course|correct|right|exactly|definitely|perfect|great)[\s.,!?]*$", re.I), "Great!"),
+    (
+        re.compile(
+            r"^(yes|yeah|yep|yup|sure|absolutely|of course|correct|right|exactly|definitely|perfect|great)[\s.,!?]*$",
+            re.I,
+        ),
+        "Great!",
+    ),
     # Simple no / negative (full utterance match)
-    (re.compile(r"^(no|nope|not really|nah|never mind|nevermind|cancel that)[\s.,!?]*$", re.I), "I understand."),
+    (
+        re.compile(
+            r"^(no|nope|not really|nah|never mind|nevermind|cancel that)[\s.,!?]*$",
+            re.I,
+        ),
+        "I understand.",
+    ),
     # Help / problem
-    (re.compile(r"\b(help|support|issue|problem|trouble|not working|broken|error|wrong)\b", re.I), "I understand."),
+    (
+        re.compile(
+            r"\b(help|support|issue|problem|trouble|not working|broken|error|wrong)\b",
+            re.I,
+        ),
+        "I understand.",
+    ),
     # Greeting (full utterance)
-    (re.compile(r"^(hi|hello|hey|good morning|good afternoon|good evening|howdy|what'?s up)[\s!.,?]*$", re.I), "Hey!"),
+    (
+        re.compile(
+            r"^(hi|hello|hey|good morning|good afternoon|good evening|howdy|what'?s up)[\s!.,?]*$",
+            re.I,
+        ),
+        "Hey!",
+    ),
     # Acknowledgement / filler (full utterance)
-    (re.compile(r"^(okay|ok|alright|got it|sounds good|fine|cool|makes sense)[\s.,!?]*$", re.I), "Great."),
+    (
+        re.compile(
+            r"^(okay|ok|alright|got it|sounds good|fine|cool|makes sense)[\s.,!?]*$",
+            re.I,
+        ),
+        "Great.",
+    ),
     # General information request
-    (re.compile(r"\b(what|how|when|where|why|who|which|tell me|can you|could you|do you|does|is there)\b", re.I), "Sure,"),
+    (
+        re.compile(
+            r"\b(what|how|when|where|why|who|which|tell me|can you|could you|do you|does|is there)\b",
+            re.I,
+        ),
+        "Sure,",
+    ),
 ]
 
 _EMAIL_AGENT_PROMPT_FOR_EXTENDED_STT_RE = re.compile(
@@ -238,7 +292,9 @@ class _SystemPromptBuildResult:
     rag_trace: Any
 
 
-class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
+class BidirectionalStreamHandler(
+    BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin
+):
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
 
     # Expose tunables on the class so they remain easy to discover in-context,
@@ -255,20 +311,18 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
     # Incremental TTS: flush when we have a complete thought/sentence
     TTS_FLUSH_MIN_WORDS = VOICE_TUNABLES.tts_flush_min_words
-    TTS_FLUSH_MAX_WORDS = VOICE_TUNABLES.tts_flush_max_words  # keep chunks short for fast TTS start
-    
+    TTS_FLUSH_MAX_WORDS = (
+        VOICE_TUNABLES.tts_flush_max_words
+    )  # keep chunks short for fast TTS start
+
     def __init__(
-        self,
-        websocket: WebSocket,
-        call_session_id: str,
-        agent_id: str,
-        db: Session
+        self, websocket: WebSocket, call_session_id: str, agent_id: str, db: Session
     ):
         self.websocket = websocket
         self.call_session_id = call_session_id
         self.agent_id = agent_id
         self.db = db
-        
+
         # STT (Input) state - Deepgram streaming with endpointing (speech_final)
         self.stream_sid = None
         self.call_sid = None
@@ -293,7 +347,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
         )
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0
-        
+
         # TTS (Output) state - Parallel Pipeline
         self.is_speaking = False
         # _is_tts_playing: True ONLY when audio frames are actively streaming to
@@ -302,27 +356,29 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # This prevents false-positive barge-in cancellation during the LLM→TTS
         # synthesis phase — the root cause of "2-3 words then silence".
         self._is_tts_playing: bool = False
-        self._tts_cancel = asyncio.Event()   # barge-in cancel signal
-        self._tts_lock = asyncio.Lock()      # serialize TTS streams
-        self._tts_worker_task = None         # Backwards-compatible handle to pipeline worker
-        self._tts_generation_tasks = []      # Track parallel TTS generation (reserved)
-        self._prev_tts_tail = b""            # Last streamed audio tail for crossfade bridge
-        self._tts_overlap_bytes = 400        # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
-        self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
+        self._tts_cancel = asyncio.Event()  # barge-in cancel signal
+        self._tts_lock = asyncio.Lock()  # serialize TTS streams
+        self._tts_worker_task = None  # Backwards-compatible handle to pipeline worker
+        self._tts_generation_tasks = []  # Track parallel TTS generation (reserved)
+        self._prev_tts_tail = b""  # Last streamed audio tail for crossfade bridge
+        self._tts_overlap_bytes = (
+            400  # 50ms overlap at 8kHz (Vapi's approach for smooth transitions)
+        )
+        self._twilio_buffer_primed = False  # Track if jitter buffer has been primed
         self._tts_pipeline: TtsPipeline | None = None
-        self._use_ssml = True                # Enable SSML by default
+        self._use_ssml = True  # Enable SSML by default
         # Quick-ack dedup guard: prevent repeated acknowledgements for the same
         # user turn when interim/final regeneration paths overlap.
         self._last_quick_ack_user_norm: str = ""
         self._last_quick_ack_mono: float = 0.0
         # Latency instrumentation timestamps (time.perf_counter() — single clock for all deltas)
-        self._metric_stt_final_ts: float = 0.0        # STT final received
-        self._metric_gen_start_ts: float = 0.0        # LLM generation started
-        self._metric_first_token_ts: float = 0.0      # First LLM token received
-        self._metric_first_audio_ts: float = 0.0      # First audio frame sent to Twilio
-        self._metric_barge_in_ts: float = 0.0         # Barge-in event fired
-        self._metric_audio_cut_ts: float = 0.0        # Audio stream actually stopped
-        
+        self._metric_stt_final_ts: float = 0.0  # STT final received
+        self._metric_gen_start_ts: float = 0.0  # LLM generation started
+        self._metric_first_token_ts: float = 0.0  # First LLM token received
+        self._metric_first_audio_ts: float = 0.0  # First audio frame sent to Twilio
+        self._metric_barge_in_ts: float = 0.0  # Barge-in event fired
+        self._metric_audio_cut_ts: float = 0.0  # Audio stream actually stopped
+
         # Session data
         self.call_session = None
         self.agent = None
@@ -333,26 +389,34 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._last_requested_calendar_date: date | None = None
         self._last_selected_calendar_slot: datetime | None = None
         self._load_session_data()
-        
+
         # User pickup detection (VAPI-style: actual user audio = user picked up)
         self._user_picked_up = False
         self._first_media_received = False
         self._in_progress_sent = False  # Track if in-progress status has been sent
-        self._skip_audio_until = None  # Timestamp until which to skip audio (system messages)
+        self._skip_audio_until = (
+            None  # Timestamp until which to skip audio (system messages)
+        )
         self._audio_level_samples = []  # Track audio levels to detect actual user audio
         _r = int(getattr(settings, "VOICE_MIN_AUDIO_RMS_FOR_PICKUP", 70) or 70)
-        self._min_audio_level_threshold = max(20, min(250, _r))  # linear RMS; clamp to avoid misconfig
+        self._min_audio_level_threshold = max(
+            20, min(250, _r)
+        )  # linear RMS; clamp to avoid misconfig
         self._stt_min_final_confidence: float = float(
             getattr(settings, "VOICE_STT_MIN_FINAL_CONFIDENCE", 0.26) or 0.26
         )
-        self._stt_min_final_confidence = max(0.15, min(0.45, self._stt_min_final_confidence))
+        self._stt_min_final_confidence = max(
+            0.15, min(0.45, self._stt_min_final_confidence)
+        )
         self._enable_soft_final_fallback: bool = bool(
             getattr(settings, "VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK", True)
         )
         self._stt_soft_min_final_confidence: float = float(
             getattr(settings, "VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE", 0.16) or 0.16
         )
-        self._stt_soft_min_final_confidence = max(0.10, min(0.35, self._stt_soft_min_final_confidence))
+        self._stt_soft_min_final_confidence = max(
+            0.10, min(0.35, self._stt_soft_min_final_confidence)
+        )
         self._stt_soft_min_words: int = int(
             getattr(settings, "VOICE_STT_SOFT_MIN_WORDS", 2) or 2
         )
@@ -396,9 +460,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             ),
         )
         self._stream_sid_ready = asyncio.Event()
-        
+
         # Goodbye detection state
-        self._call_ended = False  # Track if call has been ended due to goodbye detection
+        self._call_ended = (
+            False  # Track if call has been ended due to goodbye detection
+        )
         # True when the agent's final streamed reply included successful-screening tokens before hangup
         self._pending_resume_screening_qualify = False
 
@@ -417,7 +483,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._stt_deferred_endpointing_ms: int | None = None
 
         # One response per turn: first interim that passes gates starts the LLM (dev-style: commit agent at stream end)
-        self._turn_response_started = False  # True after first interim triggers LLM for this turn
+        self._turn_response_started = (
+            False  # True after first interim triggers LLM for this turn
+        )
         self._turn_response_seed_text = ""
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
         self._llm_response_task: asyncio.Task | None = None
@@ -508,7 +576,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # Holds references to the same objects as the existing handler attributes
         # so both access paths stay in sync with no behaviour change.
         self._pipeline_session = PipelineSession(
-            llm_cancel=self._tts_cancel,          # barge-in cancel event (shared ref)
+            llm_cancel=self._tts_cancel,  # barge-in cancel event (shared ref)
             history=self._conversation_history_cache,  # shared list ref
         )
 
@@ -566,21 +634,23 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             )
         except Exception as exc:
             logger.warning(
-                "[STT runtime] resolve failed — Deepgram fallback: %s", exc, exc_info=True
+                "[STT runtime] resolve failed — Deepgram fallback: %s",
+                exc,
+                exc_info=True,
             )
 
     def _load_session_data(self):
         """Load call session, agent, and call flow data."""
         try:
             session_uuid = uuid.UUID(self.call_session_id)
-            self.call_session = call_session_service.get_call_session_by_id(self.db, session_uuid)
+            self.call_session = call_session_service.get_call_session_by_id(
+                self.db, session_uuid
+            )
 
             if self.call_session and self.agent_id:
                 agent_uuid = uuid.UUID(self.agent_id)
                 self.agent = agent_service.get_agent_by_id(
-                    self.db,
-                    agent_uuid,
-                    self.call_session.tenant_id
+                    self.db, agent_uuid, self.call_session.tenant_id
                 )
                 # Lazy safety net: ensure prompt KB exists for older agents
                 # created before auto-ingest rollout.
@@ -588,6 +658,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
             if self.call_session and self.call_session.call_flow_id:
                 from app.models.call_flow import CallFlow
+
                 self.call_flow = (
                     self.db.query(CallFlow)
                     .filter(
@@ -602,9 +673,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
     def _jd_recruitment_screening_active(self) -> bool:
         """JD-backed recruitment screening only — skips booking/general outbound calls."""
-        if not self.call_session or not isinstance(self.call_session.call_metadata, dict):
+        if not self.call_session or not isinstance(
+            self.call_session.call_metadata, dict
+        ):
             return False
-        return is_jd_recruitment_voice_context(self.call_session.call_metadata.get("jd_context"))
+        return is_jd_recruitment_voice_context(
+            self.call_session.call_metadata.get("jd_context")
+        )
 
     async def _precache_common_phrases(self):
         """
@@ -624,7 +699,6 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 "Good morning",
                 "Good afternoon",
                 "Good evening",
-                
                 # Acknowledgements (Quick feedback)
                 "Got it",
                 "I see",
@@ -634,34 +708,34 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 "Perfect",
                 "Great",
                 "Understood",
-                
                 # Confirmations
                 "Yes",
                 "No",
                 "Absolutely",
                 "Of course",
-                
                 # Thinking/Processing
                 "Let me check that",
                 "One moment please",
                 "Just a second",
                 "Let me see",
-                
                 # Transitions
                 "Thank you",
                 "Thanks",
                 "You're welcome",
-                
                 # Closings
                 "Goodbye",
                 "Have a great day",
                 "Thank you for calling",
                 "Talk to you later",
             ]
-            
+
             lang = self.agent.language if self.agent and self.agent.language else "en"
-            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            
+            voice = (
+                self.agent.voice_type
+                if self.agent and self.agent.voice_type
+                else "female"
+            )
+
             sem = asyncio.Semaphore(4)
 
             async def _warm_phrase(phrase: str) -> None:
@@ -699,13 +773,20 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             loop = asyncio.get_running_loop()
 
             async def _fetch_inbound_kb() -> str:
-                if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                if not (
+                    self.agent
+                    and self.agent.is_inbound_agent
+                    and tenant_uuid
+                    and agent_uuid
+                ):
                     return ""
                 try:
                     return await loop.run_in_executor(
                         None,
                         lambda: agent_service.build_inbound_kb_documents_context_block(
-                            db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                            db=self.db,
+                            inbound_agent_id=agent_uuid,
+                            tenant_id=tenant_uuid,
                         ),
                     )
                 except Exception as exc:
@@ -759,11 +840,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 return
 
             from app.voice.tts_pipeline import TtsPipeline as _TtsPipeline
+
             cache_key = _TtsPipeline._cache_key(phrase)
 
             # Skip if already warm (e.g. common phrase pre-cached at call start)
             if pipeline._get_cached(cache_key) is not None:
-                logger.debug("[SpecTTS] '%s' already cached — skipping synthesis", phrase)
+                logger.debug(
+                    "[SpecTTS] '%s' already cached — skipping synthesis", phrase
+                )
                 return
 
             task = {"text": phrase, "use_ssml": False, "is_final": False}
@@ -773,7 +857,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     self._tts_pipeline._put_cached(cache_key, audio_bytes)
                     logger.debug(
                         "[SpecTTS] pre-synthesized '%s' (%d bytes) — chunk-0 will be cache hit",
-                        phrase, len(audio_bytes),
+                        phrase,
+                        len(audio_bytes),
                     )
         except asyncio.CancelledError:
             pass
@@ -828,7 +913,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
     # for any call-site that might reference it directly.
     async def _maybe_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         await self._voice_orchestrator._maybe_upgrade_stt_for_email(agent_text)
-    
+
     # Removed chunk-based STT processing; relying on Deepgram streaming endpointing
 
     async def _cancel_inflight_llm_response(self) -> None:
@@ -870,16 +955,20 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             self._prev_tts_tail = b""
             await self._add_to_transcript("agent", msg, "agent_response")
             if self._tts_pipeline:
-                await self._tts_pipeline.queue_tts({
-                    "text": msg,
-                    "use_ssml": self._use_ssml,
-                    "is_final": True,
-                    "end_call_after": True,
-                })
+                await self._tts_pipeline.queue_tts(
+                    {
+                        "text": msg,
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                        "end_call_after": True,
+                    }
+                )
         except Exception as e:
             logger.error("respond_screening_decline_and_end: %s", e, exc_info=True)
 
-    async def _complete_llm_turn_after_stt_final(self, transcript: str, confidence: float) -> None:
+    async def _complete_llm_turn_after_stt_final(
+        self, transcript: str, confidence: float
+    ) -> None:
         """
         Run after the user's final message is in the DB.
 
@@ -920,7 +1009,8 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             ):
                 logger.info(
                     "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
-                    tstrip[:40], _now_m - self._llm_last_answered_ts,
+                    tstrip[:40],
+                    _now_m - self._llm_last_answered_ts,
                 )
                 return
 
@@ -961,18 +1051,26 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
         # Visual flow editor: a compiled call flow intercepts the transcript and
         # drives the next node itself, bypassing the default LLM turn entirely.
-        if self._flow_executor and await self._flow_on_transcript(transcript, confidence):
+        if self._flow_executor and await self._flow_on_transcript(
+            transcript, confidence
+        ):
             return
 
         try:
             await asyncio.wait_for(
-                self.generate_and_stream_response(transcript, confidence, is_greeting=False),
+                self.generate_and_stream_response(
+                    transcript, confidence, is_greeting=False
+                ),
                 timeout=12.0,
             )
         except asyncio.TimeoutError:
-            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
+            logger.error(
+                "[LLM] generate_and_stream_response timed out (12s) — aborting turn"
+            )
 
-    def _should_accept_final_transcript(self, transcript: str, confidence: float) -> bool:
+    def _should_accept_final_transcript(
+        self, transcript: str, confidence: float
+    ) -> bool:
         """
         Primary gate for Deepgram final transcripts:
         - Keep strong confidence threshold for normal flow.
@@ -1046,7 +1144,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             return confidence >= self._barge_in_min_conf
         return confidence >= self._barge_in_min_conf_1w
 
-    def _log_barge_in_suppressed(self, transcript: str, confidence: float, reason: str) -> None:
+    def _log_barge_in_suppressed(
+        self, transcript: str, confidence: float, reason: str
+    ) -> None:
         """Staging/debug: count STT events that looked like speech but failed barge-in gates."""
         self._barge_in_rejected_while_playing += 1
         logger.debug(
@@ -1067,7 +1167,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         """Process a transcript (final result)"""
         try:
             # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
-            if self._is_tts_playing and self._should_barge_in_on_stt(transcript, confidence):
+            if self._is_tts_playing and self._should_barge_in_on_stt(
+                transcript, confidence
+            ):
                 self._metric_barge_in_ts = time.perf_counter()
                 logger.info(
                     "[Barge-in/final] TTS cut by final STT: %r",
@@ -1096,9 +1198,13 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 if (
                     tstrip
                     and tstrip == self._stt_last_final_raw
-                    and (_now - self._stt_last_final_monotonic) < self._STT_DEDUP_FINAL_WINDOW_SEC
+                    and (_now - self._stt_last_final_monotonic)
+                    < self._STT_DEDUP_FINAL_WINDOW_SEC
                 ):
-                    logger.debug("STT: skipping duplicate final within %ss", self._STT_DEDUP_FINAL_WINDOW_SEC)
+                    logger.debug(
+                        "STT: skipping duplicate final within %ss",
+                        self._STT_DEDUP_FINAL_WINDOW_SEC,
+                    )
                     return
                 self._stt_last_final_raw = tstrip
                 self._stt_last_final_monotonic = _now
@@ -1122,7 +1228,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     return  # Stop processing - call is ending
 
                 # 🎯 Send "in-progress" status when confident word is detected (like "hello")
-                if not self._in_progress_sent and confidence >= 0.1 and len(transcript.split()) > 0:
+                if (
+                    not self._in_progress_sent
+                    and confidence >= 0.1
+                    and len(transcript.split()) > 0
+                ):
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
@@ -1132,7 +1242,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 transcript_for_db = redact_pii(transcript)
                 await self._add_to_transcript(
                     "client",
-                    transcript_for_db if isinstance(transcript_for_db, str) else str(transcript_for_db),
+                    (
+                        transcript_for_db
+                        if isinstance(transcript_for_db, str)
+                        else str(transcript_for_db)
+                    ),
                     "speech",
                     confidence,
                     defer_post_write=True,
@@ -1154,7 +1268,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # Speculative TTS prefetch: synthesise the predicted opener phrase during
             # LLM TTFT so chunk-0 is a cache hit when the real first flush arrives.
             # Fire-and-forget — cancelled on barge-in alongside the LLM task.
-            if self._speculative_prefetch_task and not self._speculative_prefetch_task.done():
+            if (
+                self._speculative_prefetch_task
+                and not self._speculative_prefetch_task.done()
+            ):
                 self._speculative_prefetch_task.cancel()
             self._speculative_prefetch_task = asyncio.create_task(
                 self._run_speculative_tts_prefetch(transcript)
@@ -1197,21 +1314,29 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
                 if _in_dead_zone:
                     if (transcript or "").strip():
-                        self._log_barge_in_suppressed(transcript, confidence, "tts_dead_zone")
+                        self._log_barge_in_suppressed(
+                            transcript, confidence, "tts_dead_zone"
+                        )
                 elif self._should_barge_in_on_stt(transcript, confidence):
                     is_barge_in = True
                 elif (transcript or "").strip():
                     if self._is_stt_filler_for_barge_in(transcript):
                         self._log_barge_in_suppressed(transcript, confidence, "filler")
                     elif word_count < self._barge_in_min_words:
-                        self._log_barge_in_suppressed(transcript, confidence, "min_words")
+                        self._log_barge_in_suppressed(
+                            transcript, confidence, "min_words"
+                        )
                     else:
-                        self._log_barge_in_suppressed(transcript, confidence, "confidence")
+                        self._log_barge_in_suppressed(
+                            transcript, confidence, "confidence"
+                        )
             if is_barge_in:
                 self._metric_barge_in_ts = time.perf_counter()
                 logger.info(
                     "[Barge-in] triggered: words=%d conf=%.2f transcript=%r",
-                    word_count, confidence, (transcript or "")[:40],
+                    word_count,
+                    confidence,
+                    (transcript or "")[:40],
                 )
                 await self._cancel_inflight_llm_response()
                 self._metric_audio_cut_ts = time.perf_counter()
@@ -1269,14 +1394,19 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             if self._should_defer_interim_response(transcript):
                 return
 
-            if confidence < self._min_interim_confidence or word_count < self._min_interim_words:
+            if (
+                confidence < self._min_interim_confidence
+                or word_count < self._min_interim_words
+            ):
                 return
 
             now = asyncio.get_event_loop().time()
             if (now - self._last_interim_sent_ts) < self._min_interim_interval_sec:
                 return
 
-            if self._last_interim_text and transcript.startswith(self._last_interim_text):
+            if self._last_interim_text and transcript.startswith(
+                self._last_interim_text
+            ):
                 advanced = transcript[len(self._last_interim_text) :].strip()
                 if not advanced:
                     return
@@ -1305,7 +1435,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
             logger.error(f"Error processing interim: {e}")
-    
+
     async def _send_quick_acknowledgement(self, user_text: str):
         """
         Send instant acknowledgement for longer queries while generating full response.
@@ -1317,7 +1447,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
         if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
             return
-        
+
         text = (user_text or "").strip()
         if not text:
             return
@@ -1351,13 +1481,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         ack = random.choice(acks)
         if not self._tts_pipeline:
             return
-        await self._tts_pipeline.queue_tts({
-            "text": ack,
-            "chunk_id": "quick_ack",
-            "use_ssml": False,
-            "is_acknowledgement": True,
-            "is_final": False
-        })
+        await self._tts_pipeline.queue_tts(
+            {
+                "text": ack,
+                "chunk_id": "quick_ack",
+                "use_ssml": False,
+                "is_acknowledgement": True,
+                "is_final": False,
+            }
+        )
         self._last_quick_ack_user_norm = user_norm
         self._last_quick_ack_mono = now_mono
 
@@ -1374,7 +1506,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         try:
             tenant_uuid = self.call_session.tenant_id if self.call_session else None
             agent_uuid = self.agent.id if self.agent else None
-            rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+            rag_agent_scope = (
+                None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+            )
             loop = asyncio.get_running_loop()
 
             def _build():
@@ -1395,7 +1529,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # Fallback: empty context (LLM still runs, just without RAG)
         tenant_uuid = self.call_session.tenant_id if self.call_session else None
         agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        rag_agent_scope = (
+            None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        )
         return build_rag_context_block_with_trace(
             user_text="",
             tenant_id=tenant_uuid,
@@ -1408,7 +1544,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         which also needs the auxiliary values computed along the way).
         Called directly by VoiceOrchestrator._start_gemini_live_session for
         the Gemini Live native-audio session's system_instruction."""
-        return (await self._build_system_prompt_full(user_text, confidence)).system_prompt
+        return (
+            await self._build_system_prompt_full(user_text, confidence)
+        ).system_prompt
 
     async def _build_system_prompt_full(
         self, user_text: str, confidence: float
@@ -1498,7 +1636,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # ------- RAG: build knowledge base context in voice layer -------
         tenant_uuid = self.call_session.tenant_id if self.call_session else None
         agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        rag_agent_scope = (
+            None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
+        )
 
         # RAG retrieval: use prefetched result when available (fired on interim
         # so it overlaps Deepgram endpointing), otherwise run synchronously.
@@ -1520,12 +1660,16 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     else:
                         # Still running — wait with reduced timeout (most work already done)
                         prefetch_wait_cap = float(
-                            getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18) or 0.18
+                            getattr(settings, "VOICE_RAG_PREFETCH_AWAIT_SEC", 0.18)
+                            or 0.18
                         )
                         rag_context_block, rag_trace = await asyncio.wait_for(
                             asyncio.shield(_prefetch),
                             timeout=_remaining_slowpath_budget(
-                                min(max(0.05, prefetch_wait_cap), settings.RAG_RETRIEVAL_TIMEOUT_SEC)
+                                min(
+                                    max(0.05, prefetch_wait_cap),
+                                    settings.RAG_RETRIEVAL_TIMEOUT_SEC,
+                                )
                             ),
                         )
                         logger.debug("[RAG] awaited in-flight prefetch")
@@ -1542,7 +1686,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
                     rag_context_block, rag_trace = await asyncio.wait_for(
                         loop.run_in_executor(None, _build_rag),
-                        timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
+                        timeout=_remaining_slowpath_budget(
+                            settings.RAG_RETRIEVAL_TIMEOUT_SEC
+                        ),
                     )
             except asyncio.TimeoutError:
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
@@ -1553,7 +1699,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 rag_trace["status"] = "timeout"
                 rag_trace["timeout"] = True
             except Exception as e:
-                logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
+                logger.error(
+                    "RAG context build failed unexpectedly: %s", e, exc_info=True
+                )
                 rag_context_block, rag_trace = build_rag_context_block_with_trace(
                     user_text="",
                     tenant_id=tenant_uuid,
@@ -1576,19 +1724,28 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     getattr(settings, "VOICE_SKIP_LIVE_KB_FETCH_ON_COLD_START", True)
                 )
                 if skip_live_kb:
-                    logger.debug("[KB] cache cold; skipping live fetch for latency budget")
+                    logger.debug(
+                        "[KB] cache cold; skipping live fetch for latency budget"
+                    )
                 else:
                     # Cache not ready yet — live fetch as fallback.
                     _loop = asyncio.get_running_loop()
 
                     async def _fetch_inbound_kb_live() -> str:
-                        if not (self.agent and self.agent.is_inbound_agent and tenant_uuid and agent_uuid):
+                        if not (
+                            self.agent
+                            and self.agent.is_inbound_agent
+                            and tenant_uuid
+                            and agent_uuid
+                        ):
                             return ""
                         try:
                             return await _loop.run_in_executor(
                                 None,
                                 lambda: agent_service.build_inbound_kb_documents_context_block(
-                                    db=self.db, inbound_agent_id=agent_uuid, tenant_id=tenant_uuid,
+                                    db=self.db,
+                                    inbound_agent_id=agent_uuid,
+                                    tenant_id=tenant_uuid,
                                 ),
                             )
                         except Exception as exc:
@@ -1601,9 +1758,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                             timeout=_remaining_slowpath_budget(0.25),
                         )
                     except asyncio.TimeoutError:
-                        logger.debug("[KB] live fetch timeout; continuing without live KB blocks")
+                        logger.debug(
+                            "[KB] live fetch timeout; continuing without live KB blocks"
+                        )
                     except Exception as exc:
-                        logger.debug("[KB] live fetch failed; continuing without live KB blocks: %s", exc)
+                        logger.debug(
+                            "[KB] live fetch failed; continuing without live KB blocks: %s",
+                            exc,
+                        )
 
         # One-line RAG summary (safe: no chunk text, no secrets)
         try:
@@ -1617,25 +1779,36 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             )
         except Exception:  # noqa: S110 - logging must never break voice calls
             pass
-        
+
         # Build history text from in-memory cache (avoids re-parsing the growing
         # call_transcript JSON on every turn — O(n) JSON parse that gets slower
         # as the call continues).  _conversation_history_cache is appended to
         # directly by _add_to_transcript so it's always up-to-date.
         # Fallback: if cache is empty but DB has a transcript, seed from DB once.
-        if not self._conversation_history_cache and self.call_session and self.call_session.call_transcript:
+        if (
+            not self._conversation_history_cache
+            and self.call_session
+            and self.call_session.call_transcript
+        ):
             try:
                 raw = self.call_session.call_transcript
                 parsed = json.loads(raw) if isinstance(raw, str) else raw
-                for msg in (parsed or []):
+                for msg in parsed or []:
                     if isinstance(msg, dict):
                         role = msg.get("role", "")
                         content = msg.get("content") or msg.get("message", "")
                         mtype = msg.get("message_type", "")
-                        if content and role in ("client", "agent") and mtype not in ("greeting", "system", "status"):
+                        if (
+                            content
+                            and role in ("client", "agent")
+                            and mtype not in ("greeting", "system", "status")
+                        ):
                             self._conversation_history_cache.append((role, content))
             except Exception as exc:
-                logger.debug("Failed to seed conversation history cache from DB transcript: %s", exc)
+                logger.debug(
+                    "Failed to seed conversation history cache from DB transcript: %s",
+                    exc,
+                )
 
         history_text = ""
         if self._conversation_history_cache:
@@ -1667,25 +1840,27 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 "(Prior conversation turns are provided separately — "
                 "maintain continuity; do not re-ask answered questions.)"
             )
-        
+
         booking_memory_block = self._build_booking_memory_block()
 
         # Build system prompt with agent personality + history
-        agent_name = self.agent.name if self.agent and self.agent.name else "AI Assistant"
-        agent_language = self.agent.language if self.agent and self.agent.language else "en"
+        agent_name = (
+            self.agent.name if self.agent and self.agent.name else "AI Assistant"
+        )
+        agent_language = (
+            self.agent.language if self.agent and self.agent.language else "en"
+        )
         v_add = ""
         if self.call_session and self.call_session.call_metadata:
             voice_ctx = self.call_session.call_metadata.get("voice_dynamic_context")
             if isinstance(voice_ctx, dict):
                 v_add = (voice_ctx.get("system_prompt_addendum") or "").strip()
-        v_block = (
-            f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n"
-            if v_add
-            else ""
-        )
+        v_block = f"\n\n# THIS CALL — CANDIDATE & ROLE\n{v_add}\n" if v_add else ""
         tts_provider = getattr(self.agent, "tts_provider", None) if self.agent else None
         tts_provider_slug = (getattr(tts_provider, "slug", None) or "").lower()
-        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(
+            tts_provider_slug
+        )
         if elevenlabs_audio_tags_enabled:
             output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
                 get_elevenlabs_voice_prompt_rule_lines()
@@ -1695,11 +1870,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
                 "Prosody is handled by the system."
             )
-            no_ssml_rule_base = (
-                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-            )
+            no_ssml_rule_base = "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
             no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(
+            tts_provider_slug
+        )
         # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
         # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
         # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
@@ -1855,7 +2030,9 @@ Previous conversation:
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
         elif self.agent and self.agent.model and self.agent.model.system_prompt:
             # Model has system prompt - grounding rules placed BEFORE model instructions.
-            effective_model_prompt = ab_prompt_override or self.agent.model.system_prompt
+            effective_model_prompt = (
+                ab_prompt_override or self.agent.model.system_prompt
+            )
             system_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call. You speak {agent_language} naturally.
 
@@ -1898,7 +2075,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             system_prompt = base_prompt
 
         call_policy_block = agent_service.build_call_policy_block(
-            transfer_route=getattr(self.agent, "transfer_route", None) if self.agent else None,
+            transfer_route=(
+                getattr(self.agent, "transfer_route", None) if self.agent else None
+            ),
         )
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
@@ -1910,9 +2089,24 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         _user_signals = build_user_signals_block(turn_context)
         system_prompt = (
             f"# CURRENT DATE & TIME\nNow: {_now_str}\n\n"
-            f"{_user_signals}\n\n"
-            + system_prompt
+            f"{_user_signals}\n\n" + system_prompt
         )
+
+        # System Webhooks: inject any {{key}} variables returned by the Pre-Inbound
+        # Call Webhook (see app/services/system_webhook_service.py). No-op (cheap,
+        # safe) when call_metadata has no webhook_variables — never raises.
+        try:
+            _webhook_vars = (
+                self.call_session.call_metadata.get("webhook_variables", {})
+                if self.call_session and self.call_session.call_metadata
+                else {}
+            )
+            if _webhook_vars:
+                system_prompt = render_template(system_prompt, _webhook_vars)
+        except Exception as exc:
+            logger.debug(
+                "System webhook variable injection (system prompt) failed: %s", exc
+            )
 
         return _SystemPromptBuildResult(
             system_prompt=system_prompt,
@@ -1955,8 +2149,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 try:
                     self.db.refresh(self.call_session)
                 except Exception as exc:
-                    logger.warning("Failed to refresh call session in streaming turn: %s", exc)
-            
+                    logger.warning(
+                        "Failed to refresh call session in streaming turn: %s", exc
+                    )
+
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting (inbound pickup only)
             if is_greeting:
                 # Visual flow editor: if the agent has a compiled call flow, the
@@ -1984,10 +2180,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if greeting_text is None and outbound_screening and self.agent:
                     vc: dict = {}
                     if isinstance(self.call_session.call_metadata, dict):
-                        raw_vc = self.call_session.call_metadata.get("voice_dynamic_context")
+                        raw_vc = self.call_session.call_metadata.get(
+                            "voice_dynamic_context"
+                        )
                         if isinstance(raw_vc, dict):
                             vc = raw_vc
-                    job_title = (vc.get("job_title") or "").strip() or "the role we're hiring for"
+                    job_title = (
+                        vc.get("job_title") or ""
+                    ).strip() or "the role we're hiring for"
                     cand = (vc.get("candidate_name") or "").strip()
                     aname = (self.agent.name or "our team").strip()
                     if cand:
@@ -2004,6 +2204,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if not greeting_text:
                     # No greeting configured — wait for user to speak first
                     return
+
+                # System Webhooks: inject any {{key}} variables returned by the
+                # Pre-Inbound Call Webhook before this text reaches any hand-off
+                # (native Gemini/OpenAI Realtime session or TtsPipeline below).
+                try:
+                    _webhook_vars = (
+                        self.call_session.call_metadata.get("webhook_variables", {})
+                        if self.call_session and self.call_session.call_metadata
+                        else {}
+                    )
+                    if _webhook_vars:
+                        greeting_text = render_template(greeting_text, _webhook_vars)
+                except Exception as exc:
+                    logger.debug(
+                        "System webhook variable injection (greeting) failed: %s", exc
+                    )
 
                 # Add greeting to transcript
                 await self._add_to_transcript("agent", greeting_text, "greeting")
@@ -2025,7 +2241,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, turn_complete=True)
                         except Exception as exc:
                             logger.warning(
-                                "[GeminiLive] failed to send greeting via live session: %s", exc
+                                "[GeminiLive] failed to send greeting via live session: %s",
+                                exc,
                             )
                     else:
                         logger.debug(
@@ -2047,7 +2264,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, respond=True)
                         except Exception as exc:
                             logger.warning(
-                                "[OpenAIRealtime] failed to send greeting via live session: %s", exc
+                                "[OpenAIRealtime] failed to send greeting via live session: %s",
+                                exc,
                             )
                     else:
                         logger.debug(
@@ -2059,28 +2277,38 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Queue greeting TTS directly (skip LLM!)
                 if not self._tts_pipeline:
                     return
-                await self._tts_pipeline.queue_tts({
-                    "text": greeting_text,
-                    "chunk_id": "greeting",
-                    "use_ssml": self._use_ssml,
-                    "is_final": True
-                })
+                await self._tts_pipeline.queue_tts(
+                    {
+                        "text": greeting_text,
+                        "chunk_id": "greeting",
+                        "use_ssml": self._use_ssml,
+                        "is_final": True,
+                    }
+                )
 
                 # Mark as not primed for the greeting
                 self._twilio_buffer_primed = False
 
                 return  # Done! No LLM needed for greeting
-            
+
             # Reset TTS state for new response generation
             self._tts_cancel.clear()
-            self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
-            self._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
-            self._is_tts_playing = False        # Audio not yet streaming for this turn
-            self._tts_play_start_ts = 0.0     # Clear dead-zone anchor from previous utterance
+            self._prev_tts_tail = (
+                b""  # Reset crossfade state so new response starts clean
+            )
+            self._twilio_buffer_primed = (
+                False  # Ensure micro-fade and buffer priming for new utterance
+            )
+            self._is_tts_playing = False  # Audio not yet streaming for this turn
+            self._tts_play_start_ts = (
+                0.0  # Clear dead-zone anchor from previous utterance
+            )
 
             if self._voice_metrics:
                 self._voice_metrics.transport = "telephony"
-                self._voice_metrics.agent_id = str(self.agent.id) if self.agent else None
+                self._voice_metrics.agent_id = (
+                    str(self.agent.id) if self.agent else None
+                )
                 self._voice_metrics.mark_rag_start()
 
             _sp_result = await self._build_system_prompt_full(user_text, confidence)
@@ -2113,7 +2341,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if self._voice_metrics:
                 self._voice_metrics.provider = _provider_slug
                 self._voice_metrics.mark_llm_request()
-            
+
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
@@ -2121,9 +2349,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
             )
             _time_flush_target_words = 3 if low_latency_fastpath else 4
-            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
-            
-            async def try_stream(service, model: str, api_key_override: str = None) -> str:
+            logger.info(
+                f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'"
+            )
+
+            async def try_stream(
+                service, model: str, api_key_override: str = None
+            ) -> str:
                 nonlocal chunk_counter
                 import re
                 import time
@@ -2143,7 +2375,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         return
                     deferred_memory_scheduled = True
                     asyncio.create_task(
-                        self._deferred_conversation_memory_update(turn_context, user_text)
+                        self._deferred_conversation_memory_update(
+                            turn_context, user_text
+                        )
                     )
 
                 def _find_flush_index(buf: str):
@@ -2174,6 +2408,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Vertex Gemini: pass cancel_event + conversation_history for
                 # proper system_instruction handling and barge-in support.
                 from app.services.vertex_gemini_service import VertexGeminiService
+
                 if isinstance(service, VertexGeminiService):
                     _stream_kwargs["cancel_event"] = self._tts_cancel
                     _stream_kwargs["conversation_history"] = list(
@@ -2253,12 +2488,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                             chunk_counter += 1
                             if self._tts_pipeline:
-                                await self._tts_pipeline.queue_tts({
-                                    "text": enhanced_text,
-                                    "chunk_id": chunk_counter,
-                                    "use_ssml": self._use_ssml,
-                                    "is_final": False,
-                                })
+                                await self._tts_pipeline.queue_tts(
+                                    {
+                                        "text": enhanced_text,
+                                        "chunk_id": chunk_counter,
+                                        "use_ssml": self._use_ssml,
+                                        "is_final": False,
+                                    }
+                                )
                                 _vm = getattr(self, "_voice_metrics", None)
                                 if _vm:
                                     _vm.mark_first_tts_queued()
@@ -2267,11 +2504,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                 # Flush any remaining text as the FINAL chunk
                 full_response = response_accum.strip()
-                end_call_after = end_call_after or bool(_RE_VOICE_END_CALL.search(full_response))
-                if (
-                    end_call_after
-                    and not _transfer_re.search(full_response)
-                ):
+                end_call_after = end_call_after or bool(
+                    _RE_VOICE_END_CALL.search(full_response)
+                )
+                if end_call_after and not _transfer_re.search(full_response):
                     # DB apply_resume_candidate_status_after_voice_screening enforces jd_context + recruitment checks
                     self._pending_resume_screening_qualify = False
                     try:
@@ -2280,9 +2516,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             self.call_session,
                             full_response,
                         )
-                        self._pending_resume_screening_qualify = persisted_status is not None
+                        self._pending_resume_screening_qualify = (
+                            persisted_status is not None
+                        )
                     except Exception as exc:
-                        logger.debug("Failed to persist voice screening status signal: %s", exc)
+                        logger.debug(
+                            "Failed to persist voice screening status signal: %s", exc
+                        )
 
                 if _transfer_re.search(full_response):
                     transfer_after = True
@@ -2309,28 +2549,36 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     chunk_counter += 1
                     if self._tts_pipeline:
-                        await self._tts_pipeline.queue_tts({
-                            "text": enhanced_text,
-                            "chunk_id": chunk_counter,
-                            "use_ssml": self._use_ssml,
-                            "is_final": True,
-                            "end_call_after": end_call_after and not transfer_after,
-                            "transfer_after": transfer_after,
-                        })
+                        await self._tts_pipeline.queue_tts(
+                            {
+                                "text": enhanced_text,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": self._use_ssml,
+                                "is_final": True,
+                                "end_call_after": end_call_after and not transfer_after,
+                                "transfer_after": transfer_after,
+                            }
+                        )
                         _vm = getattr(self, "_voice_metrics", None)
                         if _vm:
                             _vm.mark_first_tts_queued()
                         _schedule_deferred_memory_once()
-                elif transfer_after and not self._tts_cancel.is_set() and self._tts_pipeline:
+                elif (
+                    transfer_after
+                    and not self._tts_cancel.is_set()
+                    and self._tts_pipeline
+                ):
                     chunk_counter += 1
-                    await self._tts_pipeline.queue_tts({
-                        "text": "One moment.",
-                        "chunk_id": chunk_counter,
-                        "use_ssml": self._use_ssml,
-                        "is_final": True,
-                        "end_call_after": False,
-                        "transfer_after": True,
-                    })
+                    await self._tts_pipeline.queue_tts(
+                        {
+                            "text": "One moment.",
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                            "end_call_after": False,
+                            "transfer_after": True,
+                        }
+                    )
                     _vm = getattr(self, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
@@ -2340,11 +2588,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             final_text = None
             _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
-            _fallback_msg = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", "I am sorry, I did not catch that")
+            _fallback_msg = getattr(
+                settings,
+                "VOICE_LLM_FALLBACK_MESSAGE",
+                "I am sorry, I did not catch that",
+            )
             try:
-                from app.services.vertex_gemini_service import VertexGeminiService as _VertexGeminiServiceCls
+                from app.services.vertex_gemini_service import (
+                    VertexGeminiService as _VertexGeminiServiceCls,
+                )
 
-                if self._calendly_enabled() and isinstance(llm_service, _VertexGeminiServiceCls):
+                if self._calendly_enabled() and isinstance(
+                    llm_service, _VertexGeminiServiceCls
+                ):
                     # Calendly-enabled agents resolve availability/booking via Gemini
                     # native function calling — bypass the legacy try_stream() +
                     # [CHECK_SLOTS:...]/[BOOK_APPOINTMENT:...] regex-token pipeline.
@@ -2358,20 +2614,28 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         max_tokens=max_tokens,
                     )
                     chunk_counter += 1
-                    if final_text and self._tts_pipeline and not self._tts_cancel.is_set():
+                    if (
+                        final_text
+                        and self._tts_pipeline
+                        and not self._tts_cancel.is_set()
+                    ):
                         safe_tts_text = self._prepare_tts_text(final_text)
                         if safe_tts_text:
-                            await self._tts_pipeline.queue_tts({
-                                "text": safe_tts_text,
-                                "chunk_id": chunk_counter,
-                                "use_ssml": self._use_ssml,
-                                "is_final": True,
-                            })
+                            await self._tts_pipeline.queue_tts(
+                                {
+                                    "text": safe_tts_text,
+                                    "chunk_id": chunk_counter,
+                                    "use_ssml": self._use_ssml,
+                                    "is_final": True,
+                                }
+                            )
                     _vm = getattr(self, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
                     asyncio.create_task(
-                        self._deferred_conversation_memory_update(turn_context, user_text)
+                        self._deferred_conversation_memory_update(
+                            turn_context, user_text
+                        )
                     )
                 else:
                     final_text = await try_stream(llm_service, model_name, api_key)
@@ -2386,48 +2650,72 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 final_text = _fallback_msg
                 chunk_counter += 1
                 if self._tts_pipeline and not self._tts_cancel.is_set():
-                    await self._tts_pipeline.queue_tts({
-                        "text": _fallback_msg,
-                        "chunk_id": chunk_counter,
-                        "use_ssml": False,
-                        "is_final": True,
-                    })
-                    asyncio.create_task(
-                        self._deferred_conversation_memory_update(turn_context, user_text)
-                    )
-            except Exception as e:
-                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
-                if _is_gemini_agent:
-                    # Gemini agents: canned fallback only, no cross-provider attempt
-                    logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")
-                    final_text = _fallback_msg
-                    chunk_counter += 1
-                    if self._tts_pipeline and not self._tts_cancel.is_set():
-                        await self._tts_pipeline.queue_tts({
+                    await self._tts_pipeline.queue_tts(
+                        {
                             "text": _fallback_msg,
                             "chunk_id": chunk_counter,
                             "use_ssml": False,
                             "is_final": True,
-                        })
+                        }
+                    )
+                    asyncio.create_task(
+                        self._deferred_conversation_memory_update(
+                            turn_context, user_text
+                        )
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback..."
+                )
+                if _is_gemini_agent:
+                    # Gemini agents: canned fallback only, no cross-provider attempt
+                    logger.warning(
+                        "⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)"
+                    )
+                    final_text = _fallback_msg
+                    chunk_counter += 1
+                    if self._tts_pipeline and not self._tts_cancel.is_set():
+                        await self._tts_pipeline.queue_tts(
+                            {
+                                "text": _fallback_msg,
+                                "chunk_id": chunk_counter,
+                                "use_ssml": False,
+                                "is_final": True,
+                            }
+                        )
                         asyncio.create_task(
-                            self._deferred_conversation_memory_update(turn_context, user_text)
+                            self._deferred_conversation_memory_update(
+                                turn_context, user_text
+                            )
                         )
                 else:
                     # Non-gemini agents: try alternate service
                     try:
                         if llm_service == openai_service:
-                            final_text = await try_stream(vertex_gemini_service, "gemini-2.5-flash", None)
+                            final_text = await try_stream(
+                                vertex_gemini_service, "gemini-2.5-flash", None
+                            )
                         else:
-                            final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
+                            final_text = await try_stream(
+                                openai_service, "gpt-3.5-turbo", None
+                            )
                     except Exception as e:
-                        logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
+                        logger.warning(
+                            f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback..."
+                        )
                         try:
-                            final_text = await VoiceLoggingService.generate_agent_response(
-                                speech_text=user_text,
-                                confidence=confidence,
-                                agent=self.agent,
-                                db=self.db,
-                                call_session_id=self.call_session.id if self.call_session else None
+                            final_text = (
+                                await VoiceLoggingService.generate_agent_response(
+                                    speech_text=user_text,
+                                    confidence=confidence,
+                                    agent=self.agent,
+                                    db=self.db,
+                                    call_session_id=(
+                                        self.call_session.id
+                                        if self.call_session
+                                        else None
+                                    ),
+                                )
                             )
                             if final_text and not self._tts_cancel.is_set():
                                 safe_tts_text = self._prepare_tts_text(final_text)
@@ -2438,30 +2726,40 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     out_text = "One moment please."
                                 chunk_counter += 1
                                 if self._tts_pipeline and out_text:
-                                    await self._tts_pipeline.queue_tts({
-                                        "text": out_text,
-                                        "use_ssml": self._use_ssml,
-                                        "is_final": True,
-                                    })
+                                    await self._tts_pipeline.queue_tts(
+                                        {
+                                            "text": out_text,
+                                            "use_ssml": self._use_ssml,
+                                            "is_final": True,
+                                        }
+                                    )
                                     asyncio.create_task(
-                                        self._deferred_conversation_memory_update(turn_context, user_text)
+                                        self._deferred_conversation_memory_update(
+                                            turn_context, user_text
+                                        )
                                     )
                         except Exception as e:
-                            logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
+                            logger.warning(
+                                f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback."
+                            )
                             final_text = _fallback_msg
                             # Tone adaptation now happens once, centrally, inside
                             # TtsPipeline._process_chunk — not here.
                             utt = final_text
                             chunk_counter += 1
                             if self._tts_pipeline:
-                                await self._tts_pipeline.queue_tts({
-                                    "text": utt,
-                                    "chunk_id": chunk_counter,
-                                    "use_ssml": self._use_ssml,
-                                    "is_final": True
-                                })
+                                await self._tts_pipeline.queue_tts(
+                                    {
+                                        "text": utt,
+                                        "chunk_id": chunk_counter,
+                                        "use_ssml": self._use_ssml,
+                                        "is_final": True,
+                                    }
+                                )
                                 asyncio.create_task(
-                                    self._deferred_conversation_memory_update(turn_context, user_text)
+                                    self._deferred_conversation_memory_update(
+                                        turn_context, user_text
+                                    )
                                 )
 
             if final_text:
@@ -2490,18 +2788,35 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if bool(getattr(settings, "VOICE_SLO_ENABLED", True)):
                         breaches = self._voice_metrics.get_slo_breaches(
                             stt_final_to_gen_start_s=float(
-                                getattr(settings, "VOICE_SLO_STT_FINAL_TO_GEN_START_SEC", 0.35) or 0.35
+                                getattr(
+                                    settings,
+                                    "VOICE_SLO_STT_FINAL_TO_GEN_START_SEC",
+                                    0.35,
+                                )
+                                or 0.35
                             ),
                             gen_start_to_llm_first_token_s=float(
-                                getattr(settings, "VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC", 0.90)
+                                getattr(
+                                    settings,
+                                    "VOICE_SLO_GEN_START_TO_LLM_FIRST_TOKEN_SEC",
+                                    0.90,
+                                )
                                 or 0.90
                             ),
                             gen_start_to_first_tts_q_s=float(
-                                getattr(settings, "VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC", 1.40)
+                                getattr(
+                                    settings,
+                                    "VOICE_SLO_GEN_START_TO_FIRST_TTS_QUEUE_SEC",
+                                    1.40,
+                                )
                                 or 1.40
                             ),
                             gen_start_to_now_warn_s=float(
-                                getattr(settings, "VOICE_SLO_GEN_START_TO_NOW_WARN_SEC", 2.00)
+                                getattr(
+                                    settings,
+                                    "VOICE_SLO_GEN_START_TO_NOW_WARN_SEC",
+                                    2.00,
+                                )
                                 or 2.00
                             ),
                         )
@@ -2536,8 +2851,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 len((user_text or "")),
             )
         except Exception as e:  # pragma: no cover - defensive
-            logger.warning("deferred conversation memory update failed: %s", e, exc_info=True)
-    
+            logger.warning(
+                "deferred conversation memory update failed: %s", e, exc_info=True
+            )
+
     # ── Booking and calendar token methods live in app/voice/booking_mixin.py ──
 
     # ── TTS streaming methods live in app/voice/tts_stream_mixin.py ──
@@ -2556,10 +2873,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             self.call_sid = start.get("callSid")
 
             try:
-                configured_edge = str(getattr(settings, "TWILIO_EDGE", "") or "").strip().lower()
+                configured_edge = (
+                    str(getattr(settings, "TWILIO_EDGE", "") or "").strip().lower()
+                )
                 expected_edge = "umatilla"  # Oregon
-                strict_align = bool(getattr(settings, "VOICE_REGION_ALIGNMENT_STRICT", True))
-                server_region = str(getattr(settings, "SERVER_REGION", "us-west-2") or "us-west-2")
+                strict_align = bool(
+                    getattr(settings, "VOICE_REGION_ALIGNMENT_STRICT", True)
+                )
+                server_region = str(
+                    getattr(settings, "SERVER_REGION", "us-west-2") or "us-west-2"
+                )
                 if configured_edge:
                     logger.info(
                         "[RegionAlign] server_region=%s twilio_edge=%s expected_edge=%s",
@@ -2567,7 +2890,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         configured_edge,
                         expected_edge,
                     )
-                if strict_align and configured_edge and configured_edge != expected_edge:
+                if (
+                    strict_align
+                    and configured_edge
+                    and configured_edge != expected_edge
+                ):
                     logger.warning(
                         "[RegionAlign] Twilio edge mismatch for Oregon deployment: configured=%s expected=%s",
                         configured_edge,
@@ -2578,9 +2905,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Recording: gate on recording_enabled for this call's number.
             if self.call_sid and self.call_session and not self._recording_started:
-                from app.services.recording_config_service import get_recording_enabled_for_call
+                from app.services.recording_config_service import (
+                    get_recording_enabled_for_call,
+                )
 
-                _rec_enabled = get_recording_enabled_for_call(self.db, self.call_session)
+                _rec_enabled = get_recording_enabled_for_call(
+                    self.db, self.call_session
+                )
                 if _rec_enabled:
                     if settings.LIVEKIT_ENABLED:
                         if self.call_session.call_type == "inbound":
@@ -2611,25 +2942,25 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         except Exception as e:
             logger.error(f"Error in handle_start_message: {e}", exc_info=True)
-    
+
     async def _handle_user_pickup(self):
         """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
         try:
             if self._user_picked_up:
                 return  # Already handled
-            
+
             self._user_picked_up = True
             self._voice_metrics.mark_call_pickup()
 
-            # ❌ Credit monitoring moved to _send_in_progress_status() 
+            # ❌ Credit monitoring moved to _send_in_progress_status()
             # Credit deduction will start when connected status is sent (first media packet + connected status)
-            
+
             # Don't send in-progress status here - wait for confident word detection
             # Status will be sent in _process_transcript() when confident transcript is detected
 
             # Start ambient background loop after brief stabilization delay.
             asyncio.create_task(self._start_background_audio_with_delay())
-            
+
             # 👋 One-time opening TTS after pickup (inbound only, only if configured).
             if (
                 self.call_session
@@ -2651,15 +2982,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             ):
                 # Outbound screening: play scripted intro (LLM often skipped intro)
                 self._auto_greeting_sent = True
-                asyncio.create_task(self._schedule_outbound_screening_intro_after_delay())
-        
+                asyncio.create_task(
+                    self._schedule_outbound_screening_intro_after_delay()
+                )
+
         except Exception as e:
             logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
 
     async def _schedule_outbound_screening_intro_after_delay(self) -> None:
         """Brief delay after pickup, then scripted recruitment intro via same path as inbound greeting."""
         try:
-            delay_sec = float(getattr(settings, "VOICE_OUTBOUND_SCREENING_INTRO_DELAY_SEC", 0.55) or 0.55)
+            delay_sec = float(
+                getattr(settings, "VOICE_OUTBOUND_SCREENING_INTRO_DELAY_SEC", 0.55)
+                or 0.55
+            )
         except Exception:
             delay_sec = 0.55
         delay_sec = max(0.0, min(delay_sec, 5.0))
@@ -2667,7 +3003,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             await asyncio.sleep(delay_sec)
         if self._stop_event.is_set():
             return
-        if not self.call_session or (self.call_session.call_type or "").lower() != "outbound":
+        if (
+            not self.call_session
+            or (self.call_session.call_type or "").lower() != "outbound"
+        ):
             return
         if self._tts_cancel.is_set():
             return
@@ -2679,7 +3018,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         Uses a configurable delay and exits safely if call state has already stopped.
         """
         try:
-            delay_sec = float(getattr(settings, "VOICE_INBOUND_GREETING_DELAY_SEC", 2.0) or 0.0)
+            delay_sec = float(
+                getattr(settings, "VOICE_INBOUND_GREETING_DELAY_SEC", 2.0) or 0.0
+            )
         except Exception:
             delay_sec = 2.0
         delay_sec = max(0.0, min(delay_sec, 10.0))
@@ -2707,7 +3048,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             confidence=1.0,
             is_greeting=True,
         )
-    
+
     async def _full_shutdown(self) -> None:
         """
         Unified, idempotent shutdown for all pipelines (STT, LLM, TTS).
@@ -2755,7 +3096,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         # Schedule GCS recording upload (non-blocking; upload service checks recording_enabled)
         if self.call_session:
-            from app.services.call_recording_upload_service import schedule_recording_upload
+            from app.services.call_recording_upload_service import (
+                schedule_recording_upload,
+            )
+
             schedule_recording_upload(self.call_session.id)
 
     async def _setup_livekit_agent_publisher(self) -> None:
@@ -2783,7 +3127,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 try:
                     await pub.disconnect()
                 except Exception as exc:
-                    logger.debug("LiveKit recording publisher disconnect failed: %s", exc)
+                    logger.debug(
+                        "LiveKit recording publisher disconnect failed: %s", exc
+                    )
             setattr(self, attr, None)
 
     async def _teardown_livekit_recording(self) -> None:
@@ -2793,7 +3139,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if isinstance(recording_meta, dict) and recording_meta.get("egress_id"):
             from app.services.livekit_recording_service import livekit_recording_service
 
-            await livekit_recording_service.stop_room_recording(recording_meta["egress_id"])
+            await livekit_recording_service.stop_room_recording(
+                recording_meta["egress_id"]
+            )
         await self._disconnect_livekit_recording_publishers()
 
     async def _start_livekit_recording(self) -> None:
@@ -2858,9 +3206,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
 
 
-async def _receive_or_stop(
-    ws: WebSocket, stop_event: asyncio.Event
-) -> str | None:
+async def _receive_or_stop(ws: WebSocket, stop_event: asyncio.Event) -> str | None:
     """
     Race websocket.receive_text() against an internal stop_event.
 
@@ -2882,7 +3228,10 @@ async def _receive_or_stop(
             t.cancel()
             try:
                 await t
-            except (asyncio.CancelledError, Exception):  # noqa: S110 - expected from cancelling the losing task
+            except (
+                asyncio.CancelledError,
+                Exception,
+            ):  # noqa: S110 - expected from cancelling the losing task
                 pass
 
         if stop_task in done:
@@ -2898,18 +3247,16 @@ async def _receive_or_stop(
 
 @router.websocket("/ws/bidirectional/{callSessionId}/{agentId}")
 async def bidirectional_stream_websocket(
-    websocket: WebSocket,
-    callSessionId: str,
-    agentId: str
+    websocket: WebSocket, callSessionId: str, agentId: str
 ):
     """
     Bidirectional WebSocket for real-time voice AI
-    
+
     Handles:
     - Incoming audio (STT) from Twilio
     - Outgoing audio (TTS) to Twilio
     - Real-time streaming for ultra-low latency
-    
+
     Target: <3 seconds response time
     """
     # Accept connection
@@ -2918,17 +3265,15 @@ async def bidirectional_stream_websocket(
     except Exception as e:
         logger.error(f"Failed to accept bidirectional WebSocket: {e}")
         return
-    
+
     # Get database session
     from app.db.session import SessionLocal
+
     db = SessionLocal()
-    
+
     # Create handler
     handler = BidirectionalStreamHandler(
-        websocket=websocket,
-        call_session_id=callSessionId,
-        agent_id=agentId,
-        db=db
+        websocket=websocket, call_session_id=callSessionId, agent_id=agentId, db=db
     )
 
     try:
@@ -2938,34 +3283,38 @@ async def bidirectional_stream_websocket(
 
             if data is None:
                 # Internal end-call path triggered _full_shutdown + set _stop_event
-                logger.info(f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket")
+                logger.info(
+                    f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket"
+                )
                 break
 
             message = json.loads(data)
             event = message.get("event")
-            
+
             if event == "connected":
                 pass
-            
+
             elif event == "start":
                 await handler.handle_start_message(message)
-            
+
             elif event == "media":
                 await handler.handle_media_message(message)
-            
+
             elif event == "stop":
                 await handler.handle_stop_message(message)
                 break
-            
+
             elif event == "mark":
                 pass  # Synchronization marks
-    
+
     except WebSocketDisconnect:
-        logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
-    
+        logger.info(
+            f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}"
+        )
+
     except Exception as e:
         logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
-    
+
     finally:
         # Ensure all pipelines are fully shut down (idempotent — safe if already done)
         if handler is not None:
@@ -2985,11 +3334,7 @@ async def bidirectional_stream_websocket(
 
 
 @router.websocket("/ws/tts-only/{callSessionId}/{agentId}")
-async def tts_only_websocket(
-    websocket: WebSocket,
-    callSessionId: str,
-    agentId: str
-):
+async def tts_only_websocket(websocket: WebSocket, callSessionId: str, agentId: str):
     """
     TTS-ONLY WebSocket for streaming audio playback.
     Thin composition layer that delegates to TtsOnlySession.

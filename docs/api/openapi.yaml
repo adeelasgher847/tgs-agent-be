@@ -8911,6 +8911,107 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/system-webhooks-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure System Webhooks (pre-inbound, dynamic routing, post-call,
+        status) on a call flow
+      description: 'Configures all four System Webhooks sub-features for this call
+        flow in one PUT:
+
+
+        - **Pre-Inbound Call Webhook** — fired before an inbound call connects; its
+        `{"variables": {...}}` response gets injected into the agent''s prompt/greeting
+        via `{{key}}` placeholders. Fails open (non-2xx/timeout never blocks the call).
+
+        - **Dynamic Inbound Call Routing** — depends on the above; if enabled and
+        the webhook response includes a valid `variables.agent_id`, the call routes
+        to that agent instead of the number''s default.
+
+        - **Post-Call Webhook** — fired after a call ends with `{callId, agentId,
+        timestamp, data}`, or a tenant-defined custom JSON payload using `{{field}}`
+        tokens.
+
+        - **Status Webhook** — fired on call lifecycle sub-events (connect, transfer,
+        end).
+
+
+        Every field is a full-replace EXCEPT the three `*_headers` fields: since header
+        values are never echoed back in plaintext, omitting a headers field (`null`)
+        leaves the stored value unchanged; send `{}` explicitly to clear it. Requires
+        admin rank — headers may carry auth secrets and routing changes are security-sensitive.'
+      operationId: update_system_webhooks_settings_api_v2_flows__flow_id__system_webhooks_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemWebhooksSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemWebhooksSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/system-webhooks/test:
+    post:
+      tags:
+      - A/B Prompt Testing
+      summary: Send a one-shot test delivery for a saved System Webhook
+      description: Fires a single synchronous delivery attempt against whatever is
+        CURRENTLY SAVED for the given `webhook_kind` on this call flow (save your
+        changes first — there is no mechanism to test an unsaved draft). Requires
+        admin rank, since viewing a test result can reveal whether headers/auth are
+        configured correctly. Always records a `SystemWebhookDeliveryLog` row, same
+        as real call-time deliveries.
+      operationId: test_system_webhook_api_v2_flows__flow_id__system_webhooks_test_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemWebhookTestRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemWebhookTestResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/flow-data:
     get:
       tags:
@@ -19604,6 +19705,218 @@ components:
       required:
       - tenant_id
       title: SwitchTenantRequest
+    SystemWebhookKindEnum:
+      type: string
+      enum:
+      - pre_inbound
+      - post_call
+      - status
+      title: SystemWebhookKindEnum
+    SystemWebhookTestRequest:
+      properties:
+        webhook_kind:
+          $ref: '#/components/schemas/SystemWebhookKindEnum'
+      additionalProperties: false
+      type: object
+      required:
+      - webhook_kind
+      title: SystemWebhookTestRequest
+      description: 'Request body for ``POST /api/v2/flows/{flow_id}/system-webhooks/test``.
+
+
+        Tests whatever is CURRENTLY SAVED for `webhook_kind` on this flow — there
+
+        is no "test unsaved draft" mechanism.'
+    SystemWebhookTestResult:
+      properties:
+        status:
+          type: string
+          title: Status
+        status_code:
+          type: integer
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        duration_ms:
+          type: integer
+          nullable: true
+      type: object
+      required:
+      - status
+      title: SystemWebhookTestResult
+      description: 'Response body for the System Webhooks test-delivery endpoint —
+        the
+
+        outcome of one synchronous delivery attempt, not the full DB log row.'
+    SystemWebhooksSettingsResponse:
+      properties:
+        pre_inbound_webhook_url:
+          type: string
+          nullable: true
+        pre_inbound_webhook_headers_configured:
+          type: boolean
+          title: Pre Inbound Webhook Headers Configured
+          default: false
+        pre_inbound_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Pre Inbound Webhook Query Params
+        pre_inbound_webhook_static_metadata:
+          additionalProperties:
+            type: string
+          type: object
+          title: Pre Inbound Webhook Static Metadata
+        dynamic_inbound_routing_enabled:
+          type: boolean
+          title: Dynamic Inbound Routing Enabled
+          default: false
+        post_call_webhook_url:
+          type: string
+          nullable: true
+        post_call_webhook_headers_configured:
+          type: boolean
+          title: Post Call Webhook Headers Configured
+          default: false
+        post_call_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Post Call Webhook Query Params
+        post_call_webhook_custom_payload_enabled:
+          type: boolean
+          title: Post Call Webhook Custom Payload Enabled
+          default: false
+        post_call_webhook_custom_payload_template:
+          additionalProperties: true
+          type: object
+          nullable: true
+        status_webhook_enabled:
+          type: boolean
+          title: Status Webhook Enabled
+          default: false
+        status_webhook_url:
+          type: string
+          nullable: true
+        status_webhook_headers_configured:
+          type: boolean
+          title: Status Webhook Headers Configured
+          default: false
+        status_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          title: Status Webhook Query Params
+      type: object
+      title: SystemWebhooksSettingsResponse
+      description: 'Response body for the System Webhooks settings endpoint.
+
+
+        Never echoes back decrypted header values — only whether headers are
+
+        configured for each of the three webhooks (`*_headers_configured`).'
+    SystemWebhooksSettingsUpdate:
+      properties:
+        pre_inbound_webhook_url:
+          type: string
+          nullable: true
+        pre_inbound_webhook_headers:
+          additionalProperties:
+            type: string
+          type: object
+          nullable: true
+        pre_inbound_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          nullable: true
+        pre_inbound_webhook_static_metadata:
+          additionalProperties:
+            type: string
+          type: object
+          nullable: true
+        dynamic_inbound_routing_enabled:
+          type: boolean
+          title: Dynamic Inbound Routing Enabled
+          default: false
+        post_call_webhook_url:
+          type: string
+          nullable: true
+        post_call_webhook_headers:
+          additionalProperties:
+            type: string
+          type: object
+          nullable: true
+        post_call_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          nullable: true
+        post_call_webhook_custom_payload_enabled:
+          type: boolean
+          title: Post Call Webhook Custom Payload Enabled
+          default: false
+        post_call_webhook_custom_payload_template:
+          additionalProperties: true
+          type: object
+          nullable: true
+        status_webhook_enabled:
+          type: boolean
+          title: Status Webhook Enabled
+          default: false
+        status_webhook_url:
+          type: string
+          nullable: true
+        status_webhook_headers:
+          additionalProperties:
+            type: string
+          type: object
+          nullable: true
+        status_webhook_query_params:
+          items:
+            additionalProperties:
+              type: string
+            type: object
+          type: array
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: SystemWebhooksSettingsUpdate
+      description: 'Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
+
+
+        Covers all four System Webhooks sub-features in one PUT: Pre-Inbound Call
+
+        Webhook, Dynamic Inbound Call Routing, Post-Call Webhook, Status Webhook.
+
+
+        Full-replace semantics for every field EXCEPT the three `*_headers`
+
+        fields: those are plaintext-in / never-plaintext-out (the response only
+
+        reports whether headers are configured, not their values), so `None`
+
+        means "leave the stored headers unchanged" rather than "clear them" — see
+
+        `CallFlowService.update_system_webhooks_settings` for the exact rule
+
+        (an explicit `{}` DOES clear them). Every other field is a true
+
+        full-replace: send the current value for anything you don''t want to change.'
     TTSProviderCreate:
       properties:
         slug:

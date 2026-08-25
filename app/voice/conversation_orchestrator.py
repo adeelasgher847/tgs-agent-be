@@ -16,7 +16,7 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
-
+from app.utils.webhook_templating import render_template
 
 # ---------------------------------------------------------------------------
 # Configuration structures (tunable parameters for STT, TTS, and conversation)
@@ -253,7 +253,9 @@ class ConversationOrchestrator:
         if self._h.call_session and self._h.call_session.call_transcript:
             try:
                 raw = self._h.call_session.call_transcript
-                conversation_history = json.loads(raw) if isinstance(raw, str) else list(raw)
+                conversation_history = (
+                    json.loads(raw) if isinstance(raw, str) else list(raw)
+                )
             except Exception:
                 conversation_history = []
 
@@ -279,7 +281,9 @@ class ConversationOrchestrator:
                             filtered.append((role, content))
 
                 # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
-                max_msgs = getattr(self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages)
+                max_msgs = getattr(
+                    self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages
+                )
                 if len(filtered) > max_msgs:
                     filtered = filtered[-max_msgs:]
 
@@ -292,8 +296,14 @@ class ConversationOrchestrator:
                 history_text = ""
 
         # Build system prompt with agent personality + history
-        agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
-        agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
+        agent_name = (
+            self._h.agent.name
+            if self._h.agent and self._h.agent.name
+            else "AI Assistant"
+        )
+        agent_language = (
+            self._h.agent.language if self._h.agent and self._h.agent.language else "en"
+        )
         from app.core.agent_runtime import resolve_tts_runtime
 
         tts_provider_slug = (
@@ -303,7 +313,9 @@ class ConversationOrchestrator:
             if self._h.agent
             else ""
         )
-        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
+        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(
+            tts_provider_slug
+        )
         if elevenlabs_audio_tags_enabled:
             output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
                 get_elevenlabs_voice_prompt_rule_lines()
@@ -313,11 +325,11 @@ class ConversationOrchestrator:
                 "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
                 "Prosody is handled by the system."
             )
-            no_ssml_rule_base = (
-                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-            )
+            no_ssml_rule_base = "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
             no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
+        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(
+            tts_provider_slug
+        )
         # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
         # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
         # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
@@ -379,14 +391,20 @@ Continue the conversation based on the history above. Be {agent_name}."""
         flow_prompt_override = None
         call_flow = getattr(self._h, "call_flow", None)
         if call_flow:
-            if getattr(call_flow, "current_prompt", None) and call_flow.current_prompt.prompt_text:
+            if (
+                getattr(call_flow, "current_prompt", None)
+                and call_flow.current_prompt.prompt_text
+            ):
                 flow_prompt_override = call_flow.current_prompt.prompt_text
             elif call_flow.current_prompt_id and getattr(self._h, "db", None):
                 try:
                     from sqlalchemy import select
                     from app.models.prompt_version import PromptVersion
+
                     pv = self._h.db.execute(
-                        select(PromptVersion).where(PromptVersion.id == call_flow.current_prompt_id)
+                        select(PromptVersion).where(
+                            PromptVersion.id == call_flow.current_prompt_id
+                        )
                     ).scalar_one_or_none()
                     if pv and pv.prompt_text:
                         flow_prompt_override = pv.prompt_text
@@ -434,7 +452,9 @@ Previous conversation:
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
-        elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
+        elif (
+            self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt
+        ):
             effective_model_prompt = (
                 batch_prompt_override
                 or ab_prompt_override
@@ -476,7 +496,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             system_prompt = base_prompt
 
         call_policy_block = agent_service.build_call_policy_block(
-            transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
+            transfer_route=(
+                getattr(self._h.agent, "transfer_route", None)
+                if self._h.agent
+                else None
+            ),
         )
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
@@ -560,7 +584,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         )
                         logger.debug("[RAG prefetch] awaited in-flight prefetch")
                 else:
-                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
+                    from app.services.kb_retrieval_service import (
+                        retrieve_kb_context_for_turn,
+                    )
                     from app.utils.redis_client import get_redis
 
                     kb_context_block, kb_latency_ms = await asyncio.wait_for(
@@ -620,7 +646,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
             except Exception as exc:
                 logger.error(
-                    "HubSpot CRM context lookup failed; proceeding without context: %s", exc
+                    "HubSpot CRM context lookup failed; proceeding without context: %s",
+                    exc,
                 )
 
         if crm_context_block:
@@ -651,7 +678,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
             except Exception as exc:
                 logger.error(
-                    "Salesforce CRM context lookup failed; proceeding without context: %s", exc
+                    "Salesforce CRM context lookup failed; proceeding without context: %s",
+                    exc,
                 )
 
         if salesforce_context_block:
@@ -750,6 +778,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     exc,
                 )
 
+        # System Webhooks: inject any {{key}} variables returned by the Pre-Inbound
+        # Call Webhook (see app/services/system_webhook_service.py). No-op (cheap,
+        # safe) when call_metadata has no webhook_variables — never raises.
+        try:
+            call_session = getattr(self._h, "call_session", None)
+            _webhook_vars = (
+                call_session.call_metadata.get("webhook_variables", {})
+                if call_session and call_session.call_metadata
+                else {}
+            )
+            if _webhook_vars:
+                system_prompt = render_template(system_prompt, _webhook_vars)
+        except Exception as exc:
+            logger.debug(
+                "System webhook variable injection (system prompt) failed: %s", exc
+            )
+
         return system_prompt
 
     async def generate_and_stream_response(
@@ -775,11 +820,32 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
                 greeting_text = None
                 if self._h.agent:
-                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                    greeting_text = (
+                        getattr(self._h.agent, "greeting_message", None) or ""
+                    ).strip() or None
                     if not greeting_text:
-                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
+                        greeting_text = (
+                            getattr(self._h.agent, "first_message", None) or ""
+                        ).strip() or None
                 if not greeting_text:
                     greeting_text = "hello how are you"
+
+                # System Webhooks: inject any {{key}} variables returned by the
+                # Pre-Inbound Call Webhook before this text reaches any hand-off
+                # (native Gemini/OpenAI Realtime session or TtsPipeline below).
+                try:
+                    call_session = getattr(self._h, "call_session", None)
+                    _webhook_vars = (
+                        call_session.call_metadata.get("webhook_variables", {})
+                        if call_session and call_session.call_metadata
+                        else {}
+                    )
+                    if _webhook_vars:
+                        greeting_text = render_template(greeting_text, _webhook_vars)
+                except Exception as exc:
+                    logger.debug(
+                        "System webhook variable injection (greeting) failed: %s", exc
+                    )
 
                 # Add greeting to transcript
                 await self._h._add_to_transcript("agent", greeting_text, "greeting")
@@ -799,7 +865,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, turn_complete=True)
                         except Exception as exc:
                             logger.warning(
-                                "[GeminiLive] failed to send greeting via live session: %s", exc
+                                "[GeminiLive] failed to send greeting via live session: %s",
+                                exc,
                             )
                     else:
                         logger.debug(
@@ -817,7 +884,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, respond=True)
                         except Exception as exc:
                             logger.warning(
-                                "[OpenAIRealtime] failed to send greeting via live session: %s", exc
+                                "[OpenAIRealtime] failed to send greeting via live session: %s",
+                                exc,
                             )
                     else:
                         logger.debug(
@@ -844,7 +912,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
-            self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
+            self._h._prev_tts_tail = (
+                b""  # Reset crossfade state so new response starts clean
+            )
             # Reset ElevenLabs `previous_text` continuity tracking (Phase 4D-2).
             # Unconditional, every turn — NOT just on barge-in — because
             # cancel_current_and_clear_queue()'s reset only fires on an actual
@@ -853,7 +923,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # transports since this orchestrator is transport-agnostic.
             if self._h._tts_pipeline:
                 self._h._tts_pipeline.reset_previous_text_continuity()
-            self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
+            self._h._twilio_buffer_primed = (
+                False  # Ensure micro-fade and buffer priming for new utterance
+            )
 
             # If quick ack is enabled (>0 probability), fire in background — never block prompt generation
             if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) > 0.0:
@@ -861,7 +933,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             _vm = getattr(self._h, "_voice_metrics", None)
             if _vm:
-                _vm.transport = "livekit_demo" if "LiveKit" in self._h.__class__.__name__ else "telephony"
+                _vm.transport = (
+                    "livekit_demo"
+                    if "LiveKit" in self._h.__class__.__name__
+                    else "telephony"
+                )
                 _agent = getattr(self._h, "agent", None)
                 _vm.agent_id = str(getattr(_agent, "id", "")) if _agent else None
                 _vm.mark_rag_start()
@@ -870,7 +946,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             if _vm:
                 _vm.mark_prompt_ready()
 
-            from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
+            from app.core.agent_runtime import (
+                llm_service_for_provider,
+                resolve_llm_runtime,
+            )
 
             llm_runtime = resolve_llm_runtime(self._h.agent)
             model_name = llm_runtime.model_name
@@ -893,12 +972,16 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
             logger.debug(
                 "[LLM] request sent: provider=%s model=%s user_text_len=%s",
-                llm_runtime.provider_slug, model_name, len(user_text or ""),
+                llm_runtime.provider_slug,
+                model_name,
+                len(user_text or ""),
             )
             if _vm:
                 _vm.mark_llm_request()
 
-            async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
+            async def try_stream(
+                service, model: str, api_key_override: str | None = None
+            ) -> str:
                 nonlocal chunk_counter
 
                 response_accum = ""
@@ -911,8 +994,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
                         return ""
-                    out = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
-                    out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
+                    out = text.replace("[END_CALL]", "").replace(
+                        "[SCREENING_QUALIFIED]", ""
+                    )
+                    out = re.sub(
+                        r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE
+                    )
                     out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
                     out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
                     out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
@@ -968,10 +1055,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     flush_idx = _find_flush_index(tts_buffer)
                     now_ts = time.perf_counter()
-                    if flush_idx is None and (now_ts - last_flush_ts) >= _tts_time_flush_s:
+                    if (
+                        flush_idx is None
+                        and (now_ts - last_flush_ts) >= _tts_time_flush_s
+                    ):
                         flush_idx = _find_time_flush_index(tts_buffer)
 
-                    if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                    if (
+                        flush_idx is not None
+                        and not self._h._tts_cancel.is_set()
+                        and self._h._tts_pipeline
+                    ):
                         to_speak = tts_buffer[:flush_idx].strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
                         if to_speak:
@@ -997,7 +1091,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     transfer_after = True
                     end_call_after = False
                 final_text = _strip_control_tokens(tts_buffer).strip()
-                if final_text and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                if (
+                    final_text
+                    and not self._h._tts_cancel.is_set()
+                    and self._h._tts_pipeline
+                ):
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
                         {
@@ -1012,7 +1110,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
-                elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                elif (
+                    transfer_after
+                    and not self._h._tts_cancel.is_set()
+                    and self._h._tts_pipeline
+                ):
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
                         {
@@ -1031,20 +1133,29 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             final_text = ""
             try:
-                final_text = await try_stream(llm_service, model_name, api_key_override=api_key)
+                final_text = await try_stream(
+                    llm_service, model_name, api_key_override=api_key
+                )
                 logger.debug(
                     "[LLM] response received: chars=%s chunks_queued=%s",
-                    len(final_text or ""), chunk_counter,
+                    len(final_text or ""),
+                    chunk_counter,
                 )
             except Exception as e:
                 logger.error(f"LLM streaming failed: {e}", exc_info=True)
 
             if final_text:
-                transcript_text = re.sub(
-                    r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
-                ).replace("[END_CALL]", "").strip()
+                transcript_text = (
+                    re.sub(
+                        r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
+                    )
+                    .replace("[END_CALL]", "")
+                    .strip()
+                )
                 if transcript_text:
-                    await self._h._add_to_transcript("agent", transcript_text, "agent_response")
+                    await self._h._add_to_transcript(
+                        "agent", transcript_text, "agent_response"
+                    )
 
             if _vm:
                 _vm.mark_turn_complete()
@@ -1084,7 +1195,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Interim path: barge-in, early LLM start.
             await self.process_interim(text, confidence)
             # Reflect whether we decided to start an interim-driven response.
-            actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
+            actions.start_llm_response = bool(
+                getattr(self._h, "_turn_response_started", False)
+            )
             return actions
 
         # Full LLM path matches bidirectional _process_transcript (commit + no duplicate interim)
@@ -1095,4 +1208,3 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         actions.should_persist_history = True
 
         return actions
-
