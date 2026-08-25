@@ -78,9 +78,39 @@ class TestGetCallerMemoryContextBlockForCall:
     async def test_no_from_number_returns_empty(self):
         db = MagicMock()
         block = await caller_memory_service.get_caller_memory_context_block_for_call(
-            db, _call_session(from_number=None), _call_flow()
+            db, _call_session(from_number=None, metadata={}), _call_flow()
         )
         assert block == ""
+
+    @pytest.mark.anyio
+    async def test_web_demo_visitor_fetches_formats_and_caches_on_first_call(self):
+        db = MagicMock()
+        call_session = _call_session(
+            from_number=None,
+            metadata={"demo_link": {"visitor_id": "vis_999", "demo_link_id": "dl_1"}},
+        )
+        sessions = [
+            _past_session(1, "Inquired about product demo."),
+        ]
+
+        with patch.object(caller_memory_service, "_fetch_recent_summaries", return_value=sessions) as mock_fetch:
+            block = await caller_memory_service.get_caller_memory_context_block_for_call(
+                db, call_session, _call_flow(window=3)
+            )
+
+        mock_fetch.assert_called_once_with(
+            call_session.tenant_id,
+            call_session.call_flow_id,
+            "visitor_id",
+            "vis_999",
+            call_session.id,
+            3,
+        )
+        assert block.startswith("<caller_history>\nCALLER HISTORY (last 1 interactions):")
+        assert "Inquired about product demo." in block
+        assert call_session.call_metadata["caller_memory_context"] == block
+        db.flush.assert_called_once()
+        db.commit.assert_not_called()
 
     @pytest.mark.anyio
     async def test_no_call_session_returns_empty(self):
@@ -204,6 +234,35 @@ class TestGetCallerMemoryContextBlockForCall:
 
         assert "Summary text" in block
         db.flush.assert_called_once()
+
+
+class TestExtractCallerIdentifier:
+    def test_extracts_phone_when_from_number_present(self):
+        cs = _call_session(from_number=" +15551234567 ")
+        assert caller_memory_service._extract_caller_identifier(cs) == ("phone", "+15551234567")
+
+    def test_extracts_visitor_id_from_demo_link_metadata(self):
+        cs = _call_session(from_number=None, metadata={"demo_link": {"visitor_id": " vis_123 "}})
+        assert caller_memory_service._extract_caller_identifier(cs) == ("visitor_id", "vis_123")
+
+    def test_extracts_visitor_id_from_top_level_metadata(self):
+        cs = _call_session(from_number=None, metadata={"visitor_id": " vis_top "})
+        assert caller_memory_service._extract_caller_identifier(cs) == ("visitor_id", "vis_top")
+
+    def test_prefers_phone_over_visitor_id_if_both_present(self):
+        cs = _call_session(from_number="+15550001111", metadata={"demo_link": {"visitor_id": "vis_123"}})
+        assert caller_memory_service._extract_caller_identifier(cs) == ("phone", "+15550001111")
+
+    def test_returns_none_when_session_is_none(self):
+        assert caller_memory_service._extract_caller_identifier(None) is None
+
+    def test_returns_none_when_neither_present(self):
+        cs = _call_session(from_number=None, metadata={})
+        assert caller_memory_service._extract_caller_identifier(cs) is None
+
+    def test_returns_none_when_empty_strings(self):
+        cs = _call_session(from_number="   ", metadata={"demo_link": {"visitor_id": "  "}, "visitor_id": ""})
+        assert caller_memory_service._extract_caller_identifier(cs) is None
 
 
 class TestFormatCallerMemoryBlock:
@@ -335,12 +394,162 @@ class TestFetchRecentSummariesQuery:
         results = caller_memory_service._fetch_recent_summaries(
             current_session.tenant_id,
             current_session.call_flow_id,
+            "phone",
             current_session.from_number,
             current_session.id,
-            window=10
+            window=10,
         )
 
         assert [r.transcript_summary for r in results] == ["Most recent call", "Older call"]
+
+    def test_filters_by_demo_link_visitor_id_and_isolates_visitors(self, db):
+        from app.models.agent import Agent
+        from app.models.call_flow import CallFlow
+        from app.models.tenant import Tenant
+        from app.models.user import User
+        from app.models.call_session import CallSession
+
+        tenant = Tenant(name=f"CM-V-{uuid.uuid4().hex[:6]}", schema_name=f"cm_v_{uuid.uuid4().hex[:6]}")
+        other_tenant = Tenant(
+            name=f"CM-V-other-{uuid.uuid4().hex[:6]}", schema_name=f"cm_v_other_{uuid.uuid4().hex[:6]}"
+        )
+        db.add_all([tenant, other_tenant])
+        db.flush()
+
+        agent = Agent(
+            tenant_id=tenant.id,
+            name="Visitor Memory Agent",
+            status="active",
+            llm_model="gpt-4o-mini",
+            tts_provider_slug="elevenlabs",
+            tts_voice_external_id="voice-x",
+            tts_language="en",
+        )
+        db.add(agent)
+        db.flush()
+
+        user = User(
+            email=f"cm-v-{uuid.uuid4().hex[:6]}@example.com",
+            first_name="CMV",
+            last_name="User",
+            hashed_password="",
+            current_tenant_id=tenant.id,
+        )
+        db.add(user)
+        db.flush()
+
+        flow = CallFlow(tenant_id=tenant.id, agent_id=agent.id, name="Visitor Memory Flow", direction="inbound")
+        other_flow = CallFlow(tenant_id=tenant.id, agent_id=agent.id, name="Other Flow", direction="inbound")
+        db.add_all([flow, other_flow])
+        db.flush()
+
+        current_session = CallSession(
+            user_id=user.id,
+            agent_id=agent.id,
+            tenant_id=tenant.id,
+            call_flow_id=flow.id,
+            call_type="web",
+            status="active",
+            start_time=datetime.now(timezone.utc),
+            call_metadata={"demo_link": {"visitor_id": "visitor_alpha", "demo_link_id": "dl_1"}},
+        )
+        db.add(current_session)
+        db.flush()
+
+        def _web_call(*, days_ago, visitor_metadata, summary, tenant_id=tenant.id, flow_id=flow.id, status="completed"):
+            return CallSession(
+                user_id=user.id,
+                agent_id=agent.id,
+                tenant_id=tenant_id,
+                call_flow_id=flow_id,
+                call_type="web",
+                status=status,
+                transcript_summary=summary,
+                call_metadata=visitor_metadata,
+                start_time=datetime.now(timezone.utc) - timedelta(days=days_ago),
+            )
+
+        # 1. Matching recent demo link visitor_alpha
+        matching_recent = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_alpha", "demo_link_id": "dl_1"}},
+            summary="Alpha first call",
+        )
+        # 2. Matching older top-level visitor_alpha
+        matching_older = _web_call(
+            days_ago=3,
+            visitor_metadata={"visitor_id": "visitor_alpha"},
+            summary="Alpha older call",
+        )
+        # 3. Different visitor_beta -> isolated
+        other_visitor = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_beta", "demo_link_id": "dl_1"}},
+            summary="Beta call",
+        )
+        # 4. Other flow -> isolated
+        other_flow_call = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_alpha"}},
+            summary="Alpha other flow",
+            flow_id=other_flow.id,
+        )
+        # 5. Other tenant -> isolated
+        other_tenant_call = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_alpha"}},
+            summary="Alpha other tenant",
+            tenant_id=other_tenant.id,
+        )
+        # 6. Non-completed status -> ignored
+        not_completed = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_alpha"}},
+            summary="Alpha active",
+            status="active",
+        )
+        # 7. Empty summary -> ignored
+        empty_summary = _web_call(
+            days_ago=1,
+            visitor_metadata={"demo_link": {"visitor_id": "visitor_alpha"}},
+            summary="",
+        )
+
+        db.add_all([
+            matching_recent,
+            matching_older,
+            other_visitor,
+            other_flow_call,
+            other_tenant_call,
+            not_completed,
+            empty_summary,
+        ])
+        db.commit()
+
+        # Query for visitor_alpha
+        alpha_results = caller_memory_service._fetch_recent_summaries(
+            current_session.tenant_id,
+            current_session.call_flow_id,
+            "visitor_id",
+            "visitor_alpha",
+            current_session.id,
+            window=10,
+        )
+        assert [r.transcript_summary for r in alpha_results] == [
+            "Alpha first call",
+            "Alpha older call",
+        ]
+
+        # Query for visitor_beta -> returns only Beta call
+        beta_results = caller_memory_service._fetch_recent_summaries(
+            current_session.tenant_id,
+            current_session.call_flow_id,
+            "visitor_id",
+            "visitor_beta",
+            current_session.id,
+            window=10,
+        )
+        assert [r.transcript_summary for r in beta_results] == ["Beta call"]
 
     def test_respects_window_limit(self, db):
         from app.models.agent import Agent
@@ -409,8 +618,21 @@ class TestFetchRecentSummariesQuery:
         results = caller_memory_service._fetch_recent_summaries(
             current_session.tenant_id,
             current_session.call_flow_id,
+            "phone",
             current_session.from_number,
             current_session.id,
-            window=2
+            window=2,
         )
         assert len(results) == 2
+
+    def test_unknown_identifier_type_returns_empty(self, db):
+        results = caller_memory_service._fetch_recent_summaries(
+            _TENANT_ID,
+            _FLOW_ID,
+            "unknown_type",
+            "val",
+            _SESSION_ID,
+            window=5,
+        )
+        assert results == []
+
