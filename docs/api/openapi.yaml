@@ -8971,6 +8971,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved System Webhooks settings for a call flow
+      description: Returns the currently-saved System Webhooks configuration for this
+        call flow, in the same shape the PUT endpoint returns after a save — for loading
+        the settings form on page load. Never echoes back decrypted header values,
+        matching the PUT response; only whether headers are configured (`*_headers_configured`).
+        Read-only rank is sufficient since no secrets are exposed either way.
+      operationId: get_system_webhooks_settings_api_v2_flows__flow_id__system_webhooks_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemWebhooksSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks/test:
     post:
       tags:
@@ -9006,6 +9039,63 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/SystemWebhookTestResult'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/system-webhooks/deliveries:
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: List System Webhook delivery history for a call flow
+      description: Paginated delivery log for this call flow's System Webhooks (pre_inbound,
+        post_call, status), most recent first. Optionally filter by `webhook_kind`.
+        Requires admin rank — delivery history can reveal response bodies from the
+        tenant's own endpoint, the same sensitivity level as the test-delivery endpoint.
+      operationId: list_system_webhook_deliveries_api_v2_flows__flow_id__system_webhooks_deliveries_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      - name: webhook_kind
+        in: query
+        required: false
+        schema:
+          allOf:
+          - $ref: '#/components/schemas/SystemWebhookKindEnum'
+          nullable: true
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: pageSize
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Pagesize
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSystemWebhookDeliveries'
         '422':
           description: Validation Error
           content:
@@ -15424,6 +15514,30 @@ components:
       - pages
       title: PaginatedPaymentResponse
       description: Paginated list of payment records.
+    PaginatedSystemWebhookDeliveries:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/SystemWebhookDeliveryOut'
+          type: array
+          title: Items
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+      type: object
+      required:
+      - items
+      - total
+      - page
+      - page_size
+      title: PaginatedSystemWebhookDeliveries
+      description: Response body for ``GET /api/v2/flows/{flow_id}/system-webhooks/deliveries``.
     PaginatedWebhookDeliveries:
       properties:
         items:
@@ -19705,6 +19819,58 @@ components:
       required:
       - tenant_id
       title: SwitchTenantRequest
+    SystemWebhookDeliveryOut:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        webhook_kind:
+          $ref: '#/components/schemas/SystemWebhookKindEnum'
+        event_type:
+          type: string
+          nullable: true
+        url:
+          type: string
+          title: Url
+        status:
+          type: string
+          title: Status
+        status_code:
+          type: integer
+          nullable: true
+        response_body:
+          type: string
+          nullable: true
+        error:
+          type: string
+          nullable: true
+        attempt_count:
+          type: integer
+          title: Attempt Count
+        duration_ms:
+          type: integer
+          nullable: true
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - webhook_kind
+      - url
+      - status
+      - attempt_count
+      - created_at
+      title: SystemWebhookDeliveryOut
+      description: 'A single System Webhook delivery log entry, for the deliveries-list
+
+        endpoint. Omits `tenant_id`/`call_flow_id`/`call_session_id` since the
+
+        URL already scopes to one flow; does not include request headers/params/
+
+        body — `SystemWebhookDeliveryLog` never stores those (may carry secrets).'
     SystemWebhookKindEnum:
       type: string
       enum:
