@@ -611,16 +611,27 @@ async def initiate_call(
         # ── 10. Initiate Twilio call ──────────────────────────────────────
         _twilio_record = not _livekit_recording_enabled
         try:
-            amd_kwargs = (
-                {
+            amd_kwargs = {}
+            if requested_flow and requested_flow.voicemail_detection_enabled:
+                detection_type = (
+                    "DetectMessageEnd"
+                    if requested_flow.voicemail_advanced_detection_enabled
+                    else "Enable"
+                )
+                timeout_val = requested_flow.voicemail_detection_timeout or 5
+                amd_kwargs = {
+                    "machine_detection": detection_type,
+                    "machine_detection_timeout": timeout_val,
+                    "async_amd": "true",
+                    "async_amd_status_callback": amd_status_callback_url,
+                }
+            elif call_request.enable_amd:
+                amd_kwargs = {
                     "machine_detection": "Enable",
                     "machine_detection_timeout": 3,
                     "async_amd": "true",
                     "async_amd_status_callback": amd_status_callback_url,
                 }
-                if call_request.enable_amd
-                else {}
-            )
             if use_custom_credentials:
                 call = await _create_twilio_call_with_retry(
                     twilio_service.make_call_with_credentials,

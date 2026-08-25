@@ -53,6 +53,8 @@ from app.schemas.call_flow import (
     SystemWebhooksSettingsUpdate,
     SystemWebhookDeliveryOut,
     PaginatedSystemWebhookDeliveries,
+    VoicemailSettingsResponse,
+    VoicemailSettingsUpdate,
 )
 from app.models.system_webhook_log import SystemWebhookDeliveryLog
 from app.core.db_encryption import encrypt_webhook_headers
@@ -784,6 +786,59 @@ class CallFlowService:
             slack_summary_enabled=bool(flow.slack_summary_enabled),
             slack_channel_id=flow.slack_channel_id,
             slack_channel_name=flow.slack_channel_name,
+        )
+
+    # ── Voicemail Detection Settings ────────────────────────────────────────
+
+    def update_voicemail_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: VoicemailSettingsUpdate,
+    ) -> VoicemailSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        action_val = (
+            body.voicemail_action.value
+            if hasattr(body.voicemail_action, "value")
+            else str(body.voicemail_action)
+        )
+        flow = repo.update(
+            flow,
+            {
+                "voicemail_detection_enabled": body.voicemail_detection_enabled,
+                "voicemail_action": action_val,
+                "voicemail_message": body.voicemail_message,
+                "voicemail_advanced_detection_enabled": body.voicemail_advanced_detection_enabled,
+                "voicemail_detection_timeout": body.voicemail_detection_timeout,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return VoicemailSettingsResponse(
+            voicemail_detection_enabled=bool(flow.voicemail_detection_enabled),
+            voicemail_action=flow.voicemail_action or "hang_up",
+            voicemail_message=flow.voicemail_message,
+            voicemail_advanced_detection_enabled=bool(flow.voicemail_advanced_detection_enabled),
+            voicemail_detection_timeout=flow.voicemail_detection_timeout or 5,
+        )
+
+    def get_voicemail_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> VoicemailSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return VoicemailSettingsResponse(
+            voicemail_detection_enabled=bool(flow.voicemail_detection_enabled),
+            voicemail_action=flow.voicemail_action or "hang_up",
+            voicemail_message=flow.voicemail_message,
+            voicemail_advanced_detection_enabled=bool(flow.voicemail_advanced_detection_enabled),
+            voicemail_detection_timeout=flow.voicemail_detection_timeout or 5,
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──

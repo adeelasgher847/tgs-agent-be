@@ -171,6 +171,21 @@ class CallFlow(Base):
         server_default=sa_text("'[]'"),
     )
 
+    # Voicemail Detection Settings: configure behavior when a voicemail system is detected
+    voicemail_detection_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    voicemail_action = Column(
+        String(50), default="hang_up", nullable=False, server_default="hang_up"
+    )
+    voicemail_message = Column(Text, nullable=True)
+    voicemail_advanced_detection_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    voicemail_detection_timeout = Column(
+        Integer, default=5, nullable=False, server_default="5"
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

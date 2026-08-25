@@ -56,6 +56,8 @@ from app.schemas.call_flow import (
     SystemWebhooksSettingsUpdate,
     SystemWebhookTestRequest,
     SystemWebhookTestResult,
+    VoicemailSettingsResponse,
+    VoicemailSettingsUpdate,
 )
 from app.services.audit_service import log_audit_event
 from app.services.call_flow_service import call_flow_service
@@ -221,6 +223,80 @@ def get_post_call_actions_settings(
     db: Session = Depends(get_db),
 ) -> PostCallActionsSettingsResponse:
     return call_flow_service.get_post_call_actions_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/voicemail-settings",
+    response_model=VoicemailSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure voicemail detection settings on a call flow",
+    description=(
+        "Configures the voicemail detection settings for this call flow:\n\n"
+        "- **Voicemail Detection** (`voicemail_detection_enabled`): whether voicemail "
+        "detection is active on calls using this flow.\n"
+        "- **Voicemail Action** (`voicemail_action`): behavior when a voicemail is detected "
+        "(`hang_up`, `leave_message`, or `continue`).\n"
+        "- **Voicemail Message** (`voicemail_message`): optional message to leave when action "
+        "is `leave_message` (up to 500 characters).\n"
+        "- **Advanced Detection** (`voicemail_advanced_detection_enabled`): whether Twilio AMD "
+        "(Answering Machine Detection) is enabled.\n"
+        "- **Detection Timeout** (`voicemail_detection_timeout`): detection timeout in seconds "
+        "(1 to 30 seconds).\n\n"
+        "Requires admin rank."
+    ),
+)
+def update_voicemail_settings(
+    flow_id: uuid.UUID,
+    body: VoicemailSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> VoicemailSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_voicemail_settings(
+        db, flow_id, tenant_id, body
+    )
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="voicemail_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value={
+            "voicemail_detection_enabled": result.voicemail_detection_enabled,
+            "voicemail_action": result.voicemail_action,
+            "voicemail_message": result.voicemail_message,
+            "voicemail_advanced_detection_enabled": (
+                result.voicemail_advanced_detection_enabled
+            ),
+            "voicemail_detection_timeout": result.voicemail_detection_timeout,
+        },
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/voicemail-settings",
+    response_model=VoicemailSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Voicemail Detection settings for a call flow",
+    description=(
+        "Returns the currently-saved Voicemail Detection configuration for this call flow "
+        "(detection toggle, action, custom message, advanced detection AMD toggle, and timeout). "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_voicemail_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> VoicemailSettingsResponse:
+    return call_flow_service.get_voicemail_settings(
         db, flow_id, _tenant_id(principal)
     )
 
