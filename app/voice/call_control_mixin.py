@@ -829,7 +829,12 @@ class CallControlMixin:
                 from app.models.call_flow import CallFlow
 
                 flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "Anti-bot flow fetch failed (call_flow_id=%s): %s",
+                    getattr(self.call_session, "call_flow_id", None),
+                    e,
+                )
                 flow = None
 
         if not flow or not getattr(flow, "anti_bot_detection_enabled", False):
@@ -1063,7 +1068,12 @@ class CallControlMixin:
                 from app.models.call_flow import CallFlow
 
                 flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "DTMF flow fetch failed (call_flow_id=%s): %s",
+                    getattr(self.call_session, "call_flow_id", None),
+                    e,
+                )
                 flow = None
 
         if not flow or not getattr(flow, "dtmf_enabled", False):
@@ -1098,13 +1108,14 @@ class CallControlMixin:
             allowed_raw = getattr(flow, "dtmf_allowed_exceeded_attempts", 10)
             allowed = allowed_raw if allowed_raw is not None else 10
             action = getattr(flow, "dtmf_exceeded_action", "end_call") or "end_call"
-            if self._dtmf_exceeded_count > allowed and action == "end_call":
+            if self._dtmf_exceeded_count >= allowed and action == "end_call":
                 logger.warning(
                     "DTMF max digits exceeded %d times (allowed: %d) — ending call",
                     self._dtmf_exceeded_count,
                     allowed,
                 )
                 self._dtmf_buffer = ""
+                self._dtmf_suppress_stt = False
                 try:
                     self._call_ended = True
 
@@ -1173,6 +1184,7 @@ class CallControlMixin:
                 return
             else:
                 self._dtmf_buffer = ""
+                self._dtmf_suppress_stt = False
                 return
 
         delay_raw = getattr(flow, "dtmf_button_press_delay", 2)
@@ -1187,7 +1199,6 @@ class CallControlMixin:
             await asyncio.sleep(delay)
             digits = getattr(self, "_dtmf_buffer", "")
             self._dtmf_buffer = ""
-            self._dtmf_suppress_stt = False
             if digits:
                 logger.info("DTMF buffer flushed: %r", digits)
                 await self._process_transcript(
@@ -1197,6 +1208,8 @@ class CallControlMixin:
             pass
         except Exception as e:
             logger.error(f"Error flushing DTMF buffer: {e}", exc_info=True)
+        finally:
+            self._dtmf_suppress_stt = False
 
     def _cancel_silence_watchdog(self) -> None:
         """Cancel the active silence watchdog timer and reset retry count on user activity."""
@@ -1231,7 +1244,12 @@ class CallControlMixin:
                     from app.models.call_flow import CallFlow
 
                     flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-                except Exception:
+                except Exception as e:
+                    logger.warning(
+                        "Silence watchdog flow fetch failed (call_flow_id=%s): %s",
+                        getattr(self.call_session, "call_flow_id", None),
+                        e,
+                    )
                     flow = None
 
             if not flow:

@@ -3125,6 +3125,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             and not self._dtmf_debounce_task.done()
         ):
             self._dtmf_debounce_task.cancel()
+            self._dtmf_suppress_stt = False
 
         if (
             hasattr(self, "_silence_watchdog_task")

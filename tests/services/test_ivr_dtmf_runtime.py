@@ -90,7 +90,7 @@ class TestDTMFKeypadRuntime:
         flow.dtmf_enabled = True
         flow.dtmf_button_press_delay = 2
         flow.dtmf_max_digits = 3
-        flow.dtmf_allowed_exceeded_attempts = 1
+        flow.dtmf_allowed_exceeded_attempts = 2
         flow.dtmf_exceeded_action = "end_call"
         flow.dtmf_allow_caller_interruption = True
 
@@ -105,13 +105,13 @@ class TestDTMFKeypadRuntime:
             patch("app.voice.call_control_mixin.get_twilio_credentials_for_call", return_value=("AC123", "tok")),
             patch("app.voice.call_control_mixin.twilio_service.end_call_with_credentials") as mock_end_call,
         ):
-            # Attempt 1: exceeds 3 digits (4 digits)
+            # Attempt 1: exceeds 3 digits (4 digits) -> count becomes 1 < allowed (2)
             for d in ["1", "2", "3", "4"]:
                 await handler.handle_dtmf_message({"event": "dtmf", "dtmf": {"digit": d}})
             assert handler._dtmf_exceeded_count == 1
             assert not handler._call_ended
 
-            # Attempt 2: exceeds 3 digits again -> count becomes 2 > allowed (1) -> ends call
+            # Attempt 2: exceeds 3 digits again -> count becomes 2 >= allowed (2) -> ends call
             for d in ["5", "6", "7", "8"]:
                 await handler.handle_dtmf_message({"event": "dtmf", "dtmf": {"digit": d}})
 
@@ -121,6 +121,35 @@ class TestDTMFKeypadRuntime:
                 handler.db, session.id, "completed", ended_reason="DTMF input limit exceeded"
             )
             mock_end_call.assert_called_once_with("CA_TEST_123", "AC123", "tok")
+
+    @pytest.mark.anyio
+    async def test_dtmf_suppress_stt_resets_on_debounce_cancellation_and_flush(self):
+        flow = MagicMock(spec=CallFlow)
+        flow.dtmf_enabled = True
+        flow.dtmf_button_press_delay = 0.05
+        flow.dtmf_max_digits = 10
+        flow.dtmf_allow_caller_interruption = False
+
+        session = MagicMock(spec=CallSession)
+        session.id = uuid.uuid4()
+        session.call_flow_id = uuid.uuid4()
+
+        handler = DummyHostHandler(call_session=session, call_flow=flow)
+
+        # Send first digit -> sets suppress_stt = True
+        await handler.handle_dtmf_message({"event": "dtmf", "digit": "1"})
+        assert getattr(handler, "_dtmf_suppress_stt", False) is True
+
+        # Send second digit immediately -> cancels previous debounce task, restarts debounce
+        await handler.handle_dtmf_message({"event": "dtmf", "digit": "2"})
+        assert getattr(handler, "_dtmf_suppress_stt", False) is True
+
+        # Wait for debounce flush to finish
+        if handler._dtmf_debounce_task:
+            await handler._dtmf_debounce_task
+
+        # After flush, suppress_stt MUST be reset to False
+        assert getattr(handler, "_dtmf_suppress_stt", False) is False
 
     @pytest.mark.anyio
     async def test_dtmf_exceeded_action_continue_does_not_end_call(self):

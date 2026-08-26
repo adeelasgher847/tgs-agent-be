@@ -153,7 +153,7 @@ def upgrade() -> None:
             'dtmf_end_call_message',
             sa.Text(),
             nullable=True,
-            server_default="You've reached the maximum number of inputs allowed for this call.",
+            server_default=sa.text("'You''ve reached the maximum number of inputs allowed for this call.'"),
         ),
     )
 
