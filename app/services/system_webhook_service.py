@@ -207,6 +207,42 @@ def _render_query_params(
     return result
 
 
+def _strip_metadata_from_dict(obj: Any) -> Any:
+    """Recursively strip metadata dictionaries and keys from payloads."""
+    if isinstance(obj, dict):
+        cleaned: dict[str, Any] = {}
+        for k, v in obj.items():
+            k_lower = str(k).lower().strip()
+            if k_lower in ("metadata", "call_metadata", "_metadata", "custom_metadata"):
+                continue
+            cleaned[k] = _strip_metadata_from_dict(v)
+        return cleaned
+    elif isinstance(obj, list):
+        return [_strip_metadata_from_dict(item) for item in obj]
+    return obj
+
+
+def _filter_query_params_metadata(
+    params: list[tuple[str, str]] | None,
+) -> list[tuple[str, str]]:
+    """Filter out query parameters referencing metadata keys."""
+    if not params:
+        return []
+    filtered: list[tuple[str, str]] = []
+    for k, v in params:
+        k_lower = str(k).lower().strip()
+        if (
+            k_lower in ("metadata", "call_metadata", "_metadata")
+            or k_lower.startswith("metadata[")
+            or k_lower.startswith("metadata.")
+            or k_lower.startswith("_metadata.")
+            or k_lower.startswith("call_metadata.")
+        ):
+            continue
+        filtered.append((k, v))
+    return filtered
+
+
 # ── (1) Pre-Inbound Call Webhook ────────────────────────────────────────────
 
 
@@ -241,6 +277,8 @@ async def fetch_pre_inbound_webhook_variables(
     query_params = _render_query_params(
         call_flow.pre_inbound_webhook_query_params, context
     )
+    if call_flow.disable_metadata:
+        query_params = _filter_query_params_metadata(query_params)
 
     variables: dict[str, str] = {}
 
@@ -285,9 +323,16 @@ async def fetch_pre_inbound_webhook_variables(
                     key,
                     call_flow.id,
                 )
-                continue
+                break
             parsed[key] = value[:_PRE_INBOUND_MAX_VARIABLE_VALUE_CHARS]
         variables = parsed
+
+    json_body = {
+        "from": from_number,
+        "to": to_number,
+    }
+    if not call_flow.disable_metadata:
+        json_body["metadata"] = static_metadata
 
     try:
         await _deliver(
@@ -300,11 +345,7 @@ async def fetch_pre_inbound_webhook_variables(
             url=url,
             headers=headers,
             query_params=query_params,
-            json_body={
-                "from": from_number,
-                "to": to_number,
-                "metadata": static_metadata,
-            },
+            json_body=json_body,
             timeout_seconds=_PRE_INBOUND_TIMEOUT_SECONDS,
             on_response=_parse_variables,
         )
@@ -397,13 +438,18 @@ async def _dispatch_post_call_webhook(call_session_id: uuid.UUID) -> bool:
             payload = render_json_template(
                 call_flow.post_call_webhook_custom_payload_template, context
             )
+            if call_flow.disable_metadata:
+                payload = _strip_metadata_from_dict(payload)
         else:
             # Default shape: {callId, agentId, timestamp, data}. `data` is the
             # call_metadata + analytics namespaces flattened together — a
             # reasonable, documented subset rather than the full catalog
             # (conversation_data/transcript/header_variables are still
             # reachable via the custom-payload template above).
-            data = {**context.get("call_metadata", {}), **context.get("analytics", {})}
+            if call_flow.disable_metadata:
+                data = _strip_metadata_from_dict(context.get("analytics", {}))
+            else:
+                data = {**context.get("call_metadata", {}), **context.get("analytics", {})}
             payload = {
                 "callId": str(call_session.id),
                 "agentId": (
@@ -420,6 +466,8 @@ async def _dispatch_post_call_webhook(call_session_id: uuid.UUID) -> bool:
         query_params = _render_query_params(
             call_flow.post_call_webhook_query_params, context
         )
+        if call_flow.disable_metadata:
+            query_params = _filter_query_params_metadata(query_params)
 
         log = await _deliver(
             db,
@@ -576,6 +624,9 @@ async def _dispatch_status_webhook(
         query_params = _render_query_params(
             call_flow.status_webhook_query_params, context
         )
+        if call_flow.disable_metadata:
+            payload = _strip_metadata_from_dict(payload)
+            query_params = _filter_query_params_metadata(query_params)
 
         log = await _deliver(
             db,
@@ -771,6 +822,15 @@ async def run_webhook_test(
         query_params = _render_query_params(
             call_flow.pre_inbound_webhook_query_params, context
         )
+        test_pre_inbound_json = {
+            "from": context["_system"]["fromNumber"],
+            "to": context["_system"]["phoneNumber"],
+        }
+        if not call_flow.disable_metadata:
+            test_pre_inbound_json["metadata"] = static_metadata
+        if call_flow.disable_metadata:
+            query_params = _filter_query_params_metadata(query_params)
+
         return await _deliver(
             db,
             tenant_id=call_flow.tenant_id,
@@ -781,11 +841,7 @@ async def run_webhook_test(
             url=url,
             headers=headers,
             query_params=query_params,
-            json_body={
-                "from": context["_system"]["fromNumber"],
-                "to": context["_system"]["phoneNumber"],
-                "metadata": static_metadata,
-            },
+            json_body=test_pre_inbound_json,
             timeout_seconds=_PRE_INBOUND_TIMEOUT_SECONDS,
         )
 
@@ -868,6 +924,10 @@ async def run_webhook_test(
         query_params = _render_query_params(
             call_flow.post_call_webhook_query_params, header_query_context
         )
+        if call_flow.disable_metadata:
+            payload = _strip_metadata_from_dict(payload)
+            query_params = _filter_query_params_metadata(query_params)
+
         return await _deliver(
             db,
             tenant_id=call_flow.tenant_id,
@@ -911,6 +971,10 @@ async def run_webhook_test(
         query_params = _render_query_params(
             call_flow.status_webhook_query_params, test_context
         )
+        if call_flow.disable_metadata:
+            payload = _strip_metadata_from_dict(payload)
+            query_params = _filter_query_params_metadata(query_params)
+
         return await _deliver(
             db,
             tenant_id=call_flow.tenant_id,

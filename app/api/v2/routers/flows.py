@@ -50,6 +50,8 @@ from app.schemas.call_flow import (
     CallerMemorySettingsUpdate,
     CallScreeningSettingsResponse,
     CallScreeningSettingsUpdate,
+    MetadataSettingsResponse,
+    MetadataSettingsUpdate,
     PaginatedSystemWebhookDeliveries,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
@@ -361,6 +363,65 @@ def get_call_screening_settings(
     db: Session = Depends(get_db),
 ) -> CallScreeningSettingsResponse:
     return call_flow_service.get_call_screening_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/metadata-settings",
+    response_model=MetadataSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure Disable Metadata settings on a call flow",
+    description=(
+        "Configures whether to strip metadata, call_metadata, and metadata query parameters "
+        "from outbound API and system webhook payloads.\n\n"
+        "- **Disable Metadata** (`disable_metadata`): boolean toggle.\n\n"
+        "Requires admin rank."
+    ),
+)
+def update_metadata_settings(
+    flow_id: uuid.UUID,
+    body: MetadataSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> MetadataSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_metadata_settings(
+        db, flow_id, tenant_id, body
+    )
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="metadata_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value={
+            "disable_metadata": result.disable_metadata,
+        },
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/metadata-settings",
+    response_model=MetadataSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Disable Metadata settings for a call flow",
+    description=(
+        "Returns the currently-saved Disable Metadata configuration for this call flow. "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_metadata_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> MetadataSettingsResponse:
+    return call_flow_service.get_metadata_settings(
         db, flow_id, _tenant_id(principal)
     )
 

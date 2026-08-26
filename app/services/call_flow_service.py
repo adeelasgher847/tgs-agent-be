@@ -46,6 +46,8 @@ from app.schemas.call_flow import (
     FlowValidationError,
     FlowValidationErrorItem,
     FlowValidationResponse,
+    MetadataSettingsResponse,
+    MetadataSettingsUpdate,
     PaginatedFlowDataResponse,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
@@ -882,6 +884,42 @@ class CallFlowService:
 
         return CallScreeningSettingsResponse(
             call_screening_action=flow.call_screening_action or "respond",
+        )
+
+    # ── Disable Metadata Settings ───────────────────────────────────────────
+
+    def update_metadata_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: MetadataSettingsUpdate,
+    ) -> MetadataSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "disable_metadata": bool(body.disable_metadata),
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return MetadataSettingsResponse(
+            disable_metadata=bool(flow.disable_metadata),
+        )
+
+    def get_metadata_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> MetadataSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return MetadataSettingsResponse(
+            disable_metadata=bool(flow.disable_metadata),
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──

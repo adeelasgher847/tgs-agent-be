@@ -9106,6 +9106,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/metadata-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure Disable Metadata settings on a call flow
+      description: 'Configures whether to strip metadata, call_metadata, and metadata
+        query parameters from outbound API and system webhook payloads.
+
+
+        - **Disable Metadata** (`disable_metadata`): boolean toggle.
+
+
+        Requires admin rank.'
+      operationId: update_metadata_settings_api_v2_flows__flow_id__metadata_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MetadataSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetadataSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved Disable Metadata settings for a call flow
+      description: Returns the currently-saved Disable Metadata configuration for
+        this call flow. Read-only rank is sufficient since no secret keys are exposed.
+      operationId: get_metadata_settings_api_v2_flows__flow_id__metadata_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetadataSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -15353,6 +15426,27 @@ components:
       - role
       title: MemberRoleUpdate
       description: Request body for PUT /api/v2/workspace/members/{user_id}/role
+    MetadataSettingsResponse:
+      properties:
+        disable_metadata:
+          type: boolean
+          title: Disable Metadata
+          default: false
+      type: object
+      title: MetadataSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/metadata-settings``.
+    MetadataSettingsUpdate:
+      properties:
+        disable_metadata:
+          type: boolean
+          title: Disable Metadata
+          description: Whether to strip metadata from outbound API and webhook payloads.
+      additionalProperties: false
+      type: object
+      required:
+      - disable_metadata
+      title: MetadataSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/metadata-settings``.
     MinutesByMonthOut:
       properties:
         months:
