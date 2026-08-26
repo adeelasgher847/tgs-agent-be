@@ -35,6 +35,8 @@ from app.schemas.call_flow import (
     AgentRef,
     CallScreeningSettingsResponse,
     CallScreeningSettingsUpdate,
+    CallTimingSettingsResponse,
+    CallTimingSettingsUpdate,
     CallerMemorySettingsResponse,
     CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
@@ -1005,6 +1007,60 @@ class CallFlowService:
             ),
             dtmf_exceeded_action=flow.dtmf_exceeded_action or "end_call",
             dtmf_end_call_message=flow.dtmf_end_call_message,
+        )
+
+    # ── Call Timing & Silence Detection Settings ──
+
+    def update_call_timing_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: CallTimingSettingsUpdate,
+    ) -> CallTimingSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        update_dict = body.model_dump(exclude_unset=True)
+        if "reminder_messages" in update_dict and update_dict["reminder_messages"] is not None:
+            update_dict["reminder_messages"] = list(update_dict["reminder_messages"])
+        update_dict["updated_at"] = datetime.now(timezone.utc)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_call_timing_response(flow)
+
+    def get_call_timing_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> CallTimingSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_call_timing_response(flow)
+
+    @staticmethod
+    def _to_call_timing_response(flow: CallFlow) -> CallTimingSettingsResponse:
+        return CallTimingSettingsResponse(
+            silence_timeout=(
+                flow.silence_timeout if flow.silence_timeout is not None else 10
+            ),
+            end_call_after_reminder=(
+                flow.end_call_after_reminder
+                if flow.end_call_after_reminder is not None
+                else 10
+            ),
+            reminder_retries=(
+                flow.reminder_retries if flow.reminder_retries is not None else 1
+            ),
+            reminder_messages=list(flow.reminder_messages or []),
+            max_call_duration=(
+                flow.max_call_duration
+                if flow.max_call_duration is not None
+                else 1800
+            ),
+            max_duration_message=flow.max_duration_message,
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──

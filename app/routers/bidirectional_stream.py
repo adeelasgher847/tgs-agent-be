@@ -1068,6 +1068,9 @@ class BidirectionalStreamHandler(
                 "[LLM] generate_and_stream_response timed out (12s) — aborting turn"
             )
 
+        finally:
+            self._arm_silence_watchdog()
+
     def _should_accept_final_transcript(
         self, transcript: str, confidence: float
     ) -> bool:
@@ -1193,6 +1196,7 @@ class BidirectionalStreamHandler(
                 # Fall through — still process transcript and generate new response.
 
             async with self._voice_transcript_lock:
+                self._cancel_silence_watchdog()
                 if not self._should_accept_final_transcript(transcript, confidence):
                     return
 
@@ -1306,6 +1310,8 @@ class BidirectionalStreamHandler(
         try:
             if not transcript:
                 return
+
+            self._cancel_silence_watchdog()
 
             word_count = len(transcript.split())
 
@@ -2949,6 +2955,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 rec_err,
                             )
 
+            # Arm hard timer for maximum call duration enforcement
+            self._arm_max_duration_timer()
+
             # DO NOT start credit monitoring or greeting here!
             # Wait for first media packet (user actually picks up - VAPI-style)
 
@@ -2963,6 +2972,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             self._user_picked_up = True
             self._voice_metrics.mark_call_pickup()
+
+            # Arm silence detection watchdog timer
+            self._arm_silence_watchdog()
 
             # ❌ Credit monitoring moved to _send_in_progress_status()
             # Credit deduction will start when connected status is sent (first media packet + connected status)
@@ -3023,6 +3035,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if self._tts_cancel.is_set():
             return
         await self.generate_and_stream_response("", 1.0, is_greeting=True)
+        self._arm_silence_watchdog()
 
     async def _schedule_inbound_greeting_after_delay(self) -> None:
         """
@@ -3060,6 +3073,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             confidence=1.0,
             is_greeting=True,
         )
+        self._arm_silence_watchdog()
 
     async def _full_shutdown(self) -> None:
         """
@@ -3095,6 +3109,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             and not self._dtmf_debounce_task.done()
         ):
             self._dtmf_debounce_task.cancel()
+
+        if (
+            hasattr(self, "_silence_watchdog_task")
+            and self._silence_watchdog_task
+            and not self._silence_watchdog_task.done()
+        ):
+            self._silence_watchdog_task.cancel()
+
+        if (
+            hasattr(self, "_max_duration_task")
+            and self._max_duration_task
+            and not self._max_duration_task.done()
+        ):
+            self._max_duration_task.cancel()
 
         # ── VoiceOrchestrator handles LLM cancel + TTS shutdown + STT close ────
         # OLD direct code (now delegated to orchestrator):

@@ -50,6 +50,8 @@ from app.schemas.call_flow import (
     CallerMemorySettingsUpdate,
     CallScreeningSettingsResponse,
     CallScreeningSettingsUpdate,
+    CallTimingSettingsResponse,
+    CallTimingSettingsUpdate,
     IVRDTMFSettingsResponse,
     IVRDTMFSettingsUpdate,
     MetadataSettingsResponse,
@@ -483,6 +485,66 @@ def get_ivr_dtmf_settings(
     db: Session = Depends(get_db),
 ) -> IVRDTMFSettingsResponse:
     return call_flow_service.get_ivr_dtmf_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/call-timing-settings",
+    response_model=CallTimingSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure Call Timing & Silence Detection settings on a call flow",
+    description=(
+        "Configures call timing, silence detection watchdog, reminder messages, and max call duration limits for this call flow.\n\n"
+        "- **Silence Timeout** (`silence_timeout`): Duration in seconds of silence before reminder message plays (3–60s).\n"
+        "- **End Call After Reminder** (`end_call_after_reminder`): Seconds of silence after final reminder before hangup (3–60s).\n"
+        "- **Reminder Retries** (`reminder_retries`): Number of reminder attempts before disconnect (1–3).\n"
+        "- **Reminder Messages** (`reminder_messages`): List of custom reminder phrases to cycle through.\n"
+        "- **Max Call Duration** (`max_call_duration`): Maximum duration in seconds before forced call termination (60–7200s).\n"
+        "- **Max Duration Message** (`max_duration_message`): Spoken by the agent before terminating due to time limit.\n\n"
+        "Admin rank (or API key) required because timing limits affect billing and call duration enforcement."
+    ),
+)
+def update_call_timing_settings(
+    flow_id: uuid.UUID,
+    body: CallTimingSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> CallTimingSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_call_timing_settings(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="call_timing_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/call-timing-settings",
+    response_model=CallTimingSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Call Timing settings for a call flow",
+    description=(
+        "Returns the currently-saved Call Timing and silence detection settings for this call flow. "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_call_timing_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> CallTimingSettingsResponse:
+    return call_flow_service.get_call_timing_settings(
         db, flow_id, _tenant_id(principal)
     )
 
