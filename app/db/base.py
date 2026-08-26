@@ -39,6 +39,7 @@ from app.models.call_flow import CallFlow
 from app.models.prompt_version import PromptVersion
 from app.models.folder import Folder
 from app.models.folder_flow import FolderFlow
+from app.models.inbound_rule import InboundRuleSet, InboundRule  # noqa: F401
 
 # Recruiting / resumes
 from app.models.resume import Resume

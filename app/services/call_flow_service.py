@@ -16,6 +16,7 @@ from app.core.logger import logger
 from app.models.agent import Agent
 from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
+from app.models.inbound_rule import InboundRule, InboundRuleSet
 from app.models.model import Model
 from app.models.prompt_version import PromptVersion
 from app.repositories.call_flow_repository import CallFlowRepository
@@ -46,6 +47,8 @@ from app.schemas.call_flow import (
     FlowDataResponse,
     FlowDataSaveResponse,
     FlowDataUpdate,
+    FlowInboundRulesResponse,
+    FlowInboundRulesUpdate,
     FlowValidationError,
     FlowValidationErrorItem,
     FlowValidationResponse,
@@ -1263,6 +1266,102 @@ class CallFlowService:
         return re.sub(
             r"\{\{\s*([a-zA-Z0-9_\.]+)\s*\}\}", _replace_token, template
         ).strip()
+
+    # ── Flow Inbound Rules & Blocklist Rule Set Assignment ──
+
+    def update_flow_inbound_rules(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: FlowInboundRulesUpdate,
+    ) -> FlowInboundRulesResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        if body.inbound_rule_set_id is not None:
+            rs = (
+                db.execute(
+                    select(InboundRuleSet).where(
+                        InboundRuleSet.id == body.inbound_rule_set_id,
+                        InboundRuleSet.tenant_id == tenant_id,
+                        InboundRuleSet.is_deleted.is_(False),
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if not rs:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Inbound rule set {body.inbound_rule_set_id} not found",
+                )
+
+        update_dict = {
+            "inbound_rule_set_id": body.inbound_rule_set_id,
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+        repo = CallFlowRepository(db)
+        repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_flow_inbound_rules_response(db, flow)
+
+    def get_flow_inbound_rules(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> FlowInboundRulesResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_flow_inbound_rules_response(db, flow)
+
+    @staticmethod
+    def _to_flow_inbound_rules_response(
+        db: Session,
+        flow: CallFlow,
+    ) -> FlowInboundRulesResponse:
+        if not flow.inbound_rule_set_id:
+            return FlowInboundRulesResponse(
+                inbound_rule_set_id=None,
+                inbound_rule_set_name=None,
+                active_rules_count=0,
+            )
+
+        rs = (
+            db.execute(
+                select(InboundRuleSet).where(
+                    InboundRuleSet.id == flow.inbound_rule_set_id,
+                    InboundRuleSet.tenant_id == flow.tenant_id,
+                    InboundRuleSet.is_deleted.is_(False),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if not rs:
+            return FlowInboundRulesResponse(
+                inbound_rule_set_id=flow.inbound_rule_set_id,
+                inbound_rule_set_name=None,
+                active_rules_count=0,
+            )
+
+        count = (
+            db.execute(
+                select(func.count(InboundRule.id)).where(
+                    InboundRule.rule_set_id == rs.id,
+                    InboundRule.tenant_id == flow.tenant_id,
+                    InboundRule.is_deleted.is_(False),
+                )
+            ).scalar()
+            or 0
+        )
+
+        return FlowInboundRulesResponse(
+            inbound_rule_set_id=rs.id,
+            inbound_rule_set_name=rs.name,
+            active_rules_count=count,
+        )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──
 

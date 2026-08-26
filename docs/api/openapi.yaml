@@ -9435,6 +9435,76 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/inbound-rules:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Assign or detach Inbound Rules & Blocklist Rule Set on a call flow
+      description: 'Attaches an existing inbound rule set (blocklist) to this call
+        flow or detaches it by setting inbound_rule_set_id to null.
+
+
+        Admin rank (or API key) required.'
+      operationId: update_flow_inbound_rules_api_v2_flows__flow_id__inbound_rules_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlowInboundRulesUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowInboundRulesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get Inbound Rules & Blocklist Rule Set info for a call flow
+      description: Returns the active inbound rule set ID, name, and active rules
+        count attached to this call flow. Read-only rank is sufficient.
+      operationId: get_flow_inbound_rules_api_v2_flows__flow_id__inbound_rules_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FlowInboundRulesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -9626,6 +9696,176 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/inbound-rules/sets:
+    get:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: List all Inbound Rule Sets for the workspace
+      description: Returns all non-deleted inbound rule sets with active rules count
+        for current workspace. Read-only rank is sufficient.
+      operationId: list_rule_sets_api_v2_inbound_rules_sets_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/InboundRuleSetListItem'
+                type: array
+                title: Response List Rule Sets Api V2 Inbound Rules Sets Get
+      security:
+      - HTTPBearer: []
+    post:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Create a new Inbound Rule Set
+      description: Creates a new rule set and optionally initializes it with number
+        rules. Admin rank or API key required.
+      operationId: create_rule_set_api_v2_inbound_rules_sets_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundRuleSetCreate'
+        required: true
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRuleSetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v2/inbound-rules/sets/{set_id}:
+    get:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Get single Inbound Rule Set with rules list
+      description: Returns rule set details and all its active number rules. Read-only
+        rank is sufficient.
+      operationId: get_rule_set_api_v2_inbound_rules_sets__set_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: set_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Set Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRuleSetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Update Inbound Rule Set
+      description: Updates name/description and batch replaces number rules if rules
+        array is provided. Admin rank or API key required.
+      operationId: update_rule_set_api_v2_inbound_rules_sets__set_id__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: set_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Set Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundRuleSetUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRuleSetResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Delete an Inbound Rule Set
+      description: Soft deletes the rule set and its rules, detaching it from any
+        call flows. Admin rank or API key required.
+      operationId: delete_rule_set_api_v2_inbound_rules_sets__set_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: set_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Set Id
+      responses:
+        '204':
+          description: Successful Response
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/inbound-rules/sets/import:
+    post:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Bulk import number rules from CSV / text
+      description: Imports number rules from multiline text or CSV data with optional
+        labels into an existing or new rule set. Admin rank or API key required.
+      operationId: import_rules_api_v2_inbound_rules_sets_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundRuleImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRuleImportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v2/flows/flow-data:
     get:
       tags:
@@ -14153,6 +14393,30 @@ components:
       - flowData
       title: FlowDataUpdate
       description: Request body for ``PUT /api/v2/flows/{flow_id}/flow-data``.
+    FlowInboundRulesResponse:
+      properties:
+        inbound_rule_set_id:
+          type: string
+          format: uuid
+          nullable: true
+        inbound_rule_set_name:
+          type: string
+          nullable: true
+        active_rules_count:
+          type: integer
+          title: Active Rules Count
+          default: 0
+      type: object
+      title: FlowInboundRulesResponse
+    FlowInboundRulesUpdate:
+      properties:
+        inbound_rule_set_id:
+          type: string
+          format: uuid
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: FlowInboundRulesUpdate
     FlowKbUpdate:
       properties:
         kb_ids:
@@ -14814,6 +15078,192 @@ components:
       type: object
       title: InboundRedirectSettingsUpdate
       description: Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.
+    InboundRuleImportRequest:
+      properties:
+        raw_text:
+          type: string
+          nullable: true
+        rule_set_id:
+          type: string
+          format: uuid
+          nullable: true
+        new_rule_set_name:
+          type: string
+          maxLength: 100
+          nullable: true
+        new_rule_set_description:
+          type: string
+          maxLength: 500
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: InboundRuleImportRequest
+    InboundRuleImportResponse:
+      properties:
+        rule_set:
+          $ref: '#/components/schemas/InboundRuleSetResponse'
+        imported_count:
+          type: integer
+          title: Imported Count
+        skipped_count:
+          type: integer
+          title: Skipped Count
+        total_rules_count:
+          type: integer
+          title: Total Rules Count
+      type: object
+      required:
+      - rule_set
+      - imported_count
+      - skipped_count
+      - total_rules_count
+      title: InboundRuleImportResponse
+    InboundRuleItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          nullable: true
+        phone_number_pattern:
+          type: string
+          maxLength: 50
+          minLength: 1
+          title: Phone Number Pattern
+          description: Raw phone number or pattern, e.g. '+1 (555) 987-6543'
+        normalized_digits:
+          type: string
+          nullable: true
+        label:
+          type: string
+          maxLength: 100
+          nullable: true
+        action:
+          type: string
+          title: Action
+          description: Rule action, default is 'deny'
+          default: deny
+        created_at:
+          type: string
+          format: date-time
+          nullable: true
+        updated_at:
+          type: string
+          format: date-time
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+      - phone_number_pattern
+      title: InboundRuleItem
+    InboundRuleSetCreate:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Name
+          description: Name of the rule set, e.g. 'Global Spammers'
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        rules:
+          items:
+            $ref: '#/components/schemas/InboundRuleItem'
+          type: array
+          title: Rules
+          description: Initial list of number rules to add
+      additionalProperties: false
+      type: object
+      required:
+      - name
+      title: InboundRuleSetCreate
+    InboundRuleSetListItem:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        rules_count:
+          type: integer
+          title: Rules Count
+          default: 0
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - name
+      - created_at
+      - updated_at
+      title: InboundRuleSetListItem
+    InboundRuleSetResponse:
+      properties:
+        id:
+          type: string
+          format: uuid
+          title: Id
+        name:
+          type: string
+          title: Name
+        description:
+          type: string
+          nullable: true
+        rules_count:
+          type: integer
+          title: Rules Count
+          default: 0
+        rules:
+          items:
+            $ref: '#/components/schemas/InboundRuleItem'
+          type: array
+          title: Rules
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - name
+      - created_at
+      - updated_at
+      title: InboundRuleSetResponse
+    InboundRuleSetUpdate:
+      properties:
+        name:
+          type: string
+          maxLength: 100
+          minLength: 1
+          nullable: true
+        description:
+          type: string
+          maxLength: 500
+          nullable: true
+        rules:
+          items:
+            $ref: '#/components/schemas/InboundRuleItem'
+          type: array
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: InboundRuleSetUpdate
     IntegrationItem:
       properties:
         name:
