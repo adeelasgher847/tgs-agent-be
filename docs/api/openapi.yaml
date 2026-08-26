@@ -6873,14 +6873,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/recordings/public/{call_id}:
+  /api/v1/recordings/{call_id}/public:
     get:
       tags:
       - Call Recordings
       summary: Get Public Recording
-      description: 'Return a signed S3 URL for a call recording without authentication,
-        provided that the call flow has public_recording_enabled=True.'
-      operationId: get_public_recording_api_v1_recordings_public__call_id__get
+      description: "Return a signed S3 URL for a call recording without authentication,\n\
+        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
+        \  - call_session not found\n  - recording not enabled for this call\n  -\
+        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
+        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
+        \ protected (cannot be public)"
+      operationId: get_public_recording_api_v1_recordings__call_id__public_get
       parameters:
       - name: call_id
         in: path
@@ -6902,14 +6906,18 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v1/recordings/{call_id}/public:
+  /api/v1/recordings/public/{call_id}:
     get:
       tags:
       - Call Recordings
-      summary: Get Public Recording (Alias)
-      description: 'Return a signed S3 URL for a call recording without authentication,
-        provided that the call flow has public_recording_enabled=True.'
-      operationId: get_public_recording_api_v1_recordings__call_id__public_get
+      summary: Get Public Recording
+      description: "Return a signed S3 URL for a call recording without authentication,\n\
+        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
+        \  - call_session not found\n  - recording not enabled for this call\n  -\
+        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
+        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
+        \ protected (cannot be public)"
+      operationId: get_public_recording_api_v1_recordings_public__call_id__get
       parameters:
       - name: call_id
         in: path
