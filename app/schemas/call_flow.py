@@ -670,6 +670,68 @@ class RecordingSettingsResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class ComplianceDetectionSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/compliance-detection-settings``."""
+
+    compliance_monitoring_enabled: bool = False
+    anti_bot_detection_enabled: bool = False
+    terminate_on_fake_voice: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ComplianceDetectionSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/compliance-detection-settings``."""
+
+    compliance_monitoring_enabled: bool = False
+    anti_bot_detection_enabled: bool = False
+    terminate_on_fake_voice: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DataRetentionSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/data-retention-settings``."""
+
+    retention_policy_enabled: bool = False
+    retention_transcript_enabled: bool = False
+    retention_transcript_days: int = Field(default=30, ge=1, le=365)
+    retention_summary_enabled: bool = False
+    retention_summary_days: int = Field(default=30, ge=1, le=365)
+    retention_recording_enabled: bool = False
+    retention_recording_days: int = Field(default=30, ge=1, le=365)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DataRetentionSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/data-retention-settings``."""
+
+    retention_policy_enabled: bool = False
+    retention_transcript_enabled: bool = False
+    retention_transcript_days: int = 30
+    retention_summary_enabled: bool = False
+    retention_summary_days: int = 30
+    retention_recording_enabled: bool = False
+    retention_recording_days: int = 30
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DataRetentionPurgeResponse(BaseModel):
+    """Response body for ``POST /api/v2/flows/{flow_id}/data-retention/purge``."""
+
+    flow_id: uuid.UUID | None = None
+    tenant_id: uuid.UUID
+    purged_transcripts_count: int = 0
+    purged_summaries_count: int = 0
+    purged_recordings_count: int = 0
+    purged_sessions_count: int = 0
+    message: str = "Data retention purge completed successfully"
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

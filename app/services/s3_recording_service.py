@@ -138,6 +138,24 @@ def set_bucket_default_kms_key(kms_key_name: str) -> None:
     )
 
 
+def delete_recording_object(key: str) -> bool:
+    """
+    Delete a single call recording object from S3.
+
+    Returns True if deleted or already absent, False on error.
+    """
+    if not key or not isinstance(key, str) or not key.strip():
+        return True
+    client = get_s3_client()
+    try:
+        client.delete_object(Bucket=settings.S3_RECORDINGS_BUCKET, Key=key)
+        logger.info("S3 recording deleted: %s", key)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to delete S3 recording object %s: %s", key, exc)
+        return False
+
+
 def delete_workspace_recordings(workspace_id: uuid.UUID) -> int:
     """
     Delete every recording object under recordings/{workspace_id}/ in S3.

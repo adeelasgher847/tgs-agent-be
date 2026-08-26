@@ -27,13 +27,18 @@ PUT  /api/v2/flows/{flow_id}/inbound-rules
 GET  /api/v2/flows/{flow_id}/inbound-rules
 PUT  /api/v2/flows/{flow_id}/recording-settings
 GET  /api/v2/flows/{flow_id}/recording-settings
+PUT  /api/v2/flows/{flow_id}/compliance-detection-settings
+GET  /api/v2/flows/{flow_id}/compliance-detection-settings
+PUT  /api/v2/flows/{flow_id}/data-retention-settings
+GET  /api/v2/flows/{flow_id}/data-retention-settings
+POST /api/v2/flows/{flow_id}/data-retention/purge
 PUT  /api/v2/flows/{flow_id}/system-webhooks-settings
 GET  /api/v2/flows/{flow_id}/system-webhooks-settings
 POST /api/v2/flows/{flow_id}/system-webhooks/test
 GET  /api/v2/flows/{flow_id}/system-webhooks/deliveries
 
 Visual Flow Editor endpoints (flow-data, flow-data/validate) live in
-app.api.v2.routers.flow_data — a separate router under the same prefix.
+`app/api/v2/routers/flow_editor.py`.
 
 Note: the caller memory settings path is deliberately NOT `/{flow_id}/settings` —
 that path is already registered by app.api.v2.routers.hipaa for the HIPAA
@@ -68,6 +73,11 @@ from app.schemas.call_flow import (
     CallScreeningSettingsUpdate,
     CallTimingSettingsResponse,
     CallTimingSettingsUpdate,
+    ComplianceDetectionSettingsResponse,
+    ComplianceDetectionSettingsUpdate,
+    DataRetentionPurgeResponse,
+    DataRetentionSettingsResponse,
+    DataRetentionSettingsUpdate,
     FlowInboundRulesResponse,
     FlowInboundRulesUpdate,
     InboundRedirectSettingsResponse,
@@ -733,6 +743,149 @@ def get_recording_settings(
     return call_flow_service.get_recording_settings(
         db, flow_id, _tenant_id(principal)
     )
+
+
+# ── Compliance & Detection Settings ──
+
+
+@router.put(
+    "/{flow_id}/compliance-detection-settings",
+    response_model=ComplianceDetectionSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update Compliance & Detection Settings for a call flow",
+    description=(
+        "Updates policy compliance monitoring, anti-bot detection, and synthetic voice "
+        "termination toggles for this call flow. Full-replace semantics."
+    ),
+)
+def update_compliance_detection_settings(
+    flow_id: uuid.UUID,
+    body: ComplianceDetectionSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> ComplianceDetectionSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_compliance_detection_settings(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="compliance_detection_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/compliance-detection-settings",
+    response_model=ComplianceDetectionSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Compliance & Detection Settings for a call flow",
+    description="Returns the saved Compliance & Detection Settings for this call flow. Read-only rank is sufficient.",
+)
+def get_compliance_detection_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> ComplianceDetectionSettingsResponse:
+    return call_flow_service.get_compliance_detection_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+# ── Data Retention Policy Settings ──
+
+
+@router.put(
+    "/{flow_id}/data-retention-settings",
+    response_model=DataRetentionSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Update Data Retention Settings for a call flow",
+    description=(
+        "Updates data retention policies (transcripts, summaries, recordings retention periods) "
+        "for this call flow. Full-replace semantics."
+    ),
+)
+def update_data_retention_settings(
+    flow_id: uuid.UUID,
+    body: DataRetentionSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> DataRetentionSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_data_retention_settings(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="data_retention_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/data-retention-settings",
+    response_model=DataRetentionSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Data Retention Settings for a call flow",
+    description="Returns the saved Data Retention Settings for this call flow. Read-only rank is sufficient.",
+)
+def get_data_retention_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> DataRetentionSettingsResponse:
+    return call_flow_service.get_data_retention_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.post(
+    "/{flow_id}/data-retention/purge",
+    response_model=DataRetentionPurgeResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Trigger immediate data retention purge for a call flow",
+    description=(
+        "Immediately evaluates expired transcripts, summaries, and recordings for calls belonging "
+        "to this flow and permanently purges them while strictly preserving call session metadata."
+    ),
+)
+def purge_flow_data_retention(
+    flow_id: uuid.UUID,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> DataRetentionPurgeResponse:
+    from app.services.data_retention_service import purge_expired_call_data
+
+    tenant_id = _tenant_id(principal)
+    result = purge_expired_call_data(
+        db, tenant_id=tenant_id, flow_id=flow_id
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="data_retention.purged",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
 
 
 @router.put(

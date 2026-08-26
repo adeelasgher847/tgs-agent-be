@@ -9640,6 +9640,172 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/compliance-detection-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Update Compliance & Detection Settings for a call flow
+      description: Updates policy compliance monitoring, anti-bot detection, and synthetic
+        voice termination toggles for this call flow. Full-replace semantics.
+      operationId: update_compliance_detection_settings_api_v2_flows__flow_id__compliance_detection_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ComplianceDetectionSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceDetectionSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get Compliance & Detection Settings for a call flow
+      description: Returns the saved Compliance & Detection Settings for this call
+        flow. Read-only rank is sufficient.
+      operationId: get_compliance_detection_settings_api_v2_flows__flow_id__compliance_detection_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComplianceDetectionSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/data-retention-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Update Data Retention Settings for a call flow
+      description: Updates data retention policies (transcripts, summaries, recordings
+        retention periods) for this call flow. Full-replace semantics.
+      operationId: update_data_retention_settings_api_v2_flows__flow_id__data_retention_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DataRetentionSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataRetentionSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get Data Retention Settings for a call flow
+      description: Returns the saved Data Retention Settings for this call flow. Read-only
+        rank is sufficient.
+      operationId: get_data_retention_settings_api_v2_flows__flow_id__data_retention_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataRetentionSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/data-retention/purge:
+    post:
+      tags:
+      - A/B Prompt Testing
+      summary: Trigger immediate data retention purge for a call flow
+      description: Immediately evaluates expired transcripts, summaries, and recordings
+        for calls belonging to this flow and permanently purges them while strictly
+        preserving call session metadata.
+      operationId: purge_flow_data_retention_api_v2_flows__flow_id__data_retention_purge_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DataRetentionPurgeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -14132,6 +14298,41 @@ components:
       required:
       - phone_number_id
       title: CheckReputationRequest
+    ComplianceDetectionSettingsResponse:
+      properties:
+        compliance_monitoring_enabled:
+          type: boolean
+          title: Compliance Monitoring Enabled
+          default: false
+        anti_bot_detection_enabled:
+          type: boolean
+          title: Anti Bot Detection Enabled
+          default: false
+        terminate_on_fake_voice:
+          type: boolean
+          title: Terminate On Fake Voice
+          default: false
+      type: object
+      title: ComplianceDetectionSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/compliance-detection-settings``.
+    ComplianceDetectionSettingsUpdate:
+      properties:
+        compliance_monitoring_enabled:
+          type: boolean
+          title: Compliance Monitoring Enabled
+          default: false
+        anti_bot_detection_enabled:
+          type: boolean
+          title: Anti Bot Detection Enabled
+          default: false
+        terminate_on_fake_voice:
+          type: boolean
+          title: Terminate On Fake Voice
+          default: false
+      additionalProperties: false
+      type: object
+      title: ComplianceDetectionSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/compliance-detection-settings``.
     CreatePaymentSessionRequest:
       properties:
         call_id:
@@ -14367,6 +14568,114 @@ components:
       required:
       - job_id
       title: DataExportTriggerOut
+    DataRetentionPurgeResponse:
+      properties:
+        flow_id:
+          type: string
+          format: uuid
+          nullable: true
+        tenant_id:
+          type: string
+          format: uuid
+          title: Tenant Id
+        purged_transcripts_count:
+          type: integer
+          title: Purged Transcripts Count
+          default: 0
+        purged_summaries_count:
+          type: integer
+          title: Purged Summaries Count
+          default: 0
+        purged_recordings_count:
+          type: integer
+          title: Purged Recordings Count
+          default: 0
+        purged_sessions_count:
+          type: integer
+          title: Purged Sessions Count
+          default: 0
+        message:
+          type: string
+          title: Message
+          default: Data retention purge completed successfully
+      type: object
+      required:
+      - tenant_id
+      title: DataRetentionPurgeResponse
+      description: Response body for ``POST /api/v2/flows/{flow_id}/data-retention/purge``.
+    DataRetentionSettingsResponse:
+      properties:
+        retention_policy_enabled:
+          type: boolean
+          title: Retention Policy Enabled
+          default: false
+        retention_transcript_enabled:
+          type: boolean
+          title: Retention Transcript Enabled
+          default: false
+        retention_transcript_days:
+          type: integer
+          title: Retention Transcript Days
+          default: 30
+        retention_summary_enabled:
+          type: boolean
+          title: Retention Summary Enabled
+          default: false
+        retention_summary_days:
+          type: integer
+          title: Retention Summary Days
+          default: 30
+        retention_recording_enabled:
+          type: boolean
+          title: Retention Recording Enabled
+          default: false
+        retention_recording_days:
+          type: integer
+          title: Retention Recording Days
+          default: 30
+      type: object
+      title: DataRetentionSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/data-retention-settings``.
+    DataRetentionSettingsUpdate:
+      properties:
+        retention_policy_enabled:
+          type: boolean
+          title: Retention Policy Enabled
+          default: false
+        retention_transcript_enabled:
+          type: boolean
+          title: Retention Transcript Enabled
+          default: false
+        retention_transcript_days:
+          type: integer
+          maximum: 365.0
+          minimum: 1.0
+          title: Retention Transcript Days
+          default: 30
+        retention_summary_enabled:
+          type: boolean
+          title: Retention Summary Enabled
+          default: false
+        retention_summary_days:
+          type: integer
+          maximum: 365.0
+          minimum: 1.0
+          title: Retention Summary Days
+          default: 30
+        retention_recording_enabled:
+          type: boolean
+          title: Retention Recording Enabled
+          default: false
+        retention_recording_days:
+          type: integer
+          maximum: 365.0
+          minimum: 1.0
+          title: Retention Recording Days
+          default: 30
+      additionalProperties: false
+      type: object
+      title: DataRetentionSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/data-retention-settings``.
     DeleteBoardItemsResponse:
       properties:
         items_deleted:

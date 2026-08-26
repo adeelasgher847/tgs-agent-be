@@ -1243,6 +1243,13 @@ class BidirectionalStreamHandler(
                 if await self._check_and_handle_ivr_and_hold(transcript):
                     return  # Stop processing - call is ending
 
+                # 🎯 Check for Anti-Bot / Fake Voice detection - end call if terminate_on_fake_voice is true
+                if await self._check_and_handle_anti_bot(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Check for Compliance monitoring - flag policy violations
+                await self._check_and_handle_compliance_monitoring(transcript)
+
                 # 🎯 Send "in-progress" status when confident word is detected (like "hello")
                 if (
                     not self._in_progress_sent

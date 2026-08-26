@@ -389,8 +389,11 @@ class CallSessionService:
                 if status in ["completed", "failed", "busy", "no_answer"]:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
+                        start_t = call_session.start_time
+                        if start_t.tzinfo is None:
+                            start_t = start_t.replace(tzinfo=timezone.utc)
                         duration = (
-                            call_session.end_time - call_session.start_time
+                            call_session.end_time - start_t
                         ).total_seconds()
                         call_session.duration = int(duration)
 
