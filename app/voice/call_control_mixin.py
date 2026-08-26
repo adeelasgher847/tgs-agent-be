@@ -405,13 +405,27 @@ class CallControlMixin:
 
         # Check call_flow voicemail detection settings if attached
         flow = getattr(self, "call_flow", None)
-        if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
+        if (
+            flow is None
+            and self.call_session
+            and self.call_session.call_flow_id
+            and getattr(self, "db", None)
+        ):
             try:
+                from sqlalchemy.exc import SQLAlchemyError
                 from app.models.call_flow import CallFlow
 
                 flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
-                flow = None
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "Failed to fetch CallFlow for voicemail settings (call_flow_id=%s): %s",
+                    self.call_session.call_flow_id,
+                    exc,
+                )
+                return False
+
+            if flow is None:
+                return False
 
         # If flow has voicemail detection disabled -> bypass keyword check
         if flow is not None and not getattr(flow, "voicemail_detection_enabled", True):
@@ -545,10 +559,16 @@ class CallControlMixin:
                 flow = getattr(self, "call_flow", None)
                 if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
                     try:
+                        from sqlalchemy.exc import SQLAlchemyError
                         from app.models.call_flow import CallFlow
 
                         flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-                    except Exception:
+                    except SQLAlchemyError as exc:
+                        logger.warning(
+                            "Failed to fetch CallFlow for call screening (call_flow_id=%s): %s",
+                            self.call_session.call_flow_id,
+                            exc,
+                        )
                         flow = None
 
                 action = (
@@ -639,10 +659,16 @@ class CallControlMixin:
             and getattr(self, "db", None)
         ):
             try:
+                from sqlalchemy.exc import SQLAlchemyError
                 from app.models.call_flow import CallFlow
 
                 flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
+            except SQLAlchemyError as exc:
+                logger.warning(
+                    "Failed to fetch CallFlow for IVR settings (call_flow_id=%s): %s",
+                    self.call_session.call_flow_id,
+                    exc,
+                )
                 flow = None
 
         if not flow or not getattr(flow, "ivr_enabled", False):

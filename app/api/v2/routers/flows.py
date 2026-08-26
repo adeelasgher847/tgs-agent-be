@@ -287,7 +287,7 @@ def get_post_call_actions_settings(
         "Requires admin rank."
     ),
 )
-def update_voicemail_settings(
+async def update_voicemail_settings(
     flow_id: uuid.UUID,
     body: VoicemailSettingsUpdate,
     request: Request,
@@ -331,7 +331,7 @@ def update_voicemail_settings(
         "Read-only rank is sufficient since no secret keys are exposed."
     ),
 )
-def get_voicemail_settings(
+async def get_voicemail_settings(
     flow_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
