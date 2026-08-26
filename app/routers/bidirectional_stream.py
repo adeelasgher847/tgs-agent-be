@@ -1063,13 +1063,15 @@ class BidirectionalStreamHandler(
                 ),
                 timeout=12.0,
             )
+            self._arm_silence_watchdog()
         except asyncio.TimeoutError:
             logger.error(
                 "[LLM] generate_and_stream_response timed out (12s) — aborting turn"
             )
-
-        finally:
             self._arm_silence_watchdog()
+        except asyncio.CancelledError:
+            # Turn was interrupted by caller barge-in; do NOT re-arm silence watchdog while caller speaks
+            pass
 
     def _should_accept_final_transcript(
         self, transcript: str, confidence: float

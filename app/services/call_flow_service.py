@@ -1036,7 +1036,6 @@ class CallFlowService:
         update_dict = body.model_dump(exclude_unset=True)
         if "reminder_messages" in update_dict and update_dict["reminder_messages"] is not None:
             update_dict["reminder_messages"] = list(update_dict["reminder_messages"])
-        update_dict["updated_at"] = datetime.now(timezone.utc)
 
         repo = CallFlowRepository(db)
         flow = repo.update(flow, update_dict)
@@ -1096,7 +1095,6 @@ class CallFlowService:
                 c.model_dump() if hasattr(c, "model_dump") else dict(c)
                 for c in update_dict["redirect_conditions"]
             ]
-        update_dict["updated_at"] = datetime.now(timezone.utc)
 
         repo = CallFlowRepository(db)
         repo.update(flow, update_dict)
@@ -1304,7 +1302,6 @@ class CallFlowService:
 
         update_dict = {
             "inbound_rule_set_id": body.inbound_rule_set_id,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)
@@ -1385,7 +1382,6 @@ class CallFlowService:
             "public_recording_enabled": body.public_recording_enabled,
             "faster_inbound_pickup": body.faster_inbound_pickup,
             "stop_recording_on_transfer": body.stop_recording_on_transfer,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)
@@ -1443,7 +1439,6 @@ class CallFlowService:
             "compliance_monitoring_enabled": body.compliance_monitoring_enabled,
             "anti_bot_detection_enabled": body.anti_bot_detection_enabled,
             "terminate_on_fake_voice": body.terminate_on_fake_voice,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)
@@ -1502,7 +1497,6 @@ class CallFlowService:
             "retention_summary_days": body.retention_summary_days,
             "retention_recording_enabled": body.retention_recording_enabled,
             "retention_recording_days": body.retention_recording_days,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)

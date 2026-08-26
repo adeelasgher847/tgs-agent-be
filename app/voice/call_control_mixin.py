@@ -1280,6 +1280,7 @@ class CallControlMixin:
                         break
                     # If TTS is currently playing, skip reminder this tick
                     if getattr(self, "_is_tts_playing", False):
+                        await asyncio.sleep(1)
                         continue
 
                     retry_idx = getattr(self, "_silence_retry_count", 0)
@@ -1311,6 +1312,7 @@ class CallControlMixin:
                     if getattr(self, "_call_ended", False):
                         break
                     if getattr(self, "_is_tts_playing", False):
+                        await asyncio.sleep(1)
                         continue
 
                     logger.info(
@@ -1381,6 +1383,8 @@ class CallControlMixin:
             logger.error(
                 f"Unexpected error in silence watchdog: {e}", exc_info=True
             )
+        finally:
+            self._silence_retry_count = 0
 
     def _arm_max_duration_timer(self) -> None:
         """Arm hard timer for maximum call duration."""
@@ -1397,7 +1401,12 @@ class CallControlMixin:
                 from app.models.call_flow import CallFlow
 
                 flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
+            except Exception as e:
+                logger.warning(
+                    "Max duration timer flow fetch failed (call_flow_id=%s): %s",
+                    getattr(self.call_session, "call_flow_id", None),
+                    e,
+                )
                 flow = None
 
         if not flow:

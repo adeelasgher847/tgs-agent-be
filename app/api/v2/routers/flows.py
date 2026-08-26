@@ -537,7 +537,7 @@ async def get_ivr_dtmf_settings(
         "Admin rank (or API key) required because timing limits affect billing and call duration enforcement."
     ),
 )
-def update_call_timing_settings(
+async def update_call_timing_settings(
     flow_id: uuid.UUID,
     body: CallTimingSettingsUpdate,
     request: Request,
@@ -571,7 +571,7 @@ def update_call_timing_settings(
         "Read-only rank is sufficient since no secret keys are exposed."
     ),
 )
-def get_call_timing_settings(
+async def get_call_timing_settings(
     flow_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
