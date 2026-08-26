@@ -590,12 +590,13 @@ async def get_call_timing_settings(
         "Configures inbound call redirection, forwarding phone number, conditional routing rules, and departure announcements.\n\n"
         "- **Master Toggle** (`redirect_inbound_calls_enabled`): Enables or disables inbound call forwarding.\n"
         "- **Forward Phone Number** (`redirect_forward_phone_number`): Destination phone number (e.g. `+14155552671`).\n"
-        "- **Conditional Rules** (`redirect_conditions`): List of `{variable, operator, value}` rules evaluated with AND logic against call context.\n"
+        "- **Conditional Rules** (`redirect_conditions`): List of `{variable, operator, value}` rules evaluated with AND logic against call context. "
+        "*Note: When redirection is enabled with an empty conditions list, all calls are forwarded unconditionally.*\n"
         "- **Spoken Announcement** (`redirect_speak_message_enabled`, `redirect_message`): Speaks rendered departure message via TwiML `<Say>` before forwarding.\n\n"
         "Admin rank (or API key) required."
     ),
 )
-def update_inbound_redirect_settings(
+async def update_inbound_redirect_settings(
     flow_id: uuid.UUID,
     body: InboundRedirectSettingsUpdate,
     request: Request,
@@ -629,7 +630,7 @@ def update_inbound_redirect_settings(
         "Read-only rank is sufficient."
     ),
 )
-def get_inbound_redirect_settings(
+async def get_inbound_redirect_settings(
     flow_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),

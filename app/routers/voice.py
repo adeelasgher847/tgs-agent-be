@@ -380,9 +380,16 @@ async def handle_incoming_call(
                     matched_rule.label if matched_rule else None,
                 )
                 try:
+                    # Attribution note: Inbound calls have no authenticated caller user.
+                    # Associate with the agent creator user_id if present, or None for API-key/system-created agents.
+                    agent_owner_user_id = (
+                        getattr(resolved_agent, "created_by", None)
+                        if resolved_agent
+                        else None
+                    )
                     blocked_session = CallSession(
                         tenant_id=phone_number.tenant_id,
-                        user_id=resolved_agent.created_by,
+                        user_id=agent_owner_user_id,
                         agent_id=resolved_agent.id,
                         call_flow_id=target_flow.id,
                         twilio_call_sid=call_sid,
@@ -446,9 +453,16 @@ async def handle_incoming_call(
                     target_flow.redirect_forward_phone_number,
                 )
                 try:
+                    # Attribution note: Inbound calls have no authenticated caller user.
+                    # Associate with the agent creator user_id if present, or None for API-key/system-created agents.
+                    agent_owner_user_id = (
+                        getattr(resolved_agent, "created_by", None)
+                        if resolved_agent
+                        else None
+                    )
                     redirect_session = CallSession(
                         tenant_id=phone_number.tenant_id,
-                        user_id=resolved_agent.created_by,
+                        user_id=agent_owner_user_id,
                         agent_id=resolved_agent.id,
                         call_flow_id=target_flow.id,
                         twilio_call_sid=call_sid,

@@ -1097,7 +1097,7 @@ class CallFlowService:
             ]
 
         repo = CallFlowRepository(db)
-        repo.update(flow, update_dict)
+        flow = repo.update(flow, update_dict)
         db.commit()
         db.refresh(flow)
         return self._to_inbound_redirect_response(flow)

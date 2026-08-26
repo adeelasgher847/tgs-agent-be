@@ -580,7 +580,14 @@ class RedirectCondition(BaseModel):
 
 
 class InboundRedirectSettingsUpdate(BaseModel):
-    """Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``."""
+    """Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.
+
+    **Behavior note on redirect conditions**:
+    - When ``redirect_inbound_calls_enabled`` is True and ``redirect_conditions`` contains rules,
+      all rules are evaluated with AND logic; only matching calls will be forwarded.
+    - When ``redirect_inbound_calls_enabled`` is True and ``redirect_conditions`` is empty (or omitted),
+      **100% of inbound calls will be forwarded unconditionally** to ``redirect_forward_phone_number``.
+    """
 
     redirect_inbound_calls_enabled: bool = False
     redirect_forward_phone_number: str | None = Field(
@@ -590,7 +597,7 @@ class InboundRedirectSettingsUpdate(BaseModel):
     )
     redirect_conditions: list[RedirectCondition] = Field(
         default_factory=list,
-        description="Conditional rules evaluated with AND logic against call context",
+        description="Conditional rules evaluated with AND logic against call context. If empty and redirection is enabled, all calls are forwarded unconditionally.",
     )
     redirect_speak_message_enabled: bool = False
     redirect_message: str | None = Field(
