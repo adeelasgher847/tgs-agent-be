@@ -10,6 +10,7 @@ Coverage:
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -124,3 +125,91 @@ class TestCallScreeningRuntime:
 
         assert result is False
         assert handler._call_ended is False
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "this is not a screening service",
+            "we are not using a screening service",
+            "this isn't a screening service from google",
+            "no screening service is enabled",
+        ],
+    )
+    @pytest.mark.anyio
+    async def test_negated_screener_phrase_does_not_trigger_hangup(self, phrase):
+        flow = MagicMock(spec=CallFlow)
+        flow.call_screening_action = "hang_up"
+
+        session = MagicMock(spec=CallSession)
+        session.id = uuid.uuid4()
+        session.call_flow_id = uuid.uuid4()
+
+        handler = DummyHostHandler(call_session=session, call_flow=flow)
+        result = await handler._check_and_handle_call_screener(phrase)
+
+        assert result is False
+        assert handler._call_ended is False
+
+    @pytest.mark.anyio
+    async def test_db_error_on_lazy_callflow_fetch_returns_false(self):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        session = MagicMock(spec=CallSession)
+        session.id = uuid.uuid4()
+        session.call_flow_id = uuid.uuid4()
+
+        mock_db = MagicMock()
+        mock_db.get.side_effect = SQLAlchemyError("Database connection dropped")
+
+        handler = DummyHostHandler(db=mock_db, call_session=session, call_flow=None)
+        result = await handler._check_and_handle_call_screener(
+            "This is a screening service from google. Please state your name."
+        )
+
+        assert result is False
+        assert handler._call_ended is False
+
+    @pytest.mark.anyio
+    async def test_livekit_browser_call_handler_call_screening_detection(self):
+        from app.voice.livekit_browser_call_handler import LiveKitBrowserCallHandler
+
+        flow = MagicMock(spec=CallFlow)
+        flow.call_screening_action = "hang_up"
+
+        session = MagicMock(spec=CallSession)
+        session.id = uuid.uuid4()
+        session.call_flow_id = uuid.uuid4()
+        session.user_id = uuid.uuid4()
+        session.agent_id = uuid.uuid4()
+        session.tenant_id = uuid.uuid4()
+
+        agent = MagicMock()
+        agent.id = session.agent_id
+
+        mock_db = MagicMock()
+
+        handler = LiveKitBrowserCallHandler(
+            db=mock_db, call_session=session, agent=agent, call_flow=flow
+        )
+        handler._add_to_transcript = AsyncMock()
+        handler._update_booking_memory_from_user_turn = MagicMock()
+        handler._complete_llm_turn_after_stt_final = AsyncMock()
+
+        with (
+            patch("app.voice.call_control_mixin.call_session_service.update_call_session_status") as mock_update,
+            patch("app.voice.call_control_mixin.broadcast_call_status_update") as mock_broadcast,
+        ):
+            await handler._process_transcript(
+                "This is a screening service from google. Please state your name and why you're calling.",
+                confidence=0.95,
+            )
+
+        await asyncio.sleep(0.01)
+        assert handler._call_ended is True
+        assert handler._stop_event.is_set() is True
+        mock_update.assert_called_once_with(
+            mock_db, session.id, "completed", ended_reason="Call screener detected"
+        )
+        mock_broadcast.assert_called_once()
+        handler._add_to_transcript.assert_not_called()
+        handler._complete_llm_turn_after_stt_final.assert_not_called()

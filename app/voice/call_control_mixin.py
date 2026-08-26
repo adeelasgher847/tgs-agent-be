@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
+import re
 from typing import TYPE_CHECKING
 import uuid
 
@@ -555,9 +556,25 @@ class CallControlMixin:
 
         transcript_lower = transcript.lower().strip()
         for keyword in screener_keywords:
-            if keyword in transcript_lower:
+            pattern = r"\b" + re.escape(keyword) + r"\b"
+            match = re.search(pattern, transcript_lower)
+            if match:
+                # Check for negation immediately preceding the match (e.g. "not a screening service")
+                start_pos = match.start()
+                preceding_text = transcript_lower[max(0, start_pos - 30):start_pos].strip()
+                if re.search(
+                    r"\b(?:not|no|never|isn't|aren't|wasn't|don't|doesn't)(?:\s+(?:a|an|using\s+a|using))?\s*$",
+                    preceding_text,
+                ):
+                    continue
+
                 flow = getattr(self, "call_flow", None)
-                if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
+                if (
+                    flow is None
+                    and getattr(self, "call_session", None)
+                    and getattr(self.call_session, "call_flow_id", None)
+                    and getattr(self, "db", None)
+                ):
                     try:
                         from sqlalchemy.exc import SQLAlchemyError
                         from app.models.call_flow import CallFlow
@@ -581,7 +598,7 @@ class CallControlMixin:
                     try:
                         self._call_ended = True
 
-                        if self.call_session:
+                        if getattr(self, "call_session", None):
                             updated = call_session_service.update_call_session_status(
                                 self.db,
                                 self.call_session.id,
@@ -591,7 +608,7 @@ class CallControlMixin:
                             if updated:
                                 self.call_session = updated
 
-                        if self.call_sid and self.call_session:
+                        if getattr(self, "call_sid", None) and self.call_session:
                             try:
                                 account_sid, auth_token = get_twilio_credentials_for_call(
                                     self.db, self.call_session
@@ -608,14 +625,14 @@ class CallControlMixin:
                                     end_err,
                                 )
 
-                        if self.call_session:
+                        if getattr(self, "call_session", None):
                             try:
                                 await broadcast_call_status_update(
                                     call_session_id=str(self.call_session.id),
                                     status="completed",
                                     metadata={
-                                        "call_sid": self.call_sid,
-                                        "stream_sid": self.stream_sid,
+                                        "call_sid": getattr(self, "call_sid", None),
+                                        "stream_sid": getattr(self, "stream_sid", None),
                                         "timestamp": datetime.now(timezone.utc).isoformat(),
                                         "message": "call_ended",
                                         "event": "call_screener_detected",

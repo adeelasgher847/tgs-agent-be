@@ -355,7 +355,7 @@ async def get_voicemail_settings(
         "Requires admin rank."
     ),
 )
-def update_call_screening_settings(
+async def update_call_screening_settings(
     flow_id: uuid.UUID,
     body: CallScreeningSettingsUpdate,
     request: Request,
@@ -393,7 +393,7 @@ def update_call_screening_settings(
         "Read-only rank is sufficient since no secret keys are exposed."
     ),
 )
-def get_call_screening_settings(
+async def get_call_screening_settings(
     flow_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
