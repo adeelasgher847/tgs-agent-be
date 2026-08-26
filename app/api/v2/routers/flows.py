@@ -11,6 +11,18 @@ PUT  /api/v2/flows/{flow_id}/ab-test/winner
 PUT  /api/v2/flows/{flow_id}/caller-memory-settings
 PUT  /api/v2/flows/{flow_id}/post-call-actions-settings
 GET  /api/v2/flows/{flow_id}/post-call-actions-settings
+PUT  /api/v2/flows/{flow_id}/voicemail-settings
+GET  /api/v2/flows/{flow_id}/voicemail-settings
+PUT  /api/v2/flows/{flow_id}/call-screening-settings
+GET  /api/v2/flows/{flow_id}/call-screening-settings
+PUT  /api/v2/flows/{flow_id}/metadata-settings
+GET  /api/v2/flows/{flow_id}/metadata-settings
+PUT  /api/v2/flows/{flow_id}/ivr-dtmf-settings
+GET  /api/v2/flows/{flow_id}/ivr-dtmf-settings
+PUT  /api/v2/flows/{flow_id}/call-timing-settings
+GET  /api/v2/flows/{flow_id}/call-timing-settings
+PUT  /api/v2/flows/{flow_id}/inbound-redirect-settings
+GET  /api/v2/flows/{flow_id}/inbound-redirect-settings
 PUT  /api/v2/flows/{flow_id}/system-webhooks-settings
 GET  /api/v2/flows/{flow_id}/system-webhooks-settings
 POST /api/v2/flows/{flow_id}/system-webhooks/test
@@ -52,6 +64,8 @@ from app.schemas.call_flow import (
     CallScreeningSettingsUpdate,
     CallTimingSettingsResponse,
     CallTimingSettingsUpdate,
+    InboundRedirectSettingsResponse,
+    InboundRedirectSettingsUpdate,
     IVRDTMFSettingsResponse,
     IVRDTMFSettingsUpdate,
     MetadataSettingsResponse,
@@ -545,6 +559,64 @@ def get_call_timing_settings(
     db: Session = Depends(get_db),
 ) -> CallTimingSettingsResponse:
     return call_flow_service.get_call_timing_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/inbound-redirect-settings",
+    response_model=InboundRedirectSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure Inbound Call Redirection & Forwarding settings on a call flow",
+    description=(
+        "Configures inbound call redirection, forwarding phone number, conditional routing rules, and departure announcements.\n\n"
+        "- **Master Toggle** (`redirect_inbound_calls_enabled`): Enables or disables inbound call forwarding.\n"
+        "- **Forward Phone Number** (`redirect_forward_phone_number`): Destination phone number (e.g. `+14155552671`).\n"
+        "- **Conditional Rules** (`redirect_conditions`): List of `{variable, operator, value}` rules evaluated with AND logic against call context.\n"
+        "- **Spoken Announcement** (`redirect_speak_message_enabled`, `redirect_message`): Speaks rendered departure message via TwiML `<Say>` before forwarding.\n\n"
+        "Admin rank (or API key) required."
+    ),
+)
+def update_inbound_redirect_settings(
+    flow_id: uuid.UUID,
+    body: InboundRedirectSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> InboundRedirectSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_inbound_redirect_settings(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="inbound_redirect_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/inbound-redirect-settings",
+    response_model=InboundRedirectSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Inbound Call Redirection settings for a call flow",
+    description=(
+        "Returns the currently-saved Inbound Call Redirection and conditional forwarding settings for this call flow. "
+        "Read-only rank is sufficient."
+    ),
+)
+def get_inbound_redirect_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> InboundRedirectSettingsResponse:
+    return call_flow_service.get_inbound_redirect_settings(
         db, flow_id, _tenant_id(principal)
     )
 

@@ -271,6 +271,19 @@ class CallFlow(Base):
         server_default="I appreciate the conversation, but we've reached our time limit for this call.",
     )
 
+    # ── Inbound Call Redirection & Forwarding Settings ──
+    redirect_inbound_calls_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    redirect_forward_phone_number = Column(String(50), nullable=True)
+    redirect_conditions = Column(
+        JSONB, default=list, nullable=False, server_default=sa_text("'[]'")
+    )
+    redirect_speak_message_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    redirect_message = Column(Text, nullable=True)
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

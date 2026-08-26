@@ -9350,6 +9350,91 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/inbound-redirect-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure Inbound Call Redirection & Forwarding settings on a call
+        flow
+      description: 'Configures inbound call redirection, forwarding phone number,
+        conditional routing rules, and departure announcements.
+
+
+        - **Master Toggle** (`redirect_inbound_calls_enabled`): Enables or disables
+        inbound call forwarding.
+
+        - **Forward Phone Number** (`redirect_forward_phone_number`): Destination
+        phone number (e.g. `+14155552671`).
+
+        - **Conditional Rules** (`redirect_conditions`): List of `{variable, operator,
+        value}` rules evaluated with AND logic against call context.
+
+        - **Spoken Announcement** (`redirect_speak_message_enabled`, `redirect_message`):
+        Speaks rendered departure message via TwiML `<Say>` before forwarding.
+
+
+        Admin rank (or API key) required.'
+      operationId: update_inbound_redirect_settings_api_v2_flows__flow_id__inbound_redirect_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundRedirectSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRedirectSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved Inbound Call Redirection settings for a call
+        flow
+      description: Returns the currently-saved Inbound Call Redirection and conditional
+        forwarding settings for this call flow. Read-only rank is sufficient.
+      operationId: get_inbound_redirect_settings_api_v2_flows__flow_id__inbound_redirect_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRedirectSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -14677,6 +14762,58 @@ components:
       - board_id
       title: InboundBoardUrlOut
       description: Public board link — no secrets.
+    InboundRedirectSettingsResponse:
+      properties:
+        redirect_inbound_calls_enabled:
+          type: boolean
+          title: Redirect Inbound Calls Enabled
+          default: false
+        redirect_forward_phone_number:
+          type: string
+          nullable: true
+        redirect_conditions:
+          items:
+            $ref: '#/components/schemas/RedirectCondition'
+          type: array
+          title: Redirect Conditions
+        redirect_speak_message_enabled:
+          type: boolean
+          title: Redirect Speak Message Enabled
+          default: false
+        redirect_message:
+          type: string
+          nullable: true
+      type: object
+      title: InboundRedirectSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.
+    InboundRedirectSettingsUpdate:
+      properties:
+        redirect_inbound_calls_enabled:
+          type: boolean
+          title: Redirect Inbound Calls Enabled
+          default: false
+        redirect_forward_phone_number:
+          type: string
+          maxLength: 50
+          nullable: true
+        redirect_conditions:
+          items:
+            $ref: '#/components/schemas/RedirectCondition'
+          type: array
+          title: Redirect Conditions
+          description: Conditional rules evaluated with AND logic against call context
+        redirect_speak_message_enabled:
+          type: boolean
+          title: Redirect Speak Message Enabled
+          default: false
+        redirect_message:
+          type: string
+          maxLength: 500
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: InboundRedirectSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.
     IntegrationItem:
       properties:
         name:
@@ -17272,6 +17409,36 @@ components:
       - offers_sent
       - offers_awaiting_feedback
       title: RecruitmentKpiBlock
+    RedirectCondition:
+      properties:
+        variable:
+          type: string
+          maxLength: 100
+          minLength: 1
+          title: Variable
+          description: Variable name or token, e.g. 'tier', 'company', or '{{_metadata.company}}'
+        operator:
+          $ref: '#/components/schemas/RedirectConditionOperatorEnum'
+        value:
+          type: string
+          maxLength: 255
+          nullable: true
+      additionalProperties: false
+      type: object
+      required:
+      - variable
+      - operator
+      title: RedirectCondition
+      description: Single conditional rule evaluated against pre-inbound webhook &
+        call variables.
+    RedirectConditionOperatorEnum:
+      type: string
+      enum:
+      - exists
+      - not_empty
+      - equals
+      - not_equals
+      title: RedirectConditionOperatorEnum
     RefreshRequest:
       properties:
         refresh_token:
