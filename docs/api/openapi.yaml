@@ -9179,6 +9179,86 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/ivr-dtmf-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure IVR Phone Tree and DTMF Keypad settings on a call flow
+      description: 'Configures IVR navigation and real-time DTMF keypad input processing
+        for this call flow.
+
+
+        - **IVR Navigation** (`ivr_enabled`, `ivr_action`, `ivr_navigation_mode`,
+        `ivr_max_attempts`, `ivr_keypress_delay`, `ivr_priority_list`, `ivr_wait_on_hold`,
+        `ivr_max_hold_time`)
+
+        - **DTMF Keypad** (`dtmf_enabled`, `dtmf_button_press_delay`, `dtmf_allow_caller_interruption`,
+        `dtmf_max_digits`, `dtmf_allowed_exceeded_attempts`, `dtmf_exceeded_action`,
+        `dtmf_end_call_message`)
+
+
+        Requires admin rank.'
+      operationId: update_ivr_dtmf_settings_api_v2_flows__flow_id__ivr_dtmf_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/IVRDTMFSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IVRDTMFSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved IVR and DTMF settings for a call flow
+      description: Returns the currently-saved IVR Phone Tree navigation and DTMF
+        keypad settings for this call flow. Read-only rank is sufficient since no
+        secret keys are exposed.
+      operationId: get_ivr_dtmf_settings_api_v2_flows__flow_id__ivr_dtmf_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IVRDTMFSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -14216,6 +14296,150 @@ components:
           default: 0
       type: object
       title: HubSpotSyncStatusOut
+    IVRDTMFSettingsResponse:
+      properties:
+        ivr_enabled:
+          type: boolean
+          title: Ivr Enabled
+          default: false
+        ivr_action:
+          type: string
+          title: Ivr Action
+          default: dial_through
+        ivr_navigation_mode:
+          type: string
+          title: Ivr Navigation Mode
+          default: let_ai_converse
+        ivr_max_attempts:
+          type: integer
+          title: Ivr Max Attempts
+          default: 3
+        ivr_keypress_delay:
+          type: integer
+          title: Ivr Keypress Delay
+          default: 8
+        ivr_priority_list:
+          items:
+            type: string
+          type: array
+          title: Ivr Priority List
+        ivr_wait_on_hold:
+          type: boolean
+          title: Ivr Wait On Hold
+          default: false
+        ivr_max_hold_time:
+          type: integer
+          title: Ivr Max Hold Time
+          default: 120
+        dtmf_enabled:
+          type: boolean
+          title: Dtmf Enabled
+          default: false
+        dtmf_button_press_delay:
+          type: integer
+          title: Dtmf Button Press Delay
+          default: 2
+        dtmf_allow_caller_interruption:
+          type: boolean
+          title: Dtmf Allow Caller Interruption
+          default: false
+        dtmf_max_digits:
+          type: integer
+          title: Dtmf Max Digits
+          default: 50
+        dtmf_allowed_exceeded_attempts:
+          type: integer
+          title: Dtmf Allowed Exceeded Attempts
+          default: 10
+        dtmf_exceeded_action:
+          type: string
+          title: Dtmf Exceeded Action
+          default: end_call
+        dtmf_end_call_message:
+          type: string
+          nullable: true
+      type: object
+      title: IVRDTMFSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/ivr-dtmf-settings``.
+    IVRDTMFSettingsUpdate:
+      properties:
+        ivr_enabled:
+          type: boolean
+          title: Ivr Enabled
+          default: false
+        ivr_action:
+          type: string
+          title: Ivr Action
+          default: dial_through
+        ivr_navigation_mode:
+          type: string
+          title: Ivr Navigation Mode
+          default: let_ai_converse
+        ivr_max_attempts:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Ivr Max Attempts
+          default: 3
+        ivr_keypress_delay:
+          type: integer
+          maximum: 15.0
+          minimum: 0.0
+          title: Ivr Keypress Delay
+          default: 8
+        ivr_priority_list:
+          items:
+            type: string
+          type: array
+          title: Ivr Priority List
+        ivr_wait_on_hold:
+          type: boolean
+          title: Ivr Wait On Hold
+          default: false
+        ivr_max_hold_time:
+          type: integer
+          maximum: 900.0
+          minimum: 15.0
+          title: Ivr Max Hold Time
+          default: 120
+        dtmf_enabled:
+          type: boolean
+          title: Dtmf Enabled
+          default: false
+        dtmf_button_press_delay:
+          type: integer
+          maximum: 10.0
+          minimum: 0.0
+          title: Dtmf Button Press Delay
+          default: 2
+        dtmf_allow_caller_interruption:
+          type: boolean
+          title: Dtmf Allow Caller Interruption
+          default: false
+        dtmf_max_digits:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Dtmf Max Digits
+          default: 50
+        dtmf_allowed_exceeded_attempts:
+          type: integer
+          maximum: 50.0
+          minimum: 1.0
+          title: Dtmf Allowed Exceeded Attempts
+          default: 10
+        dtmf_exceeded_action:
+          type: string
+          title: Dtmf Exceeded Action
+          default: end_call
+        dtmf_end_call_message:
+          type: string
+          maxLength: 500
+          nullable: true
+      additionalProperties: false
+      type: object
+      title: IVRDTMFSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/ivr-dtmf-settings``.
     ImportTwilioPhoneNumberRequest:
       properties:
         phone_number:

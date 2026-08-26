@@ -362,6 +362,95 @@ class MetadataSettingsResponse(BaseModel):
     disable_metadata: bool = False
 
 
+class IVRDTMFSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/ivr-dtmf-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ivr_enabled: bool = False
+    ivr_action: str = Field(default="dial_through")
+    ivr_navigation_mode: str = Field(default="let_ai_converse")
+    ivr_max_attempts: int = Field(default=3, ge=1, le=10)
+    ivr_keypress_delay: int = Field(default=8, ge=0, le=15)
+    ivr_priority_list: List[str] = Field(default_factory=list)
+    ivr_wait_on_hold: bool = False
+    ivr_max_hold_time: int = Field(default=120, ge=15, le=900)
+
+    dtmf_enabled: bool = False
+    dtmf_button_press_delay: int = Field(default=2, ge=0, le=10)
+    dtmf_allow_caller_interruption: bool = False
+    dtmf_max_digits: int = Field(default=50, ge=1, le=100)
+    dtmf_allowed_exceeded_attempts: int = Field(default=10, ge=1, le=50)
+    dtmf_exceeded_action: str = Field(default="end_call")
+    dtmf_end_call_message: str | None = Field(
+        default="You've reached the maximum number of inputs allowed for this call.",
+        max_length=500,
+    )
+
+    @field_validator("ivr_action")
+    @classmethod
+    def validate_ivr_action(cls, v: str) -> str:
+        v_clean = v.strip().lower()
+        if v_clean not in ("dial_through", "hang_up"):
+            raise ValueError(
+                f"Invalid ivr_action: {v!r}. Must be 'dial_through' or 'hang_up'"
+            )
+        return v_clean
+
+    @field_validator("ivr_navigation_mode")
+    @classmethod
+    def validate_ivr_navigation_mode(cls, v: str) -> str:
+        v_clean = v.strip().lower()
+        if v_clean not in ("let_ai_converse", "auto_detect", "known_menu_path"):
+            raise ValueError(
+                f"Invalid ivr_navigation_mode: {v!r}. Must be 'let_ai_converse', 'auto_detect', or 'known_menu_path'"
+            )
+        return v_clean
+
+    @field_validator("dtmf_exceeded_action")
+    @classmethod
+    def validate_dtmf_exceeded_action(cls, v: str) -> str:
+        v_clean = v.strip().lower()
+        if v_clean not in ("end_call", "continue"):
+            raise ValueError(
+                f"Invalid dtmf_exceeded_action: {v!r}. Must be 'end_call' or 'continue'"
+            )
+        return v_clean
+
+    @field_validator("dtmf_end_call_message")
+    @classmethod
+    def validate_dtmf_end_call_message(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v_stripped = v.strip()
+        return v_stripped if v_stripped else None
+
+
+class IVRDTMFSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/ivr-dtmf-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    ivr_enabled: bool = False
+    ivr_action: str = "dial_through"
+    ivr_navigation_mode: str = "let_ai_converse"
+    ivr_max_attempts: int = 3
+    ivr_keypress_delay: int = 8
+    ivr_priority_list: List[str] = Field(default_factory=list)
+    ivr_wait_on_hold: bool = False
+    ivr_max_hold_time: int = 120
+
+    dtmf_enabled: bool = False
+    dtmf_button_press_delay: int = 2
+    dtmf_allow_caller_interruption: bool = False
+    dtmf_max_digits: int = 50
+    dtmf_allowed_exceeded_attempts: int = 10
+    dtmf_exceeded_action: str = "end_call"
+    dtmf_end_call_message: str | None = (
+        "You've reached the maximum number of inputs allowed for this call."
+    )
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

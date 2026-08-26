@@ -1077,6 +1077,8 @@ class BidirectionalStreamHandler(
         - Optional soft fallback accepts likely-human speech at lower confidence so
           soft callers are not dropped mid-call.
         """
+        if getattr(self, "_dtmf_suppress_stt", False):
+            return False
         text = (transcript or "").strip()
         if not text:
             return False
@@ -1134,6 +1136,8 @@ class BidirectionalStreamHandler(
         VOICE_BARGE_IN_MIN_CONFIDENCE (multi-word) or VOICE_BARGE_IN_MIN_CONFIDENCE_1W
         when min words is 1.
         """
+        if getattr(self, "_dtmf_suppress_stt", False):
+            return False
         text = (transcript or "").strip()
         if not text or self._is_stt_filler_for_barge_in(text):
             return False
@@ -1229,6 +1233,10 @@ class BidirectionalStreamHandler(
 
                 # 🎯 Check for call screening detection - end call if action is hang_up
                 if await self._check_and_handle_call_screener(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Check for IVR phone tree / hold queue detection
+                if await self._check_and_handle_ivr_and_hold(transcript):
                     return  # Stop processing - call is ending
 
                 # 🎯 Send "in-progress" status when confident word is detected (like "hello")
@@ -3081,6 +3089,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except Exception as exc:
             logger.debug("Background audio loop stop failed: %s", exc)
 
+        if (
+            hasattr(self, "_dtmf_debounce_task")
+            and self._dtmf_debounce_task
+            and not self._dtmf_debounce_task.done()
+        ):
+            self._dtmf_debounce_task.cancel()
+
         # ── VoiceOrchestrator handles LLM cancel + TTS shutdown + STT close ────
         # OLD direct code (now delegated to orchestrator):
         # t = self._llm_response_task; t.cancel(); self._llm_response_task = None
@@ -3310,6 +3325,9 @@ async def bidirectional_stream_websocket(
 
             elif event == "mark":
                 pass  # Synchronization marks
+
+            elif event == "dtmf":
+                await handler.handle_dtmf_message(message)
 
     except WebSocketDisconnect:
         logger.info(

@@ -196,6 +196,58 @@ class CallFlow(Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # IVR Phone Tree Navigation Settings
+    ivr_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    ivr_action = Column(
+        String(50), default="dial_through", nullable=False, server_default="dial_through"
+    )
+    ivr_navigation_mode = Column(
+        String(50), default="let_ai_converse", nullable=False, server_default="let_ai_converse"
+    )
+    ivr_max_attempts = Column(
+        Integer, default=3, nullable=False, server_default="3"
+    )
+    ivr_keypress_delay = Column(
+        Integer, default=8, nullable=False, server_default="8"
+    )
+    ivr_priority_list = Column(
+        JSONB, default=list, nullable=False, server_default=sa_text("'[]'")
+    )
+    ivr_wait_on_hold = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    ivr_max_hold_time = Column(
+        Integer, default=120, nullable=False, server_default="120"
+    )
+
+    # In-Call DTMF Keypad Detection Settings
+    dtmf_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    dtmf_button_press_delay = Column(
+        Integer, default=2, nullable=False, server_default="2"
+    )
+    dtmf_allow_caller_interruption = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    dtmf_max_digits = Column(
+        Integer, default=50, nullable=False, server_default="50"
+    )
+    dtmf_allowed_exceeded_attempts = Column(
+        Integer, default=10, nullable=False, server_default="10"
+    )
+    dtmf_exceeded_action = Column(
+        String(50), default="end_call", nullable=False, server_default="end_call"
+    )
+    dtmf_end_call_message = Column(
+        Text,
+        nullable=True,
+        default="You've reached the maximum number of inputs allowed for this call.",
+        server_default="You've reached the maximum number of inputs allowed for this call.",
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )
