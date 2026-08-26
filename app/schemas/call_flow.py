@@ -648,6 +648,27 @@ class InboundRedirectSettingsResponse(BaseModel):
 # FlowInboundRulesUpdate and FlowInboundRulesResponse are imported from app.schemas.inbound_rule
 
 
+class RecordingSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/recording-settings``."""
+
+    recording_enabled: bool = True
+    public_recording_enabled: bool = False
+    faster_inbound_pickup: bool = False
+    stop_recording_on_transfer: bool = False
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class RecordingSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/recording-settings``."""
+
+    recording_enabled: bool = True
+    public_recording_enabled: bool = False
+    faster_inbound_pickup: bool = False
+    stop_recording_on_transfer: bool = False
+
+    model_config = ConfigDict(from_attributes=True)
+
 
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.

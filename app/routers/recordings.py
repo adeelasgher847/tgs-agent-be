@@ -49,7 +49,10 @@ def _enforce_hipaa_recording_access(
 
     flow = (
         db.query(CallFlow)
-        .filter(CallFlow.id == call_session.call_flow_id)
+        .filter(
+            CallFlow.id == call_session.call_flow_id,
+            CallFlow.tenant_id == call_session.tenant_id,
+        )
         .first()
     )
     if flow is None or not flow.hipaa_compliance:
@@ -139,3 +142,111 @@ async def get_recording(
         ),
         "Recording URL generated",
     )
+
+
+@router.get("/public/{call_id}", response_model=SuccessResponse[RecordingResponse])
+@router.get("/{call_id}/public", response_model=SuccessResponse[RecordingResponse])
+async def get_public_recording(
+    call_id: uuid.UUID,
+    db: Session = Depends(get_db),
+) -> SuccessResponse[RecordingResponse]:
+    """
+    Return a signed S3 URL for a call recording without authentication,
+    provided that the call flow has public_recording_enabled=True.
+
+    404 cases:
+      - call_session not found
+      - recording not enabled for this call
+      - recording upload failed or not available yet
+    403 cases:
+      - call has no call_flow or call flow has public_recording_enabled=False
+      - flow is HIPAA protected (cannot be public)
+    """
+    session = (
+        db.query(CallSession)
+        .filter(CallSession.id == call_id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Recording not found")
+
+    if not session.call_flow_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Public recording access is not enabled for this call",
+        )
+
+    flow = (
+        db.query(CallFlow)
+        .filter(
+            CallFlow.id == session.call_flow_id,
+            CallFlow.tenant_id == session.tenant_id,
+            ~CallFlow.is_deleted,
+        )
+        .first()
+    )
+    if not flow or not flow.public_recording_enabled:
+        raise HTTPException(
+            status_code=403,
+            detail="Public recording access is not enabled for this call",
+        )
+
+    if flow.hipaa_compliance:
+        raise HTTPException(
+            status_code=403,
+            detail="Public recording access is not permitted for HIPAA-compliant flows",
+        )
+
+    # Check recording was enabled for this call
+    if not get_recording_enabled_for_call(db, session):
+        raise HTTPException(
+            status_code=404, detail="Recording not enabled for this call"
+        )
+
+    # No path + error = upload failed
+    if not session.recording_s3_path and session.recording_error:
+        raise HTTPException(
+            status_code=404, detail="Recording upload failed for this call"
+        )
+
+    # No path yet = not uploaded
+    if not session.recording_s3_path:
+        raise HTTPException(status_code=404, detail="Recording not available yet")
+
+    # Generate signed URL
+    try:
+        from app.services import s3_recording_service
+
+        signed_url = s3_recording_service.generate_signed_url(
+            gcs_path=session.recording_s3_path,
+            expiry_seconds=settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
+        )
+    except Exception as exc:
+        logger.error(
+            "Failed to generate public signed URL for session %s path %s: %s",
+            call_id,
+            session.recording_s3_path,
+            exc,
+            exc_info=True,
+        )
+        raise HTTPException(status_code=500, detail="Could not generate recording URL")
+
+    size: int | None = None
+    try:
+        size = s3_recording_service.get_object_size(session.recording_s3_path)
+    except Exception as exc:
+        logger.debug(
+            "Failed to fetch S3 object size for %s: %s",
+            session.recording_s3_path,
+            exc,
+        )
+
+    return create_success_response(
+        RecordingResponse(
+            url=signed_url,
+            duration=session.duration,
+            size=size,
+        ),
+        "Public recording URL generated",
+    )
+

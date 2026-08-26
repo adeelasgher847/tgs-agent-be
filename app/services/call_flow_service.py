@@ -64,6 +64,8 @@ from app.schemas.call_flow import (
     PostCallActionsSettingsUpdate,
     PostCallAnalysisSettingsResponse,
     PostCallAnalysisSettingsUpdate,
+    RecordingSettingsResponse,
+    RecordingSettingsUpdate,
     SystemWebhooksSettingsResponse,
     SystemWebhooksSettingsUpdate,
     SystemWebhookDeliveryOut,
@@ -1361,6 +1363,65 @@ class CallFlowService:
             inbound_rule_set_id=rs.id,
             inbound_rule_set_name=rs.name,
             active_rules_count=count,
+        )
+
+    # ── Call Recording Settings ──
+
+    def update_recording_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: RecordingSettingsUpdate,
+    ) -> RecordingSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        update_dict = {
+            "recording_enabled": body.recording_enabled,
+            "public_recording_enabled": body.public_recording_enabled,
+            "faster_inbound_pickup": body.faster_inbound_pickup,
+            "stop_recording_on_transfer": body.stop_recording_on_transfer,
+            "updated_at": datetime.now(timezone.utc),
+        }
+
+        repo = CallFlowRepository(db)
+        repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_recording_response(flow)
+
+    def get_recording_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> RecordingSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_recording_response(flow)
+
+    @staticmethod
+    def _to_recording_response(flow: CallFlow) -> RecordingSettingsResponse:
+        return RecordingSettingsResponse(
+            recording_enabled=bool(
+                flow.recording_enabled
+                if flow.recording_enabled is not None
+                else True
+            ),
+            public_recording_enabled=bool(
+                flow.public_recording_enabled
+                if flow.public_recording_enabled is not None
+                else False
+            ),
+            faster_inbound_pickup=bool(
+                flow.faster_inbound_pickup
+                if flow.faster_inbound_pickup is not None
+                else False
+            ),
+            stop_recording_on_transfer=bool(
+                flow.stop_recording_on_transfer
+                if flow.stop_recording_on_transfer is not None
+                else False
+            ),
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──
