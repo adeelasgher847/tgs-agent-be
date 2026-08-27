@@ -240,6 +240,70 @@ class TestAntiBotAndFakeVoiceRuntime:
             )
             assert ended is True
 
+    @pytest.mark.asyncio
+    async def test_bot_detection_ignores_agent_role_utterances(
+        self, db, setup_runtime_entities
+    ):
+        tenant, user, agent, flow, session = setup_runtime_entities
+        flow.anti_bot_detection_enabled = True
+        flow.terminate_on_fake_voice = True
+        db.commit()
+
+        handler = DummyVoiceHandler(db, session, agent, flow)
+
+        # Spoken by the AI agent itself (role='agent') - should not trigger self-termination
+        ended = await handler._check_and_handle_anti_bot(
+            "This is an automated call from customer support",
+            role="agent",
+        )
+        assert ended is False
+        assert handler._call_ended is False
+        assert session.call_metadata is None or "anti_bot" not in session.call_metadata
+
+    @pytest.mark.asyncio
+    async def test_flow_resolution_blocks_cross_tenant_flow_tampering(
+        self, db, setup_runtime_entities
+    ):
+        tenant, user, agent, flow, session = setup_runtime_entities
+
+        # Create another tenant and flow
+        other_tenant = Tenant(
+            name="AttackerWS",
+            schema_name="test_attacker_ws",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+
+        other_agent = Agent(
+            tenant_id=other_tenant.id,
+            name="Attacker Agent",
+            created_by=user.id,
+        )
+        db.add(other_agent)
+        db.commit()
+
+        other_flow = CallFlow(
+            tenant_id=other_tenant.id,
+            agent_id=other_agent.id,
+            name="Other Tenant Flow",
+            direction="inbound",
+            status="active",
+        )
+        db.add(other_flow)
+        db.commit()
+
+        # Session belongs to `tenant`, but `call_flow_id` points to `other_flow.id`
+        session.call_flow_id = other_flow.id
+        db.commit()
+
+        # Voice handler without cached call_flow
+        handler = DummyVoiceHandler(db, session, agent, None)
+        resolved = handler._resolve_flow()
+
+        # Must not load other tenant's flow!
+        assert resolved is None
+
 
 class TestComplianceMonitoringRuntime:
     @pytest.mark.asyncio
@@ -633,5 +697,82 @@ class TestDataRetentionPurgeServiceRuntime:
         mock_delete_s3.assert_called_once_with("recordings/missing/file.opus")
 
         db.refresh(session)
+        assert session.recording_s3_path is None
+        assert session.recording_url is None
+
+    def test_retention_purge_with_naive_datetime(
+        self, db, setup_runtime_entities
+    ):
+        tenant, user, agent, flow, _ = setup_runtime_entities
+        flow.retention_policy_enabled = True
+        flow.retention_transcript_enabled = True
+        flow.retention_transcript_days = 30
+        db.commit()
+
+        # Legacy naive datetime (without timezone info)
+        naive_expired_date = datetime.datetime.utcnow() - datetime.timedelta(days=45)
+
+        session = CallSession(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            agent_id=agent.id,
+            call_flow_id=flow.id,
+            call_type="inbound",
+            status="completed",
+            start_time=naive_expired_date,
+            call_transcript=[{"role": "user", "content": "Legacy naive transcript"}],
+        )
+        db.add(session)
+        db.commit()
+
+        res = purge_expired_call_data(
+            db, tenant_id=tenant.id, flow_id=flow.id
+        )
+        assert res.purged_transcripts_count == 1
+        assert res.purged_sessions_count == 1
+
+        db.refresh(session)
+        assert session.call_transcript is None
+
+    def test_retention_purge_commits_db_before_s3_deletion(
+        self, db, setup_runtime_entities
+    ):
+        tenant, user, agent, flow, _ = setup_runtime_entities
+        flow.retention_policy_enabled = True
+        flow.retention_recording_enabled = True
+        flow.retention_recording_days = 30
+        db.commit()
+
+        now = datetime.datetime.now(datetime.timezone.utc)
+        expired_date = now - datetime.timedelta(days=40)
+
+        session = CallSession(
+            tenant_id=tenant.id,
+            user_id=user.id,
+            agent_id=agent.id,
+            call_flow_id=flow.id,
+            call_type="inbound",
+            status="completed",
+            start_time=expired_date,
+            recording_s3_path="recordings/order_test/file.opus",
+            recording_url="https://api.twilio.com/recordings/order_test",
+        )
+        db.add(session)
+        db.commit()
+
+        # Even if S3 deletion raises an exception, DB changes must already be committed
+        with patch(
+            "app.services.s3_recording_service.delete_recording_object",
+            side_effect=Exception("S3 network timeout"),
+        ):
+            res = purge_expired_call_data(
+                db, tenant_id=tenant.id, flow_id=flow.id
+            )
+
+        assert res.purged_recordings_count == 1
+        assert res.purged_sessions_count == 1
+
+        db.refresh(session)
+        # S3 path and recording_url must be cleared in DB
         assert session.recording_s3_path is None
         assert session.recording_url is None

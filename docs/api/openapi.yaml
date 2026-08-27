@@ -6878,12 +6878,18 @@ paths:
       tags:
       - Call Recordings
       summary: Get Public Recording
-      description: "Return a signed S3 URL for a call recording without authentication,\n\
-        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
-        \  - call_session not found\n  - recording not enabled for this call\n  -\
-        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
-        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
-        \ protected (cannot be public)"
+      description: 'Return a signed S3 URL for a call recording without authentication,
+
+        provided that the call flow has public_recording_enabled=True.
+
+
+        Security note: To prevent probing/enumerating call session existence across
+        tenants,
+
+        any unknown call_id, session without flow, or non-public flow uniformly returns
+        403 Forbidden.
+
+        The tenant boundary is derived directly from the session''s parent call flow.'
       operationId: get_public_recording_api_v1_recordings__call_id__public_get
       parameters:
       - name: call_id
@@ -6911,12 +6917,18 @@ paths:
       tags:
       - Call Recordings
       summary: Get Public Recording
-      description: "Return a signed S3 URL for a call recording without authentication,\n\
-        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
-        \  - call_session not found\n  - recording not enabled for this call\n  -\
-        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
-        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
-        \ protected (cannot be public)"
+      description: 'Return a signed S3 URL for a call recording without authentication,
+
+        provided that the call flow has public_recording_enabled=True.
+
+
+        Security note: To prevent probing/enumerating call session existence across
+        tenants,
+
+        any unknown call_id, session without flow, or non-public flow uniformly returns
+        403 Forbidden.
+
+        The tenant boundary is derived directly from the session''s parent call flow.'
       operationId: get_public_recording_api_v1_recordings_public__call_id__get
       parameters:
       - name: call_id
@@ -9433,7 +9445,8 @@ paths:
         phone number (e.g. `+14155552671`).
 
         - **Conditional Rules** (`redirect_conditions`): List of `{variable, operator,
-        value}` rules evaluated with AND logic against call context.
+        value}` rules evaluated with AND logic against call context. *Note: When redirection
+        is enabled with an empty conditions list, all calls are forwarded unconditionally.*
 
         - **Spoken Announcement** (`redirect_speak_message_enabled`, `redirect_message`):
         Speaks rendered departure message via TwiML `<Say>` before forwarding.
@@ -10045,6 +10058,35 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/v2/inbound-rules/sets/import:
+    post:
+      tags:
+      - Inbound Rules & Blocklist
+      summary: Bulk import number rules from CSV / text
+      description: Imports number rules from multiline text or CSV data with optional
+        labels into an existing or new rule set. Admin rank or API key required.
+      operationId: import_rules_api_v2_inbound_rules_sets_import_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InboundRuleImportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InboundRuleImportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/v2/inbound-rules/sets/{set_id}:
     get:
       tags:
@@ -10138,35 +10180,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/v2/inbound-rules/sets/import:
-    post:
-      tags:
-      - Inbound Rules & Blocklist
-      summary: Bulk import number rules from CSV / text
-      description: Imports number rules from multiline text or CSV data with optional
-        labels into an existing or new rule set. Admin rank or API key required.
-      operationId: import_rules_api_v2_inbound_rules_sets_import_post
-      requestBody:
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/InboundRuleImportRequest'
-        required: true
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/InboundRuleImportResponse'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
-      security:
-      - HTTPBearer: []
   /api/v2/flows/flow-data:
     get:
       tags:
@@ -15509,7 +15522,8 @@ components:
             $ref: '#/components/schemas/RedirectCondition'
           type: array
           title: Redirect Conditions
-          description: Conditional rules evaluated with AND logic against call context
+          description: Conditional rules evaluated with AND logic against call context.
+            If empty and redirection is enabled, all calls are forwarded unconditionally.
         redirect_speak_message_enabled:
           type: boolean
           title: Redirect Speak Message Enabled
@@ -15521,7 +15535,12 @@ components:
       additionalProperties: false
       type: object
       title: InboundRedirectSettingsUpdate
-      description: Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.
+      description: "Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``.\n\
+        \n**Behavior note on redirect conditions**:\n- When ``redirect_inbound_calls_enabled``\
+        \ is True and ``redirect_conditions`` contains rules,\n  all rules are evaluated\
+        \ with AND logic; only matching calls will be forwarded.\n- When ``redirect_inbound_calls_enabled``\
+        \ is True and ``redirect_conditions`` is empty (or omitted),\n  **100% of\
+        \ inbound calls will be forwarded unconditionally** to ``redirect_forward_phone_number``."
     InboundRuleImportRequest:
       properties:
         raw_text:

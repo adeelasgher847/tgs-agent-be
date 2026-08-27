@@ -159,6 +159,7 @@ class TestCallScreeningRuntime:
         session.call_flow_id = uuid.uuid4()
 
         mock_db = MagicMock()
+        mock_db.execute.side_effect = SQLAlchemyError("Database connection dropped")
         mock_db.get.side_effect = SQLAlchemyError("Database connection dropped")
 
         handler = DummyHostHandler(db=mock_db, call_session=session, call_flow=None)
