@@ -79,14 +79,19 @@ class GeminiService:
             if system_prompt:
                 full_prompt = f"System: {system_prompt}\n\nUser: {prompt}"
             
+            # Prepare generation config
+            config_dict = {
+                "temperature": float(temperature),
+                "max_output_tokens": max(int(max_tokens), 1000),
+            }
+            if "2.5" in str(model_name) or "thinking" in str(model_name).lower():
+                config_dict["thinking_config"] = {"thinking_budget": 0}
+
             # Generate content using google-genai Client
             response = client.models.generate_content(
                 model=model_name,
                 contents=full_prompt,
-                config={
-                    "temperature": float(temperature),
-                    "max_output_tokens": int(max_tokens),
-                },
+                config=config_dict,
             )
             
             end_time = time.time()
