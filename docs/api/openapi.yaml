@@ -8942,6 +8942,93 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/voicemail-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure voicemail detection settings on a call flow
+      description: 'Configures the voicemail detection settings for this call flow:
+
+
+        - **Voicemail Detection** (`voicemail_detection_enabled`): whether voicemail
+        detection is active on calls using this flow.
+
+        - **Voicemail Action** (`voicemail_action`): behavior when a voicemail is
+        detected (`hang_up`, `leave_message`, or `continue`).
+
+        - **Voicemail Message** (`voicemail_message`): optional message to leave when
+        action is `leave_message` (up to 500 characters).
+
+        - **Advanced Detection** (`voicemail_advanced_detection_enabled`): whether
+        Twilio AMD (Answering Machine Detection) is enabled.
+
+        - **Detection Timeout** (`voicemail_detection_timeout`): detection timeout
+        in seconds (1 to 30 seconds).
+
+
+        Requires admin rank.'
+      operationId: update_voicemail_settings_api_v2_flows__flow_id__voicemail_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VoicemailSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoicemailSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get the currently-saved Voicemail Detection settings for a call flow
+      description: Returns the currently-saved Voicemail Detection configuration for
+        this call flow (detection toggle, action, custom message, advanced detection
+        AMD toggle, and timeout). Read-only rank is sufficient since no secret keys
+        are exposed.
+      operationId: get_voicemail_settings_api_v2_flows__flow_id__voicemail_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VoicemailSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v2/flows/{flow_id}/system-webhooks-settings:
     put:
       tags:
@@ -21042,6 +21129,71 @@ components:
       - male
       - female
       title: VoiceTypeEnum
+    VoicemailActionEnum:
+      type: string
+      enum:
+      - hang_up
+      - leave_message
+      - continue
+      title: VoicemailActionEnum
+    VoicemailSettingsResponse:
+      properties:
+        voicemail_detection_enabled:
+          type: boolean
+          title: Voicemail Detection Enabled
+          default: false
+        voicemail_action:
+          type: string
+          title: Voicemail Action
+          default: hang_up
+        voicemail_message:
+          type: string
+          nullable: true
+        voicemail_advanced_detection_enabled:
+          type: boolean
+          title: Voicemail Advanced Detection Enabled
+          default: false
+        voicemail_detection_timeout:
+          type: integer
+          title: Voicemail Detection Timeout
+          default: 5
+      type: object
+      title: VoicemailSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/voicemail-settings``.
+    VoicemailSettingsUpdate:
+      properties:
+        voicemail_detection_enabled:
+          type: boolean
+          title: Voicemail Detection Enabled
+          description: Whether voicemail detection is enabled for this call flow.
+        voicemail_action:
+          $ref: '#/components/schemas/VoicemailActionEnum'
+          description: 'Action to take when a voicemail system is detected: hang_up,
+            leave_message, or continue.'
+          default: hang_up
+        voicemail_message:
+          type: string
+          maxLength: 500
+          nullable: true
+        voicemail_advanced_detection_enabled:
+          type: boolean
+          title: Voicemail Advanced Detection Enabled
+          description: Whether advanced detection (Twilio Answering Machine Detection
+            - AMD) is enabled.
+          default: false
+        voicemail_detection_timeout:
+          type: integer
+          maximum: 30.0
+          minimum: 1.0
+          title: Voicemail Detection Timeout
+          description: Voicemail detection timeout in seconds (1–30).
+          default: 5
+      additionalProperties: false
+      type: object
+      required:
+      - voicemail_detection_enabled
+      title: VoicemailSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/voicemail-settings``.
     WalletSharingUpdate:
       properties:
         using_master_wallet:

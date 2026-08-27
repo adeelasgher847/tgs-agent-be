@@ -263,6 +263,62 @@ class PostCallAnalysisSettingsResponse(BaseModel):
     analysis_model: str | None = None
 
 
+class VoicemailActionEnum(str, Enum):
+    HANG_UP = "hang_up"
+    LEAVE_MESSAGE = "leave_message"
+    CONTINUE = "continue"
+
+
+class VoicemailSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/voicemail-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    voicemail_detection_enabled: bool = Field(
+        ...,
+        description="Whether voicemail detection is enabled for this call flow.",
+    )
+    voicemail_action: VoicemailActionEnum = Field(
+        default=VoicemailActionEnum.HANG_UP,
+        description="Action to take when a voicemail system is detected: hang_up, leave_message, or continue.",
+    )
+    voicemail_message: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional message to leave if voicemail_action is 'leave_message'.",
+    )
+    voicemail_advanced_detection_enabled: bool = Field(
+        default=False,
+        description="Whether advanced detection (Twilio Answering Machine Detection - AMD) is enabled.",
+    )
+    voicemail_detection_timeout: int = Field(
+        default=5,
+        ge=1,
+        le=30,
+        description="Voicemail detection timeout in seconds (1–30).",
+    )
+
+    @field_validator("voicemail_message")
+    @classmethod
+    def _strip_voicemail_message(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        return cleaned or None
+
+
+class VoicemailSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/voicemail-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    voicemail_detection_enabled: bool = False
+    voicemail_action: str = "hang_up"
+    voicemail_message: str | None = None
+    voicemail_advanced_detection_enabled: bool = False
+    voicemail_detection_timeout: int = 5
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

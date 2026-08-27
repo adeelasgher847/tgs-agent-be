@@ -186,20 +186,34 @@ async def amd_callback(
         )
         job = record.batch_job if record else None
 
+    # Resolve voicemail settings from batch job or call flow
+    voicemail_action = "continue"
+    voicemail_message = None
+
+    if job is not None:
+        voicemail_action = job.voicemail_action or "continue"
+        voicemail_message = job.voicemail_message
+    elif call_session and call_session.call_flow_id:
+        from app.models.call_flow import CallFlow
+
+        flow = db.get(CallFlow, call_session.call_flow_id)
+        if flow and flow.voicemail_detection_enabled:
+            voicemail_action = flow.voicemail_action or "hang_up"
+            voicemail_message = flow.voicemail_message
+
     logger.info(
-        "AMD callback: callSessionId=%s batchCallRecordId=%s AnsweredBy=%s",
+        "AMD callback: callSessionId=%s batchCallRecordId=%s AnsweredBy=%s action=%s",
         callSessionId,
         batchCallRecordId,
         answered_by,
+        voicemail_action,
     )
 
-    # Missing job (e.g. a non-batch call that set enable_amd, or a stale record)
-    # fails open into "continue" rather than silently hanging up a real caller.
-    voicemail_action = job.voicemail_action if job else "continue"
     worker_svc = BatchCallWorkerService(db)
+    is_hangup = voicemail_action in ("hang_up", "skip")
 
     if answered_by == "machine_start":
-        if voicemail_action == "skip":
+        if is_hangup:
             # Commit the DB transition first so a concurrent Twilio call-status
             # webhook (fired once the REST hangup below lands) sees the record
             # already off "active" instead of racing to double-count/bill it.
@@ -211,12 +225,12 @@ async def amd_callback(
         elif voicemail_action == "leave_message":
             _persist_amd_result(db, call_session, "machine_start")
             # nothing else to do yet — wait for machine_end_beep below.
-        else:  # "continue" (or no job resolved) — let the normal flow proceed
+        else:  # "continue" (or no job/flow resolved) — let the normal flow proceed
             _persist_amd_result(db, call_session, "continue")
 
     elif answered_by == "machine_end_beep":
         if voicemail_action == "leave_message" and call_sid:
-            message = (job.voicemail_message or "").strip() if job else ""
+            message = (voicemail_message or "").strip()
             if message:
                 if record is not None:
                     await worker_svc.mark_voicemail_message_left(record.id)
@@ -226,6 +240,10 @@ async def amd_callback(
                 if record is not None:
                     await worker_svc.mark_voicemail_skipped(record.id)
                 _hangup(db, call_session, call_sid)
+        elif is_hangup and call_sid:
+            if record is not None:
+                await worker_svc.mark_voicemail_skipped(record.id)
+            _hangup(db, call_session, call_sid)
 
     elif answered_by in ("human", "unknown"):
         _persist_amd_result(db, call_session, answered_by)
@@ -241,6 +259,8 @@ def _persist_amd_result(db: Session, call_session, result: str) -> None:
     md = {**(call_session.call_metadata or {})}
     md["amd_result"] = result
     call_session.call_metadata = md
+    if result in ("machine_start", "machine_end_beep") and not call_session.ended_reason:
+        call_session.ended_reason = "Voicemail detected"
     db.commit()
 
 

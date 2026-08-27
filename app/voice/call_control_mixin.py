@@ -360,22 +360,32 @@ class CallControlMixin:
     
     async def _check_and_end_call_if_voicemail(self, transcript: str):
         """
-        Check if transcript contains voicemail keywords and end call if detected.
+        Check if transcript contains voicemail keywords and handle voicemail action if detected.
         Returns True if call was ended, False otherwise.
-        
-        Voicemail keywords detected:
-        - voicemail, voice mail
-        - forwarded to voicemail
-        - unavailable
-        - no one is available, no 1 is available
-        - record your message
-        - press pound, press #, pound key
-        - hang up
-        - at the tone
         """
         if self._call_ended:
             return False  # Already ended
-        
+
+        # Check call_flow voicemail detection settings if attached
+        flow = getattr(self, "call_flow", None)
+        if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
+            try:
+                from app.models.call_flow import CallFlow
+
+                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+            except Exception:
+                flow = None
+
+        # If flow has voicemail detection disabled -> bypass keyword check
+        if flow is not None and not getattr(flow, "voicemail_detection_enabled", True):
+            return False
+
+        voicemail_action = (
+            getattr(flow, "voicemail_action", "hang_up") if flow else "hang_up"
+        )
+        if voicemail_action == "continue":
+            return False
+
         # Voicemail keywords/phrases (case-insensitive)
         voicemail_keywords = [
             "forwarded to voicemail",
@@ -386,19 +396,31 @@ class CallControlMixin:
             "hang up",
             "at the tone",
             "after the tone",
-            "after the beep"
+            "after the beep",
         ]
-        
+
         # Convert transcript to lowercase for case-insensitive matching
         transcript_lower = transcript.lower().strip()
-        
+
         # Check if any voicemail keyword/phrase is present in transcript
         for keyword in voicemail_keywords:
             if keyword in transcript_lower:
                 try:
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
-                    
+
+                    # If action is leave_message, play voicemail message if configured
+                    if voicemail_action == "leave_message" and flow:
+                        voicemail_msg = (getattr(flow, "voicemail_message", None) or "").strip()
+                        if voicemail_msg:
+                            try:
+                                if hasattr(self, "_play_tts_message") and callable(self._play_tts_message):
+                                    await self._play_tts_message(voicemail_msg)
+                                elif hasattr(self, "_tts_pipeline") and hasattr(self._tts_pipeline, "say"):
+                                    await self._tts_pipeline.say(voicemail_msg)
+                            except Exception as tts_err:
+                                logger.warning("Could not play voicemail message before hangup: %s", tts_err)
+
                     # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
                         updated = call_session_service.update_call_session_status(
@@ -409,7 +431,7 @@ class CallControlMixin:
                         )
                         if updated:
                             self.call_session = updated
-                    
+
                     # End Twilio call immediately with DB-derived credentials (no env fallback).
                     if self.call_sid and self.call_session:
                         try:
@@ -427,7 +449,7 @@ class CallControlMixin:
                                 self.call_session.id if self.call_session else None,
                                 end_err,
                             )
-                    
+
                     # Broadcast call ended event
                     if self.call_session:
                         try:
@@ -442,8 +464,8 @@ class CallControlMixin:
                                     "event": "voicemail_detected",
                                     "detected_phrase": keyword,
                                     "transcript": transcript,
-                                    "reason": "Voicemail detected"
-                                }
+                                    "reason": "Voicemail detected",
+                                },
                             )
                         except Exception as e:
                             logger.debug(f"WebSocket broadcast failed after voicemail detection: {e}")
@@ -451,7 +473,7 @@ class CallControlMixin:
                     # Shut down STT + LLM + TTS and signal the main loop to exit
                     asyncio.create_task(self._full_shutdown())
                     return True
-                    
+
                 except Exception as e:
                     logger.error(f"Error ending call after voicemail detection: {e}", exc_info=True)
                     return False
