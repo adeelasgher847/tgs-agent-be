@@ -534,6 +534,113 @@ class CallTimingSettingsResponse(BaseModel):
     )
 
 
+class RedirectConditionOperatorEnum(str, Enum):
+    exists = "exists"
+    not_empty = "not_empty"
+    equals = "equals"
+    not_equals = "not_equals"
+
+
+class RedirectCondition(BaseModel):
+    """Single conditional rule evaluated against pre-inbound webhook & call variables."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    variable: str = Field(
+        ...,
+        description="Variable name or token, e.g. 'tier', 'company', or '{{_metadata.company}}'",
+        min_length=1,
+        max_length=100,
+    )
+    operator: RedirectConditionOperatorEnum
+    value: str | None = Field(default=None, max_length=255)
+
+    @field_validator("variable", mode="before")
+    @classmethod
+    def _clean_variable(cls, v: Any) -> str:
+        if not isinstance(v, str):
+            raise ValueError("Variable must be a string")
+        s = v.strip()
+        if not s:
+            raise ValueError("Variable cannot be empty")
+        return s
+
+    @field_validator("value", mode="before")
+    @classmethod
+    def _clean_value(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            v = str(v)
+        return v.strip()
+
+
+class InboundRedirectSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``."""
+
+    redirect_inbound_calls_enabled: bool = False
+    redirect_forward_phone_number: str | None = Field(
+        default=None,
+        max_length=50,
+        description="Destination phone number (e.g. +14155552671) to forward matched inbound calls",
+    )
+    redirect_conditions: list[RedirectCondition] = Field(
+        default_factory=list,
+        description="Conditional rules evaluated with AND logic against call context",
+    )
+    redirect_speak_message_enabled: bool = False
+    redirect_message: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Spoken announcement via TwiML <Say> before forwarding",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("redirect_forward_phone_number", mode="before")
+    @classmethod
+    def _clean_phone_number(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError("redirect_forward_phone_number must be a string")
+        s = v.strip()
+        return s if s else None
+
+    @field_validator("redirect_message", mode="before")
+    @classmethod
+    def _clean_redirect_message(cls, v: Any) -> str | None:
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError("redirect_message must be a string")
+        s = v.strip()
+        return s if s else None
+
+    @field_validator("redirect_conditions", mode="before")
+    @classmethod
+    def _validate_conditions(cls, v: Any) -> list:
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            raise ValueError("redirect_conditions must be a list")
+        if len(v) > 20:
+            raise ValueError("redirect_conditions can contain at most 20 rules")
+        return v
+
+
+class InboundRedirectSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/inbound-redirect-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    redirect_inbound_calls_enabled: bool = False
+    redirect_forward_phone_number: str | None = None
+    redirect_conditions: list[RedirectCondition] = Field(default_factory=list)
+    redirect_speak_message_enabled: bool = False
+    redirect_message: str | None = None
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

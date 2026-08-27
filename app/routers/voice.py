@@ -28,6 +28,7 @@ from app.models.user import User
 from app.models.call_session import CallSession
 from app.models.call_flow import CallFlow
 from app.models.phone_number import PhoneNumber
+from app.services.call_flow_service import call_flow_service
 from app.services.call_session_service import call_session_service
 from app.services.voice_screening_qualification_service import (
     maybe_update_resume_status_on_call_completed,
@@ -355,6 +356,88 @@ async def handle_incoming_call(
             resolved_agent = inbound_agent
             resolved_flow = None
             webhook_variables = {}
+
+        # ── Inbound Call Redirection & Forwarding Check ──
+        target_flow = resolved_flow or default_call_flow
+        if (
+            target_flow
+            and target_flow.redirect_inbound_calls_enabled
+            and target_flow.redirect_forward_phone_number
+        ):
+            static_metadata = dict(
+                target_flow.pre_inbound_webhook_static_metadata or {}
+            )
+            redirect_context = {
+                "from": from_number,
+                "to": to_number,
+                "caller_phone": from_number,
+                "caller_number": from_number,
+                "From": from_number,
+                "To": to_number,
+                "_metadata": static_metadata,
+                "_variable": dict(webhook_variables or {}),
+                **static_metadata,
+                **dict(webhook_variables or {}),
+            }
+
+            conditions_met = call_flow_service.evaluate_redirect_conditions(
+                target_flow.redirect_conditions or [],
+                redirect_context,
+            )
+
+            if conditions_met:
+                logger.info(
+                    "Inbound call redirection triggered for call %s (flow=%s, forward_to=%s)",
+                    call_sid,
+                    target_flow.id,
+                    target_flow.redirect_forward_phone_number,
+                )
+                try:
+                    redirect_session = CallSession(
+                        tenant_id=phone_number.tenant_id,
+                        user_id=resolved_agent.created_by,
+                        agent_id=resolved_agent.id,
+                        call_flow_id=target_flow.id,
+                        call_sid=call_sid,
+                        from_number=from_number,
+                        to_number=to_number,
+                        call_type="inbound",
+                        status="completed",
+                        transferred=True,
+                        ended_reason="Inbound call redirected",
+                        start_time=datetime.now(timezone.utc),
+                        end_time=datetime.now(timezone.utc),
+                    )
+                    db.add(redirect_session)
+                    db.commit()
+                    db.refresh(redirect_session)
+                except Exception as db_err:
+                    db.rollback()
+                    logger.warning(
+                        "Could not save redirected call session (call_sid=%s): %s",
+                        call_sid,
+                        db_err,
+                    )
+
+                response = VoiceResponse()
+                if (
+                    target_flow.redirect_speak_message_enabled
+                    and target_flow.redirect_message
+                ):
+                    rendered_msg = (
+                        call_flow_service.render_redirect_message_template(
+                            target_flow.redirect_message,
+                            redirect_context,
+                        )
+                    )
+                    if rendered_msg:
+                        response.say(rendered_msg)
+
+                dial = response.dial(
+                    caller_id=from_number if from_number else None
+                )
+                dial.number(target_flow.redirect_forward_phone_number)
+                return HTMLResponse(str(response), media_type="application/xml")
 
         # Billing guardrail: enforce the same credit gating used in outbound flows.
         if not resolved_agent.model:

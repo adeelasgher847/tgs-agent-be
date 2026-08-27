@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timezone
+from typing import Any
 
 from fastapi import HTTPException, status
 from scipy.stats import chi2_contingency
@@ -48,6 +49,9 @@ from app.schemas.call_flow import (
     FlowValidationError,
     FlowValidationErrorItem,
     FlowValidationResponse,
+    InboundRedirectSettingsResponse,
+    InboundRedirectSettingsUpdate,
+    RedirectCondition,
     IVRDTMFSettingsResponse,
     IVRDTMFSettingsUpdate,
     MetadataSettingsResponse,
@@ -1062,6 +1066,203 @@ class CallFlowService:
             ),
             max_duration_message=flow.max_duration_message,
         )
+
+    # ── Inbound Call Redirection & Forwarding Settings ──
+
+    def update_inbound_redirect_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: InboundRedirectSettingsUpdate,
+    ) -> InboundRedirectSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        update_dict = body.model_dump(exclude_unset=True)
+        if (
+            "redirect_conditions" in update_dict
+            and update_dict["redirect_conditions"] is not None
+        ):
+            update_dict["redirect_conditions"] = [
+                c.model_dump() if hasattr(c, "model_dump") else dict(c)
+                for c in update_dict["redirect_conditions"]
+            ]
+        update_dict["updated_at"] = datetime.now(timezone.utc)
+
+        repo = CallFlowRepository(db)
+        repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_inbound_redirect_response(flow)
+
+    def get_inbound_redirect_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> InboundRedirectSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_inbound_redirect_response(flow)
+
+    @staticmethod
+    def _to_inbound_redirect_response(
+        flow: CallFlow,
+    ) -> InboundRedirectSettingsResponse:
+        raw_conditions = flow.redirect_conditions or []
+        conditions = []
+        for item in raw_conditions:
+            if isinstance(item, dict):
+                conditions.append(RedirectCondition(**item))
+            elif isinstance(item, RedirectCondition):
+                conditions.append(item)
+
+        return InboundRedirectSettingsResponse(
+            redirect_inbound_calls_enabled=bool(
+                flow.redirect_inbound_calls_enabled
+            ),
+            redirect_forward_phone_number=flow.redirect_forward_phone_number,
+            redirect_conditions=conditions,
+            redirect_speak_message_enabled=bool(
+                flow.redirect_speak_message_enabled
+            ),
+            redirect_message=flow.redirect_message,
+        )
+
+    @staticmethod
+    def evaluate_redirect_conditions(
+        conditions: list[dict | Any],
+        context: dict[str, Any],
+    ) -> bool:
+        """
+        Evaluate redirect conditions against context using AND logic.
+        Returns True if conditions list is empty, or if ALL conditions match.
+        """
+        if not conditions:
+            return True
+
+        for cond in conditions:
+            if hasattr(cond, "model_dump"):
+                cond_dict = cond.model_dump()
+            elif isinstance(cond, dict):
+                cond_dict = cond
+            else:
+                cond_dict = {
+                    "variable": getattr(cond, "variable", ""),
+                    "operator": getattr(cond, "operator", ""),
+                    "value": getattr(cond, "value", None),
+                }
+
+            raw_var = str(cond_dict.get("variable") or "").strip()
+            var_name = raw_var
+            if var_name.startswith("{{") and var_name.endswith("}}"):
+                var_name = var_name[2:-2].strip()
+
+            operator_raw = cond_dict.get("operator")
+            if hasattr(operator_raw, "value"):
+                operator = str(operator_raw.value).strip().lower()
+            else:
+                operator = str(operator_raw or "").strip().lower()
+
+            target_val = cond_dict.get("value")
+            target_val_str = (
+                str(target_val).strip().lower()
+                if target_val is not None
+                else None
+            )
+
+            val = None
+            if "." in var_name:
+                parts = var_name.split(".")
+                cur: Any = context
+                for p in parts:
+                    if isinstance(cur, dict) and p in cur:
+                        cur = cur[p]
+                    else:
+                        cur = None
+                        break
+                val = cur
+                if val is None:
+                    val = context.get(var_name)
+            else:
+                val = context.get(var_name)
+                if (
+                    val is None
+                    and "_metadata" in context
+                    and isinstance(context["_metadata"], dict)
+                ):
+                    val = context["_metadata"].get(var_name)
+                if (
+                    val is None
+                    and "_variable" in context
+                    and isinstance(context["_variable"], dict)
+                ):
+                    val = context["_variable"].get(var_name)
+
+            if operator == "exists":
+                if val is None:
+                    return False
+            elif operator == "not_empty":
+                if val is None or str(val).strip() == "":
+                    return False
+            elif operator == "equals":
+                if val is None:
+                    return False
+                if str(val).strip().lower() != target_val_str:
+                    return False
+            elif operator == "not_equals":
+                curr_str = str(val).strip().lower() if val is not None else ""
+                if curr_str == (target_val_str or ""):
+                    return False
+            else:
+                return False
+
+        return True
+
+    @staticmethod
+    def render_redirect_message_template(
+        template: str,
+        context: dict[str, Any],
+    ) -> str:
+        """
+        Render {{key}} and {{_metadata.key}} template tokens in redirect announcement message.
+        """
+        if not template:
+            return ""
+        import re
+
+        def _replace_token(match: re.Match) -> str:
+            token = match.group(1).strip()
+            if "." in token:
+                parts = token.split(".")
+                cur: Any = context
+                found = True
+                for p in parts:
+                    if isinstance(cur, dict) and p in cur:
+                        cur = cur[p]
+                    else:
+                        found = False
+                        break
+                if found and cur is not None:
+                    return str(cur)
+            if token in context and context[token] is not None:
+                return str(context[token])
+            if (
+                "_metadata" in context
+                and isinstance(context["_metadata"], dict)
+                and context["_metadata"].get(token) is not None
+            ):
+                return str(context["_metadata"][token])
+            if (
+                "_variable" in context
+                and isinstance(context["_variable"], dict)
+                and context["_variable"].get(token) is not None
+            ):
+                return str(context["_variable"][token])
+            return ""
+
+        return re.sub(
+            r"\{\{\s*([a-zA-Z0-9_\.]+)\s*\}\}", _replace_token, template
+        ).strip()
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──
 
