@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
+import uuid
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -27,6 +28,27 @@ if TYPE_CHECKING:
 
 class CallControlMixin:
     """Call termination and transcript methods for BidirectionalStreamHandler."""
+
+    async def _play_tts_message(self, text: str) -> None:
+        """Enqueue a standalone spoken message to the TTS pipeline."""
+        clean_text = (text or "").strip()
+        if not clean_text:
+            return
+        tts_pipe = getattr(self, "_tts_pipeline", None)
+        if tts_pipe is not None:
+            if hasattr(tts_pipe, "queue_tts"):
+                use_ssml = bool(getattr(self, "_use_ssml", False))
+                await tts_pipe.queue_tts(
+                    {
+                        "text": clean_text,
+                        "chunk_id": f"msg_{uuid.uuid4().hex[:8]}",
+                        "use_ssml": use_ssml,
+                        "is_final": True,
+                    }
+                )
+                setattr(self, "_twilio_buffer_primed", False)
+            elif hasattr(tts_pipe, "say"):
+                await tts_pipe.say(clean_text)
 
     async def _check_and_end_call_if_goodbye(self, transcript: str):
         """
@@ -414,10 +436,7 @@ class CallControlMixin:
                         voicemail_msg = (getattr(flow, "voicemail_message", None) or "").strip()
                         if voicemail_msg:
                             try:
-                                if hasattr(self, "_play_tts_message") and callable(self._play_tts_message):
-                                    await self._play_tts_message(voicemail_msg)
-                                elif hasattr(self, "_tts_pipeline") and hasattr(self._tts_pipeline, "say"):
-                                    await self._tts_pipeline.say(voicemail_msg)
+                                await self._play_tts_message(voicemail_msg)
                             except Exception as tts_err:
                                 logger.warning("Could not play voicemail message before hangup: %s", tts_err)
 
@@ -770,6 +789,8 @@ class CallControlMixin:
         if not getattr(flow, "dtmf_allow_caller_interruption", False):
             self._dtmf_suppress_stt = True
 
+        self._cancel_silence_watchdog()
+
         if self._dtmf_debounce_task and not self._dtmf_debounce_task.done():
             self._dtmf_debounce_task.cancel()
 
@@ -798,14 +819,7 @@ class CallControlMixin:
                     ).strip()
                     if end_msg:
                         try:
-                            if hasattr(self, "_play_tts_message") and callable(
-                                self._play_tts_message
-                            ):
-                                await self._play_tts_message(end_msg)
-                            elif hasattr(self, "_tts_pipeline") and hasattr(
-                                self._tts_pipeline, "say"
-                            ):
-                                await self._tts_pipeline.say(end_msg)
+                            await self._play_tts_message(end_msg)
                         except Exception as tts_err:
                             logger.warning(
                                 "Could not play DTMF end call message before hangup: %s",
@@ -888,6 +902,290 @@ class CallControlMixin:
             pass
         except Exception as e:
             logger.error(f"Error flushing DTMF buffer: {e}", exc_info=True)
+
+    def _cancel_silence_watchdog(self) -> None:
+        """Cancel the active silence watchdog timer and reset retry count on user activity."""
+        task = getattr(self, "_silence_watchdog_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._silence_watchdog_task = None
+        self._silence_retry_count = 0
+
+    def _arm_silence_watchdog(self) -> None:
+        """Arm or re-arm background silence watchdog timer when agent finishes speaking."""
+        if getattr(self, "_call_ended", False):
+            return
+        task = getattr(self, "_silence_watchdog_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._silence_watchdog_task = asyncio.create_task(
+            self._silence_watchdog_loop()
+        )
+
+    async def _silence_watchdog_loop(self) -> None:
+        """Background loop that plays silence reminders and terminates after final timeout."""
+        try:
+            flow = getattr(self, "call_flow", None)
+            if (
+                flow is None
+                and self.call_session
+                and self.call_session.call_flow_id
+                and getattr(self, "db", None)
+            ):
+                try:
+                    from app.models.call_flow import CallFlow
+
+                    flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+                except Exception:
+                    flow = None
+
+            if not flow:
+                return
+
+            silence_timeout_raw = getattr(flow, "silence_timeout", 10)
+            silence_timeout = (
+                silence_timeout_raw if silence_timeout_raw is not None else 10
+            )
+            reminder_retries_raw = getattr(flow, "reminder_retries", 1)
+            reminder_retries = (
+                reminder_retries_raw if reminder_retries_raw is not None else 1
+            )
+            end_call_after_reminder_raw = getattr(
+                flow, "end_call_after_reminder", 10
+            )
+            end_call_after_reminder = (
+                end_call_after_reminder_raw
+                if end_call_after_reminder_raw is not None
+                else 10
+            )
+            reminder_messages = list(getattr(flow, "reminder_messages", []) or [])
+
+            while not getattr(self, "_call_ended", False):
+                if getattr(self, "_silence_retry_count", 0) < reminder_retries:
+                    await asyncio.sleep(float(silence_timeout))
+                    if getattr(self, "_call_ended", False):
+                        break
+                    # If TTS is currently playing, skip reminder this tick
+                    if getattr(self, "_is_tts_playing", False):
+                        continue
+
+                    retry_idx = getattr(self, "_silence_retry_count", 0)
+                    if (
+                        retry_idx < len(reminder_messages)
+                        and reminder_messages[retry_idx]
+                    ):
+                        msg = reminder_messages[retry_idx]
+                    else:
+                        msg = "Are you still there?"
+
+                    logger.info(
+                        "Silence timeout (%ss) reached; playing reminder %d/%d: %r",
+                        silence_timeout,
+                        retry_idx + 1,
+                        reminder_retries,
+                        msg,
+                    )
+                    self._silence_retry_count = retry_idx + 1
+                    try:
+                        await self._play_tts_message(msg)
+                    except Exception as play_err:
+                        logger.warning(
+                            "Error playing silence reminder TTS: %s", play_err
+                        )
+                else:
+                    # Final reminder retry exhausted: wait end_call_after_reminder seconds then terminate
+                    await asyncio.sleep(float(end_call_after_reminder))
+                    if getattr(self, "_call_ended", False):
+                        break
+                    if getattr(self, "_is_tts_playing", False):
+                        continue
+
+                    logger.info(
+                        "Silence timeout after reminders (%ss) reached — ending call",
+                        end_call_after_reminder,
+                    )
+                    try:
+                        self._call_ended = True
+                        if self.call_session:
+                            updated = (
+                                call_session_service.update_call_session_status(
+                                    self.db,
+                                    self.call_session.id,
+                                    "completed",
+                                    ended_reason="Silence timeout after reminders",
+                                )
+                            )
+                            if updated:
+                                self.call_session = updated
+
+                        if self.call_sid and self.call_session:
+                            try:
+                                account_sid, auth_token = (
+                                    get_twilio_credentials_for_call(
+                                        self.db, self.call_session
+                                    )
+                                )
+                                twilio_service.end_call_with_credentials(
+                                    self.call_sid, account_sid, auth_token
+                                )
+                            except Exception as end_err:
+                                logger.warning(
+                                    "Could not end Twilio call on silence timeout: %s",
+                                    end_err,
+                                )
+
+                        if self.call_session:
+                            try:
+                                await broadcast_call_status_update(
+                                    call_session_id=str(self.call_session.id),
+                                    status="completed",
+                                    metadata={
+                                        "call_sid": self.call_sid,
+                                        "stream_sid": self.stream_sid,
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "message": "call_ended",
+                                        "event": "silence_timeout",
+                                        "reason": "Silence timeout after reminders",
+                                    },
+                                )
+                            except Exception as b_err:
+                                logger.debug(
+                                    f"WebSocket broadcast failed after silence timeout: {b_err}"
+                                )
+
+                        asyncio.create_task(self._full_shutdown())
+                    except Exception as end_e:
+                        logger.error(
+                            f"Error ending call on silence timeout: {end_e}",
+                            exc_info=True,
+                        )
+                    break
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in silence watchdog: {e}", exc_info=True
+            )
+
+    def _arm_max_duration_timer(self) -> None:
+        """Arm hard timer for maximum call duration."""
+        if getattr(self, "_call_ended", False):
+            return
+        flow = getattr(self, "call_flow", None)
+        if (
+            flow is None
+            and self.call_session
+            and self.call_session.call_flow_id
+            and getattr(self, "db", None)
+        ):
+            try:
+                from app.models.call_flow import CallFlow
+
+                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+            except Exception:
+                flow = None
+
+        if not flow:
+            return
+
+        max_dur_raw = getattr(flow, "max_call_duration", 1800)
+        max_dur = max_dur_raw if max_dur_raw is not None else 1800
+
+        task = getattr(self, "_max_duration_task", None)
+        if task and not task.done():
+            task.cancel()
+        self._max_duration_task = asyncio.create_task(
+            self._max_duration_watchdog(float(max_dur))
+        )
+
+    async def _max_duration_watchdog(self, max_seconds: float) -> None:
+        """Sleep for max call duration and terminate call with optional departure message."""
+        try:
+            await asyncio.sleep(max_seconds)
+            if getattr(self, "_call_ended", False):
+                return
+
+            logger.info(
+                "Max call duration (%ss) reached — ending call", max_seconds
+            )
+            flow = getattr(self, "call_flow", None)
+            if (
+                flow is None
+                and self.call_session
+                and self.call_session.call_flow_id
+                and getattr(self, "db", None)
+            ):
+                try:
+                    from app.models.call_flow import CallFlow
+
+                    flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+                except Exception:
+                    flow = None
+
+            departure_msg = (
+                getattr(flow, "max_duration_message", None) or ""
+            ).strip()
+            if departure_msg:
+                try:
+                    await self._play_tts_message(departure_msg)
+                except Exception as tts_err:
+                    logger.warning(
+                        "Error playing max duration message: %s", tts_err
+                    )
+
+            self._call_ended = True
+            if self.call_session:
+                updated = call_session_service.update_call_session_status(
+                    self.db,
+                    self.call_session.id,
+                    "completed",
+                    ended_reason="Max call duration reached",
+                )
+                if updated:
+                    self.call_session = updated
+
+            if self.call_sid and self.call_session:
+                try:
+                    account_sid, auth_token = get_twilio_credentials_for_call(
+                        self.db, self.call_session
+                    )
+                    twilio_service.end_call_with_credentials(
+                        self.call_sid, account_sid, auth_token
+                    )
+                except Exception as end_err:
+                    logger.warning(
+                        "Could not end Twilio call on max duration limit: %s",
+                        end_err,
+                    )
+
+            if self.call_session:
+                try:
+                    await broadcast_call_status_update(
+                        call_session_id=str(self.call_session.id),
+                        status="completed",
+                        metadata={
+                            "call_sid": self.call_sid,
+                            "stream_sid": self.stream_sid,
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "message": "call_ended",
+                            "event": "max_duration_reached",
+                            "reason": "Max call duration reached",
+                        },
+                    )
+                except Exception as b_err:
+                    logger.debug(
+                        f"WebSocket broadcast failed after max duration reached: {b_err}"
+                    )
+
+            asyncio.create_task(self._full_shutdown())
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(
+                f"Unexpected error in max duration watchdog: {e}", exc_info=True
+            )
     
     async def _add_to_transcript(
         self,

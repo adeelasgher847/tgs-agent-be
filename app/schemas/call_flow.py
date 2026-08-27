@@ -451,6 +451,89 @@ class IVRDTMFSettingsResponse(BaseModel):
     )
 
 
+class CallTimingSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/call-timing-settings``."""
+
+    silence_timeout: int = Field(
+        default=10,
+        ge=3,
+        le=60,
+        description="Duration in seconds of caller silence before a reminder message is played (3-60).",
+    )
+    end_call_after_reminder: int = Field(
+        default=10,
+        ge=3,
+        le=60,
+        description="Duration in seconds of caller silence after the final reminder before terminating call (3-60).",
+    )
+    reminder_retries: int = Field(
+        default=1,
+        ge=1,
+        le=3,
+        description="Number of reminder attempts before disconnecting the call (1-3).",
+    )
+    reminder_messages: list[str] = Field(
+        default_factory=list,
+        description="Custom list of reminder messages to cycle through upon silence.",
+    )
+    max_call_duration: int = Field(
+        default=1800,
+        ge=60,
+        le=7200,
+        description="Maximum allowed call duration in seconds before forced termination (60-7200, 1m-120m).",
+    )
+    max_duration_message: str | None = Field(
+        default="I appreciate the conversation, but we've reached our time limit for this call.",
+        max_length=500,
+        description="Message spoken by the agent before terminating due to max call duration limit reached.",
+    )
+
+    model_config = ConfigDict(extra="forbid")
+
+    @field_validator("reminder_messages", mode="before")
+    @classmethod
+    def _validate_reminder_messages(cls, v):
+        if v is None:
+            return []
+        if not isinstance(v, list):
+            raise ValueError("reminder_messages must be a list of strings")
+        cleaned = []
+        for item in v:
+            if not isinstance(item, str):
+                raise ValueError("each reminder message must be a string")
+            s = item.strip()
+            if s:
+                cleaned.append(s)
+        if len(cleaned) > 10:
+            raise ValueError("reminder_messages can contain at most 10 messages")
+        return cleaned
+
+    @field_validator("max_duration_message", mode="before")
+    @classmethod
+    def _validate_max_duration_message(cls, v):
+        if v is None:
+            return None
+        if not isinstance(v, str):
+            raise ValueError("max_duration_message must be a string")
+        s = v.strip()
+        return s if s else None
+
+
+class CallTimingSettingsResponse(BaseModel):
+    """Response body for ``GET /api/v2/flows/{flow_id}/call-timing-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    silence_timeout: int = 10
+    end_call_after_reminder: int = 10
+    reminder_retries: int = 1
+    reminder_messages: list[str] = Field(default_factory=list)
+    max_call_duration: int = 1800
+    max_duration_message: str | None = (
+        "I appreciate the conversation, but we've reached our time limit for this call."
+    )
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

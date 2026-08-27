@@ -248,6 +248,29 @@ class CallFlow(Base):
         server_default="You've reached the maximum number of inputs allowed for this call.",
     )
 
+    # ── Call Timing & Silence Detection Settings ──
+    silence_timeout = Column(
+        Integer, default=10, nullable=False, server_default="10"
+    )
+    end_call_after_reminder = Column(
+        Integer, default=10, nullable=False, server_default="10"
+    )
+    reminder_retries = Column(
+        Integer, default=1, nullable=False, server_default="1"
+    )
+    reminder_messages = Column(
+        JSONB, default=list, nullable=False, server_default=sa_text("'[]'")
+    )
+    max_call_duration = Column(
+        Integer, default=1800, nullable=False, server_default="1800"
+    )
+    max_duration_message = Column(
+        Text,
+        nullable=True,
+        default="I appreciate the conversation, but we've reached our time limit for this call.",
+        server_default="I appreciate the conversation, but we've reached our time limit for this call.",
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )
