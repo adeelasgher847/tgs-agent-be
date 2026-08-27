@@ -10,20 +10,27 @@ from app.core.logger import logger
 
 def strip_ssml_tags(text: str) -> str:
     """
-    Remove all SSML tags from text, keeping only the actual text content.
-    Used for saving clean text to transcript.
-    Handles both complete and incomplete SSML tags.
+    Remove all SSML/XML tags from text, keeping only the actual text content.
+    Used for saving clean text to transcript and sanitizing TTS inputs.
+    Handles complete tags, unclosed opening tags (<tag...), and trailing
+    unclosed tag fragments (...>) split across streaming chunk boundaries.
     """
     if not text:
         return ""
-    
-    # Remove complete SSML tags (<tag>content</tag> or <tag/>)
-    text = re.sub(r'<[^>]+>', '', text)
-    # Remove incomplete SSML tags (tags without closing >, like <break time="150ms)
-    text = re.sub(r'<[^>]*', '', text)
+
+    # Remove complete SSML/XML tags (<tag>content</tag> or <tag/>)
+    text = re.sub(r"<[^>]+>", " ", text)
+    # Remove unclosed tag at end of string (<tag... without closing >)
+    text = re.sub(r"<[^>]*$", " ", text)
+    # Remove trailing unclosed tag fragment at start of string (e.g. rate="90%">)
+    if "<" not in text and ">" in text:
+        text = re.sub(r"^[^<]*>", " ", text)
+    # Remove any remaining unclosed opening tags
+    text = re.sub(r"<[^>]*", " ", text)
     # Clean up extra whitespace
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
+
 
 
 def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True, add_fillers: bool = True, add_boundary_pause: bool = False) -> str:

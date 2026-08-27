@@ -366,7 +366,7 @@ class BidirectionalStreamHandler(
         )
         self._twilio_buffer_primed = False  # Track if jitter buffer has been primed
         self._tts_pipeline: TtsPipeline | None = None
-        self._use_ssml = True  # Enable SSML by default
+        self._use_ssml = False  # Disabled by default; only enabled if provider explicitly supports SSML
         # Quick-ack dedup guard: prevent repeated acknowledgements for the same
         # user turn when interim/final regeneration paths overlap.
         self._last_quick_ack_user_norm: str = ""
@@ -487,6 +487,7 @@ class BidirectionalStreamHandler(
             False  # True after first interim triggers LLM for this turn
         )
         self._turn_response_seed_text = ""
+        self._interim_task_response_produced = False
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
         self._llm_response_task: asyncio.Task | None = None
         self._auto_greeting_sent = False
@@ -655,6 +656,15 @@ class BidirectionalStreamHandler(
                 # Lazy safety net: ensure prompt KB exists for older agents
                 # created before auto-ingest rollout.
                 agent_service.ensure_agent_prompt_ingested(self.db, self.agent)
+                if self.agent:
+                    from app.core.agent_runtime import resolve_tts_runtime
+
+                    runtime = resolve_tts_runtime(self.agent, db=self.db)
+                    # SSML is only supported for non-streaming Google Cloud TTS
+                    self._use_ssml = (
+                        (runtime.adapter_slug or "").lower() == "google"
+                        and not getattr(settings, "VOICE_TTS_STREAMING_ENABLED", True)
+                    )
 
             if self.call_session and self.call_session.call_flow_id:
                 from app.models.call_flow import CallFlow
@@ -920,6 +930,7 @@ class BidirectionalStreamHandler(
         """Stop background LLM+TTS for this turn (barge-in or final regen)."""
         t = self._llm_response_task
         self._llm_response_task = None
+        self._interim_task_response_produced = False
         if t and not t.done():
             t.cancel()
             try:
@@ -995,6 +1006,7 @@ class BidirectionalStreamHandler(
         # ── Phase 1: state check (inside lock, fast) ──────────────────────────
         _should_generate = False
         _need_cancel = False
+        _wait_for_interim_task = None
 
         async with self._llm_turn_serial_lock:
             _now_m = time.monotonic()
@@ -1019,15 +1031,32 @@ class BidirectionalStreamHandler(
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
-                if should_regenerate:
+
+                interim_task = self._llm_response_task
+                if should_regenerate or interim_task is None:
                     _should_generate = True
                     _need_cancel = True
                     self._llm_last_answered_transcript = tstrip
                     self._llm_last_answered_ts = _now_m
+                elif interim_task.done():
+                    interim_res = None
+                    if not interim_task.cancelled() and interim_task.exception() is None:
+                        try:
+                            interim_res = interim_task.result()
+                        except Exception:
+                            interim_res = None
+
+                    if interim_res and str(interim_res).strip():
+                        # Interim LLM task for this turn completed with a valid, committed response.
+                        return
+                    else:
+                        # Interim finished without producing a valid response — generate for final!
+                        _should_generate = True
+                        _need_cancel = True
+                        self._llm_last_answered_transcript = tstrip
+                        self._llm_last_answered_ts = _now_m
                 else:
-                    # Interim LLM already running with the correct transcript —
-                    # let it finish without a second generation.
-                    return
+                    _wait_for_interim_task = interim_task
             else:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -1036,6 +1065,32 @@ class BidirectionalStreamHandler(
                 self._llm_last_answered_transcript = tstrip
                 self._llm_last_answered_ts = _now_m
         # ── Lock released ──────────────────────────────────────────────────────
+
+        # If an interim task was in-flight and considered a continuation, wait for it outside the lock.
+        if _wait_for_interim_task is not None:
+            interim_res = None
+            if not _wait_for_interim_task.done():
+                try:
+                    interim_res = await asyncio.wait_for(asyncio.shield(_wait_for_interim_task), timeout=12.0)
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception) as exc:
+                    logger.debug("[LLM] In-flight interim task failed/timed out/cancelled: %s", exc)
+            elif not _wait_for_interim_task.cancelled() and _wait_for_interim_task.exception() is None:
+                try:
+                    interim_res = _wait_for_interim_task.result()
+                except Exception:
+                    interim_res = None
+
+            if interim_res and str(interim_res).strip():
+                # THIS specific interim task completed and committed a valid response!
+                return
+
+            # Interim task did not produce a valid response (failed, cancelled, or empty) —
+            # Fall back and generate for the authoritative final transcript!
+            _should_generate = True
+            _need_cancel = True
+            async with self._llm_turn_serial_lock:
+                self._llm_last_answered_transcript = tstrip
+                self._llm_last_answered_ts = time.monotonic()
 
         if not _should_generate:
             return
@@ -1442,13 +1497,23 @@ class BidirectionalStreamHandler(
             self._last_interim_sent_ts = now
             self._turn_response_started = True
             self._turn_response_seed_text = transcript
+            self._interim_task_response_produced = False
 
-            async def _run_interim() -> None:
-                await self.generate_and_stream_response(
-                    transcript,
-                    confidence,
-                    is_greeting=False,
-                )
+            async def _run_interim() -> str | None:
+                try:
+                    resp = await self.generate_and_stream_response(
+                        transcript,
+                        confidence,
+                        is_greeting=False,
+                    )
+                    if resp and str(resp).strip():
+                        return str(resp).strip()
+                    return None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error(f"Error processing interim: {exc}")
+                    return None
 
             if self._llm_response_task and not self._llm_response_task.done():
                 self._llm_response_task.cancel()
@@ -2795,6 +2860,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     "", self._strip_control_tokens_for_tts(final_text)
                 ).strip()
                 if transcript_text:
+                    self._interim_task_response_produced = True
                     await self._add_to_transcript(
                         "agent",
                         transcript_text,
@@ -2857,10 +2923,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 except Exception as exc:
                     logger.debug("VoiceSLO breach check failed: %s", exc)
 
+                return final_text
+            return None
+
         except asyncio.CancelledError:
             raise
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            return None
 
     async def _deferred_conversation_memory_update(
         self, turn_context: TurnContext, user_text: str

@@ -135,7 +135,7 @@ def mix_audio_with_background(
         return tts_audio
 
 
-_VOLUME_MAX_GAIN = 2.0
+_VOLUME_MAX_GAIN = 3.0
 
 
 def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:

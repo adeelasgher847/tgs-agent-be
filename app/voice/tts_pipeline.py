@@ -649,9 +649,16 @@ class TtsPipeline:
         of _try_elevenlabs_ws_route purely so the gate-release `finally`
         above stays simple and always fires exactly once.
         """
+        from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+        clean_text = prepare_tts_text_for_provider(text, "elevenlabs")
+        if not clean_text:
+            if is_final and self._eleven_ws_session is not None:
+                await self._eleven_ws_session.finalize()
+            return ("relayed" if self._eleven_ws_session is not None else None), None
+
         # ── Non-owner: an active session already exists for this turn ─────
         if self._eleven_ws_session is not None:
-            await self._eleven_ws_session.send_text(text)
+            await self._eleven_ws_session.send_text(clean_text)
             if is_final:
                 await self._eleven_ws_session.finalize()
             return "relayed", None
@@ -713,7 +720,7 @@ class TtsPipeline:
             api_key_override=api_key_override,
         )
         try:
-            await session.start(initial_text=text)
+            await session.start(initial_text=clean_text)
         except ElevenLabsWebSocketSessionError as exc:
             self._eleven_ws_failed_this_turn = True
             logger.warning(

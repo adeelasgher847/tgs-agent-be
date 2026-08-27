@@ -128,20 +128,26 @@ class TtsStreamMixin:
 
     def _resolve_voice_volume(self) -> float:
         """
-        Resolve TTS voice volume (linear gain) from agent settings.
-        1.0 = unchanged. Applied uniformly to all providers (Google,
-        ElevenLabs, Rime) at the mulaw playback boundary.
+        Resolve TTS voice volume (linear gain) from agent settings with
+        provider-aware telephony baseline leveling.
 
-        Distinct from `background_volume` which only affects the optional
-        office ambient bed (ElevenLabs profile).
+        - Google TTS outputs at nominal telephony level (~-18 dBFS RMS) -> baseline 1.0x.
+        - ElevenLabs ulaw_8000 outputs at ~-25.7 to -26.3 dBFS RMS with -6.2 dBFS peak headroom.
+          Applying a 1.8x baseline gain (+5.1 dB) brings ElevenLabs to ~-20.6 dBFS RMS,
+          matching PSTN speech levels while maintaining safe peak headroom (-1.7 dBFS).
+        - User-configured volume slider scales on top of the provider baseline.
         """
         if not self.agent:
             return 1.0
         try:
             runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
-            return float(runtime.settings_json.get("volume", 1.0))
+            user_vol = float(runtime.settings_json.get("volume", 1.0))
+            provider_slug = (runtime.adapter_slug or "").lower()
+            baseline = 1.8 if provider_slug == "elevenlabs" else 1.0
+            return max(0.0, user_vol * baseline)
         except Exception:
             return 1.0
+
 
     async def _stream_tts_chunk(
         self,
@@ -520,14 +526,8 @@ class TtsStreamMixin:
 
                             # Stream text in near real-time from provider.
                             # For Google: use native async streaming API.
-                            # For ElevenLabs: use HTTP chunk streaming via adapter.
-                            streaming_text = (
-                                strip_ssml_tags(clean)
-                                if use_ssml or clean.lstrip().startswith("<speak>")
-                                else clean
-                            )
                             streaming_text = prepare_tts_text_for_provider(
-                                streaming_text, tts_provider_slug
+                                clean, tts_provider_slug
                             )
                             if not streaming_text or not streaming_text.strip():
                                 return
@@ -927,15 +927,9 @@ class TtsStreamMixin:
             tts_runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
             tts_provider_slug = tts_runtime.adapter_slug
 
-            streaming_text = (
-                strip_ssml_tags(clean)
-                if use_ssml or clean.lstrip().startswith("<speak>")
-                else clean
-            )
             streaming_text = prepare_tts_text_for_provider(
-                streaming_text, tts_provider_slug
+                clean, tts_provider_slug
             )
-
             if not streaming_text or not streaming_text.strip():
                 return None
 

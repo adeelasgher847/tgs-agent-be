@@ -554,9 +554,11 @@ class BookingMixin:
         """
         Final text gate before queueing TTS.
         """
+        from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+
         cleaned = self._strip_control_tokens_for_tts(text or "")
         cleaned = self._strip_premature_booking_confirmation(cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = prepare_tts_text_for_provider(cleaned, None)
         if self._looks_like_control_leak(cleaned):
             logger.warning("TTSGuard: dropped token-like leak text=%r", cleaned[:180])
             return ""
