@@ -422,6 +422,52 @@ async def test_case_i_conversational_backchannel_vs_explicit_command_barge_in():
     assert handler._should_barge_in_on_stt("I have a question", 1.00) is True
     assert handler._should_barge_in_on_stt("Hey. Hi. Stop please", 1.00) is True
 
+@pytest.mark.asyncio
+async def test_case_j_legitimate_short_and_unknown_requests_not_dropped():
+    """Case J: Verify that legitimate short 2-word requests and unknown phrases are NOT dropped
+    when spoken over active TTS (they barge in) and are processed normally when silent."""
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler._enable_interim_llm = False
+    handler._barge_in_min_words = 2
+    handler._barge_in_min_conf = 0.26
+    handler._barge_in_min_conf_1w = 0.36
+    handler._barge_in_dead_zone_ms = 600
+
+    handler._cancel_inflight_llm_response = AsyncMock()
+    handler._is_tts_playing = True
+    handler._tts_play_start_ts = time.perf_counter() - 1.0
+
+    # Legitimate 2-word user requests MUST barge in when spoken over active TTS
+    legitimate_short_requests = [
+        "Tell me",
+        "Help me",
+        "Call John",
+        "Book appointment",
+        "Transfer me",
+        "What now",
+        "What's that",
+        "Who is that",
+        "Where exactly",
+        "How much",
+        "Tell me more",
+        "Stop billing",
+        "Cancel order",
+        "Blue widget",  # Unknown / unseen 2-word phrase
+    ]
+
+    for req in legitimate_short_requests:
+        assert handler._should_barge_in_on_stt(req, 0.90) is True, f"Failed to barge in for legitimate request: {req}"
+
+    # Verify that sending a legitimate request over active TTS triggers cancellation
+    await handler._maybe_process_interim("Tell me", 0.90)
+    assert handler._cancel_inflight_llm_response.call_count == 1
+
+
 
 
 

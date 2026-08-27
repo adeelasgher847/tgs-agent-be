@@ -504,13 +504,13 @@ class TestBargeIn:
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
     def test_barge_in_single_word_high_confidence_does_not_cancel_by_default(self):
-        """Default min 2 words: lone 'stop' must not cancel even at high confidence."""
+        """Default min 2 words: lone non-command 'hello' must not cancel even at high confidence."""
         h = _base_handler()
         h.is_speaking = True
         h._is_tts_playing = True
         h._tts_pipeline.is_speaking = True
 
-        asyncio.run(h._maybe_process_interim("stop", 0.55))
+        asyncio.run(h._maybe_process_interim("hello", 0.55))
 
         h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
 

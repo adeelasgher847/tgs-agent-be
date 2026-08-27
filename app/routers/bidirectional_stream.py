@@ -165,6 +165,12 @@ from app.voice.tts_stream_mixin import TtsStreamMixin
 from app.voice.call_control_mixin import CallControlMixin
 from app.voice.flow_pipeline_mixin import FlowPipelineMixin
 from app.voice.pipeline_session import PipelineSession
+from app.voice.backchannel_classifier import (
+    TurnClassification,
+    classify_turn,
+    is_known_non_actionable_backchannel,
+    is_pure_acoustic_filler,
+)
 
 router = APIRouter()
 
@@ -492,6 +498,7 @@ class BidirectionalStreamHandler(
         self._lk_caller_publisher = None
         self._lk_agent_publisher = None
         self._screening_decline_handled = False
+        self._last_agent_speech_time: float = 0.0
 
         # Deepgram can emit the same is_final twice within a short window — avoid triple LLM/transcript
         self._stt_last_final_raw: str = ""
@@ -1079,89 +1086,26 @@ class BidirectionalStreamHandler(
             return False
         return True
 
-    _BARGE_IN_FILLER_WORDS = frozenset(
-        {
-            "uh",
-            "um",
-            "hmm",
-            "mm",
-            "ah",
-            "er",
-            "huh",
-            "mhm",
-            "mmm",
-            "eh",
-            "ugh",
-        }
-    )
-
     def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
-        low = re.sub(r"[^a-z ]+", "", (transcript or "").lower()).strip()
-        if not low:
-            return True
-        if low in self._BARGE_IN_FILLER_WORDS:
-            return True
-        tokens = low.split()
-        return bool(tokens) and all(t in self._BARGE_IN_FILLER_WORDS for t in tokens)
-
-    _BARGE_IN_COMMAND_WORDS = frozenset(
-        {
-            "stop",
-            "wait",
-            "hold",
-            "pause",
-            "cancel",
-            "interrupt",
-            "shut",
-            "quiet",
-            "listen",
-            "no",
-            "wrong",
-            "quit",
-            "abort",
-        }
-    )
-
-    def _has_2w_barge_in_command(self, text: str) -> bool:
-        """
-        For exactly 2-word utterances, require a clear interruption/command intent
-        (e.g., 'stop please', 'wait please', 'hold on', 'cancel that', 'stop talking')
-        to prevent polite conversational backchannels / greetings ('hey hi', 'hi there',
-        'good morning', 'yeah yeah', 'okay okay') from cutting active TTS playback.
-        """
-        low = re.sub(r"[^a-z ]+", " ", (text or "").lower())
-        tokens = [t for t in low.split() if t]
-        if len(tokens) != 2:
-            return False
-        return any(t in self._BARGE_IN_COMMAND_WORDS for t in tokens)
+        return is_pure_acoustic_filler(transcript)
 
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         """
-        True when STT looks like real user speech over the agent (not noise/filler).
-
-        Gates (all required): non-empty text, not filler-only, word count ≥
-        VOICE_BARGE_IN_MIN_WORDS. For exactly 2 words, must contain an explicit
-        interruption/command keyword (stop, wait, hold, cancel, etc.) to reject
-        conversational backchannels/greetings. Confidence at or above
-        VOICE_BARGE_IN_MIN_CONFIDENCE (multi-word) or VOICE_BARGE_IN_MIN_CONFIDENCE_1W
-        when min words is 1.
+        True when STT represents an actionable user turn or explicit interruption
+        over active TTS playback, rejecting known non-actionable backchannels.
         """
         if getattr(self, "_dtmf_suppress_stt", False):
             return False
-        text = (transcript or "").strip()
-        if not text or self._is_stt_filler_for_barge_in(text):
-            return False
-        word_count = len(text.split())
-        if word_count < self._barge_in_min_words:
-            return False
-        if word_count == 2:
-            if not self._has_2w_barge_in_command(text):
-                return False
-            return confidence >= self._barge_in_min_conf
-        if word_count >= 3:
-            return confidence >= self._barge_in_min_conf
-        return confidence >= self._barge_in_min_conf_1w
+        classification = classify_turn(
+            transcript,
+            confidence,
+            is_tts_playing=True,
+            min_confidence=self._barge_in_min_conf,
+            min_words=self._barge_in_min_words,
+            min_confidence_1w=self._barge_in_min_conf_1w,
+        )
+        return classification == TurnClassification.BARGE_IN
 
     def _log_barge_in_suppressed(
         self, transcript: str, confidence: float, reason: str
@@ -1186,26 +1130,34 @@ class BidirectionalStreamHandler(
         """Process a transcript (final result)"""
         try:
             # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
-            if self._is_tts_playing and self._should_barge_in_on_stt(
-                transcript, confidence
-            ):
-                self._metric_barge_in_ts = time.perf_counter()
-                logger.info(
-                    "[Barge-in/final] TTS cut by final STT: %r",
-                    (transcript or "")[:40],
-                )
-                await self._cancel_inflight_llm_response()
-                self._metric_audio_cut_ts = time.perf_counter()
-                _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
-                logger.info(
-                    "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
-                    _cut_ms,
-                )
-                self._is_tts_playing = False
-                self._turn_response_started = False
-                self._turn_response_seed_text = ""
-                self._last_interim_text = ""
-                # Fall through — still process transcript and generate new response.
+            if self._is_tts_playing:
+                if self._should_barge_in_on_stt(transcript, confidence):
+                    self._metric_barge_in_ts = time.perf_counter()
+                    logger.info(
+                        "[Barge-in/final] TTS cut by final STT: %r",
+                        (transcript or "")[:40],
+                    )
+                    await self._cancel_inflight_llm_response()
+                    self._metric_audio_cut_ts = time.perf_counter()
+                    _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
+                    logger.info(
+                        "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
+                        _cut_ms,
+                    )
+                    self._is_tts_playing = False
+                    self._turn_response_started = False
+                    self._turn_response_seed_text = ""
+                    self._last_interim_text = ""
+                    # Fall through — still process transcript and generate new response.
+                else:
+                    # Final STT arrived while TTS was playing and was classified as a
+                    # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
+                    # Suppress LLM response so active playback completes undisturbed.
+                    logger.info(
+                        "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
+                        (transcript or "")[:40],
+                    )
+                    return
 
             async with self._voice_transcript_lock:
                 self._cancel_silence_watchdog()
@@ -1286,6 +1238,8 @@ class BidirectionalStreamHandler(
                     confidence,
                     defer_post_write=True,
                 )
+
+                # Update booking memory from user turn
                 self._update_booking_memory_from_user_turn(transcript)
 
                 user_turn_norm = self._normalize_turn_text(transcript)
@@ -1316,15 +1270,14 @@ class BidirectionalStreamHandler(
             # stall here for one full generation (~10–60s), inflating stt_final→gen_start.
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
 
-        except Exception as e:
-            logger.error(f"Error processing transcript: {e}", exc_info=True)
+        except Exception as exc:
+            logger.error("Error in _process_transcript: %s", exc, exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
         At most one early LLM+TTS run per user utterance when `VOICE_ENABLE_INTERIM_LLM` is True.
         Default is False: LLM runs on **final** STT only, avoiding double replies from Deepgram
-        partials (e.g. "I'm" then "I'm feeling sad"). Barge-in still uses interim. When enabled,
-        gates use `VOICE_MIN_INTERIM_WORDS` + `VOICE_MIN_INTERIM_CONFIDENCE`.
+        partials. Barge-in still uses interim.
         """
         try:
             if not transcript:
@@ -1335,15 +1288,9 @@ class BidirectionalStreamHandler(
             word_count = len(transcript.split())
 
             # ── Barge-in gate ────────────────────────────────────────────────────
-            # Cut when audio is actively playing AND STT looks like real speech.
-            # `_is_tts_playing` only gates on streaming audio; word count, confidence,
-            # and filler rejection block phantom Deepgram hits on silence.
+            # Cut when audio is actively playing AND STT looks like real speech/command.
             is_barge_in = False
             if self._is_tts_playing:
-                # Dead-zone: ignore interims that arrive within N ms of TTS starting.
-                # Deepgram can send stale interims (from the user's original speech)
-                # at almost exactly the moment the first audio frame is sent to Twilio.
-                # Without this guard, barge-in fires instantly and the user hears nothing.
                 _in_dead_zone = (
                     self._tts_play_start_ts > 0
                     and (time.perf_counter() - self._tts_play_start_ts) * 1000
@@ -1357,15 +1304,15 @@ class BidirectionalStreamHandler(
                 elif self._should_barge_in_on_stt(transcript, confidence):
                     is_barge_in = True
                 elif (transcript or "").strip():
-                    if self._is_stt_filler_for_barge_in(transcript):
+                    if is_pure_acoustic_filler(transcript):
                         self._log_barge_in_suppressed(transcript, confidence, "filler")
+                    elif is_known_non_actionable_backchannel(transcript):
+                        self._log_barge_in_suppressed(
+                            transcript, confidence, "backchannel"
+                        )
                     elif word_count < self._barge_in_min_words:
                         self._log_barge_in_suppressed(
                             transcript, confidence, "min_words"
-                        )
-                    elif word_count == 2 and not self._has_2w_barge_in_command(transcript):
-                        self._log_barge_in_suppressed(
-                            transcript, confidence, "2w_no_command"
                         )
                     else:
                         self._log_barge_in_suppressed(
@@ -1391,38 +1338,33 @@ class BidirectionalStreamHandler(
                 self._last_interim_text = ""
                 return
 
-            # RAG prefetch: fire vector-DB retrieval as soon as we have a confident
-            # partial so it overlaps Deepgram endpointing time. This saves ~2s because
-            # the result is ready (or nearly so) by the time generate_and_stream_response
-            # would otherwise block waiting for Pinecone. Fires once per user turn
-            # regardless of VOICE_ENABLE_INTERIM_LLM so even final-only mode benefits.
-            _prefetch = getattr(self, "_rag_prefetch_task", None)
-            if (
-                not _prefetch
-                and not self._turn_response_started
-                and word_count >= self._rag_prefetch_min_words
-                and confidence >= self._rag_prefetch_min_confidence
-            ):
-                self._rag_prefetch_user_text = transcript
-                self._rag_prefetch_task = asyncio.create_task(
-                    self._prefetch_rag_context(transcript)
-                )
+            # RAG prefetch: fire vector-DB retrieval only on genuine queries (not backchannels)
+            if not is_known_non_actionable_backchannel(transcript):
+                _prefetch = getattr(self, "_rag_prefetch_task", None)
+                if (
+                    not _prefetch
+                    and not self._turn_response_started
+                    and word_count >= self._rag_prefetch_min_words
+                    and confidence >= self._rag_prefetch_min_confidence
+                ):
+                    self._rag_prefetch_user_text = transcript
+                    self._rag_prefetch_task = asyncio.create_task(
+                        self._prefetch_rag_context(transcript)
+                    )
 
-            # Speculative TTS prefetch: also fire on interim so synthesis starts during
-            # the Deepgram endpointing window (200ms), maximising overlap with LLM TTFT.
-            # Only fire once per turn (guard: task not already running).
-            if (
-                not self._turn_response_started
-                and word_count >= self._min_interim_words
-                and confidence >= self._min_interim_confidence
-                and (
-                    self._speculative_prefetch_task is None
-                    or self._speculative_prefetch_task.done()
-                )
-            ):
-                self._speculative_prefetch_task = asyncio.create_task(
-                    self._run_speculative_tts_prefetch(transcript)
-                )
+                # Speculative TTS prefetch: fire on qualifying query interims
+                if (
+                    not self._turn_response_started
+                    and word_count >= self._min_interim_words
+                    and confidence >= self._min_interim_confidence
+                    and (
+                        self._speculative_prefetch_task is None
+                        or self._speculative_prefetch_task.done()
+                    )
+                ):
+                    self._speculative_prefetch_task = asyncio.create_task(
+                        self._run_speculative_tts_prefetch(transcript)
+                    )
 
             # Final-only mode: do not start LLM from partials (barge-in already handled).
             if not self._enable_interim_llm:

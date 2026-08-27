@@ -44,7 +44,6 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-import re
 import struct
 import uuid
 from datetime import datetime, timezone
@@ -61,6 +60,11 @@ from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_
 from app.voice.gemini_live_audio_bridge import GEMINI_OUTPUT_PCM_RATE_HZ
 from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI_REALTIME_AUDIO_RATE_HZ
 from app.voice.humanization_engine import pause_frames_for_chunk
+from app.voice.backchannel_classifier import (
+    TurnClassification,
+    classify_turn,
+    is_known_non_actionable_backchannel,
+)
 
 if TYPE_CHECKING:
     from app.voice.humanization_engine import PacingHint
@@ -676,45 +680,16 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
-    _BARGE_IN_COMMAND_WORDS = frozenset(
-        {
-            "stop",
-            "wait",
-            "hold",
-            "pause",
-            "cancel",
-            "interrupt",
-            "shut",
-            "quiet",
-            "listen",
-            "no",
-            "wrong",
-            "quit",
-            "abort",
-        }
-    )
-
-    def _has_2w_barge_in_command(self, text: str) -> bool:
-        low = re.sub(r"[^a-z ]+", " ", (text or "").lower())
-        tokens = [t for t in low.split() if t]
-        if len(tokens) != 2:
-            return False
-        return any(t in self._BARGE_IN_COMMAND_WORDS for t in tokens)
-
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
-        text = (transcript or "").strip()
-        if not text:
-            return False
-        word_count = len(text.split())
-        if word_count < self._barge_in_min_words:
-            return False
-        if word_count == 2:
-            if not self._has_2w_barge_in_command(text):
-                return False
-            return confidence >= self._barge_in_min_conf
-        if word_count >= 3:
-            return confidence >= self._barge_in_min_conf
-        return confidence >= self._barge_in_min_conf_1w
+        classification = classify_turn(
+            transcript,
+            confidence,
+            is_tts_playing=True,
+            min_confidence=self._barge_in_min_conf,
+            min_words=self._barge_in_min_words,
+            min_confidence_1w=self._barge_in_min_conf_1w,
+        )
+        return classification == TurnClassification.BARGE_IN
 
     async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         try:
@@ -750,6 +725,8 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         """
         if self._rag_prefetch_task is not None:
             return  # already fired for this turn — never fire a duplicate request
+        if is_known_non_actionable_backchannel(text):
+            return  # backchannels should not prefetch RAG
         flow_kb_ids = (self.call_flow.knowledge_base_ids or []) if self.call_flow else []
         if not flow_kb_ids or not self.db:
             return  # RAG/KB not configured for this call flow — nothing to prefetch
@@ -843,9 +820,16 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             if not text:
                 return
 
-            if self._is_tts_playing and self._should_barge_in_on_stt(text, confidence):
-                logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
-                await self._cancel_inflight_llm_response()
+            if self._is_tts_playing:
+                if self._should_barge_in_on_stt(text, confidence):
+                    logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
+                    await self._cancel_inflight_llm_response()
+                else:
+                    logger.info(
+                        "[LiveKitBrowserCall] suppressing backchannel final while TTS is playing: %r",
+                        text[:40],
+                    )
+                    return
 
             if hasattr(self, "_voice_metrics") and self._voice_metrics:
                 self._voice_metrics.begin_turn_at_stt_final(acoustic_speech_end_mono)
