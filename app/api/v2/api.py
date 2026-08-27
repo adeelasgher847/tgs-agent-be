@@ -16,6 +16,7 @@ from app.api.v2.routers.hipaa import workspace_router as hipaa_workspace_router
 from app.api.v2.routers.workspace import router as workspace_gdpr_router
 from app.api.v2.routers.calendly_integration import router as calendly_integration_router
 from app.api.v2.routers.calendly_integration import calendar_router as calendly_calendar_router
+from app.api.v2.routers.inbound_rules import router as inbound_rules_router
 from app.api.v2.routers.telephony import router as telephony_router
 
 v2_router = APIRouter()
@@ -27,6 +28,7 @@ v2_router.include_router(webhooks_router)
 v2_router.include_router(cb_agents_router)
 v2_router.include_router(cb_calls_router)
 v2_router.include_router(ab_flows_router)
+v2_router.include_router(inbound_rules_router)
 v2_router.include_router(flow_data_router)
 v2_router.include_router(post_call_analysis_router)
 v2_router.include_router(workspace_router, prefix="/workspace", tags=["Workspace Settings"])

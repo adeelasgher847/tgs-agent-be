@@ -30,6 +30,7 @@ from app.models.call_flow import CallFlow
 from app.models.phone_number import PhoneNumber
 from app.services.call_flow_service import call_flow_service
 from app.services.call_session_service import call_session_service
+from app.services.inbound_rules_service import inbound_rules_service
 from app.services.voice_screening_qualification_service import (
     maybe_update_resume_status_on_call_completed,
 )
@@ -357,8 +358,60 @@ async def handle_incoming_call(
             resolved_flow = None
             webhook_variables = {}
 
-        # ── Inbound Call Redirection & Forwarding Check ──
         target_flow = resolved_flow or default_call_flow
+
+        # ── Inbound Rules & Number Blocking Check ──
+        if target_flow and target_flow.inbound_rule_set_id:
+            is_blocked, matched_rule = (
+                inbound_rules_service.is_number_blocked(
+                    db=db,
+                    tenant_id=phone_number.tenant_id,
+                    rule_set_id=target_flow.inbound_rule_set_id,
+                    phone_number=from_number,
+                )
+            )
+            if is_blocked:
+                logger.info(
+                    "Inbound call %s from %s blocked by rule set %s (rule: %s, label: %s)",
+                    call_sid,
+                    from_number,
+                    target_flow.inbound_rule_set_id,
+                    matched_rule.id if matched_rule else None,
+                    matched_rule.label if matched_rule else None,
+                )
+                try:
+                    blocked_session = CallSession(
+                        tenant_id=phone_number.tenant_id,
+                        user_id=resolved_agent.created_by,
+                        agent_id=resolved_agent.id,
+                        call_flow_id=target_flow.id,
+                        twilio_call_sid=call_sid,
+                        from_number=from_number,
+                        to_number=to_number,
+                        customer_phone_number=from_number,
+                        assistant_phone_number=to_number,
+                        call_type="inbound",
+                        status="completed",
+                        ended_reason="Blocked by inbound rule set",
+                        start_time=datetime.now(timezone.utc),
+                        end_time=datetime.now(timezone.utc),
+                    )
+                    db.add(blocked_session)
+                    db.commit()
+                    db.refresh(blocked_session)
+                except Exception as db_err:
+                    db.rollback()
+                    logger.warning(
+                        "Could not save blocked call session (call_sid=%s): %s",
+                        call_sid,
+                        db_err,
+                    )
+
+                response = VoiceResponse()
+                response.reject(reason="busy")
+                return HTMLResponse(str(response), media_type="application/xml")
+
+        # ── Inbound Call Redirection & Forwarding Check ──
         if (
             target_flow
             and target_flow.redirect_inbound_calls_enabled
@@ -398,9 +451,11 @@ async def handle_incoming_call(
                         user_id=resolved_agent.created_by,
                         agent_id=resolved_agent.id,
                         call_flow_id=target_flow.id,
-                        call_sid=call_sid,
+                        twilio_call_sid=call_sid,
                         from_number=from_number,
                         to_number=to_number,
+                        customer_phone_number=from_number,
+                        assistant_phone_number=to_number,
                         call_type="inbound",
                         status="completed",
                         transferred=True,

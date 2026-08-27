@@ -284,6 +284,14 @@ class CallFlow(Base):
     )
     redirect_message = Column(Text, nullable=True)
 
+    # ── Inbound Rules & Blocklist Rule Set ──
+    inbound_rule_set_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("inboundruleset.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )
@@ -333,6 +341,11 @@ class CallFlow(Base):
         post_update=True,
     )
     call_sessions = relationship("CallSession", back_populates="call_flow")
+    inbound_rule_set = relationship(
+        "InboundRuleSet",
+        foreign_keys=[inbound_rule_set_id],
+        back_populates="call_flows",
+    )
 
     __table_args__ = (
         Index("ix_callflow_tenant_id", "tenant_id"),

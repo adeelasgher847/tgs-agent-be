@@ -64,6 +64,8 @@ from app.schemas.call_flow import (
     CallScreeningSettingsUpdate,
     CallTimingSettingsResponse,
     CallTimingSettingsUpdate,
+    FlowInboundRulesResponse,
+    FlowInboundRulesUpdate,
     InboundRedirectSettingsResponse,
     InboundRedirectSettingsUpdate,
     IVRDTMFSettingsResponse,
@@ -617,6 +619,60 @@ def get_inbound_redirect_settings(
     db: Session = Depends(get_db),
 ) -> InboundRedirectSettingsResponse:
     return call_flow_service.get_inbound_redirect_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/inbound-rules",
+    response_model=FlowInboundRulesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Assign or detach Inbound Rules & Blocklist Rule Set on a call flow",
+    description=(
+        "Attaches an existing inbound rule set (blocklist) to this call flow or detaches it by setting inbound_rule_set_id to null.\n\n"
+        "Admin rank (or API key) required."
+    ),
+)
+def update_flow_inbound_rules(
+    flow_id: uuid.UUID,
+    body: FlowInboundRulesUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> FlowInboundRulesResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_flow_inbound_rules(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="flow_inbound_rules.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/inbound-rules",
+    response_model=FlowInboundRulesResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Inbound Rules & Blocklist Rule Set info for a call flow",
+    description=(
+        "Returns the active inbound rule set ID, name, and active rules count attached to this call flow. "
+        "Read-only rank is sufficient."
+    ),
+)
+def get_flow_inbound_rules(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> FlowInboundRulesResponse:
+    return call_flow_service.get_flow_inbound_rules(
         db, flow_id, _tenant_id(principal)
     )
 

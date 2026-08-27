@@ -14,6 +14,10 @@ from pydantic import (
     model_validator,
 )
 
+from app.schemas.inbound_rule import (
+    FlowInboundRulesResponse,  # noqa: F401
+    FlowInboundRulesUpdate,  # noqa: F401
+)
 from app.schemas.prompt_version import PromptVersionOut
 from app.utils.ssrf import assert_public_url
 
@@ -639,6 +643,10 @@ class InboundRedirectSettingsResponse(BaseModel):
     redirect_conditions: list[RedirectCondition] = Field(default_factory=list)
     redirect_speak_message_enabled: bool = False
     redirect_message: str | None = None
+
+
+# FlowInboundRulesUpdate and FlowInboundRulesResponse are imported from app.schemas.inbound_rule
+
 
 
 class SystemWebhooksSettingsUpdate(BaseModel):
