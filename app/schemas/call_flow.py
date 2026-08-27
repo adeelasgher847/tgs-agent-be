@@ -343,6 +343,25 @@ class CallScreeningSettingsResponse(BaseModel):
     call_screening_action: str = "respond"
 
 
+class MetadataSettingsUpdate(BaseModel):
+    """Request body for ``PUT /api/v2/flows/{flow_id}/metadata-settings``."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    disable_metadata: bool = Field(
+        ...,
+        description="Whether to strip metadata from outbound API and webhook payloads.",
+    )
+
+
+class MetadataSettingsResponse(BaseModel):
+    """Response body for ``GET/PUT /api/v2/flows/{flow_id}/metadata-settings``."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    disable_metadata: bool = False
+
+
 class SystemWebhooksSettingsUpdate(BaseModel):
     """Request body for ``PUT /api/v2/flows/{flow_id}/system-webhooks-settings``.
 

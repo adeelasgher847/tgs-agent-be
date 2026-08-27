@@ -191,6 +191,11 @@ class CallFlow(Base):
         String(50), default="respond", nullable=False, server_default="respond"
     )
 
+    # Disable Metadata: whether to strip metadata from outbound API and webhook payloads
+    disable_metadata = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )
