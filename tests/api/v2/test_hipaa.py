@@ -906,7 +906,19 @@ class TestRecordingHipaaRbac:
                 q.filter.return_value.first.return_value = flow
             return q
 
+        def _execute(stmt):
+            res = MagicMock()
+            stmt_str = str(stmt).lower()
+            if "callsession" in stmt_str or "call_session" in stmt_str:
+                res.scalar_one_or_none.return_value = session
+            elif "callflow" in stmt_str or "call_flow" in stmt_str:
+                res.scalar_one_or_none.return_value = flow
+            else:
+                res.scalar_one_or_none.return_value = None
+            return res
+
         db.query.side_effect = _query
+        db.execute.side_effect = _execute
 
         # Mock JWT user principal (plain MagicMock — not spec'd so dynamic attrs work)
         user = MagicMock()

@@ -299,6 +299,7 @@ async def initiate_call(
 
         # ── Resolve optional callFlowId so we can pass to LiveKit ────────
         flow_uuid: uuid.UUID | None = None
+        requested_flow: CallFlow | None = None
         if call_request.callFlowId:
             try:
                 flow_uuid = uuid.UUID(call_request.callFlowId)

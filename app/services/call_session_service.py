@@ -390,11 +390,12 @@ class CallSessionService:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
                         start_t = call_session.start_time
-                        if start_t.tzinfo is None:
+                        end_t = call_session.end_time
+                        if end_t.tzinfo is not None and start_t.tzinfo is None:
                             start_t = start_t.replace(tzinfo=timezone.utc)
-                        duration = (
-                            call_session.end_time - start_t
-                        ).total_seconds()
+                        elif end_t.tzinfo is None and start_t.tzinfo is not None:
+                            end_t = end_t.replace(tzinfo=timezone.utc)
+                        duration = (end_t - start_t).total_seconds()
                         call_session.duration = int(duration)
 
                     # Status Webhook — "end" event, fired once per terminal status
