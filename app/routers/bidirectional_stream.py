@@ -1105,12 +1105,45 @@ class BidirectionalStreamHandler(
         tokens = low.split()
         return bool(tokens) and all(t in self._BARGE_IN_FILLER_WORDS for t in tokens)
 
+    _BARGE_IN_COMMAND_WORDS = frozenset(
+        {
+            "stop",
+            "wait",
+            "hold",
+            "pause",
+            "cancel",
+            "interrupt",
+            "shut",
+            "quiet",
+            "listen",
+            "no",
+            "wrong",
+            "quit",
+            "abort",
+        }
+    )
+
+    def _has_2w_barge_in_command(self, text: str) -> bool:
+        """
+        For exactly 2-word utterances, require a clear interruption/command intent
+        (e.g., 'stop please', 'wait please', 'hold on', 'cancel that', 'stop talking')
+        to prevent polite conversational backchannels / greetings ('hey hi', 'hi there',
+        'good morning', 'yeah yeah', 'okay okay') from cutting active TTS playback.
+        """
+        low = re.sub(r"[^a-z ]+", " ", (text or "").lower())
+        tokens = [t for t in low.split() if t]
+        if len(tokens) != 2:
+            return False
+        return any(t in self._BARGE_IN_COMMAND_WORDS for t in tokens)
+
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         """
         True when STT looks like real user speech over the agent (not noise/filler).
 
         Gates (all required): non-empty text, not filler-only, word count ≥
-        VOICE_BARGE_IN_MIN_WORDS, and confidence at or above
+        VOICE_BARGE_IN_MIN_WORDS. For exactly 2 words, must contain an explicit
+        interruption/command keyword (stop, wait, hold, cancel, etc.) to reject
+        conversational backchannels/greetings. Confidence at or above
         VOICE_BARGE_IN_MIN_CONFIDENCE (multi-word) or VOICE_BARGE_IN_MIN_CONFIDENCE_1W
         when min words is 1.
         """
@@ -1122,7 +1155,11 @@ class BidirectionalStreamHandler(
         word_count = len(text.split())
         if word_count < self._barge_in_min_words:
             return False
-        if word_count >= 2:
+        if word_count == 2:
+            if not self._has_2w_barge_in_command(text):
+                return False
+            return confidence >= self._barge_in_min_conf
+        if word_count >= 3:
             return confidence >= self._barge_in_min_conf
         return confidence >= self._barge_in_min_conf_1w
 
@@ -1325,6 +1362,10 @@ class BidirectionalStreamHandler(
                     elif word_count < self._barge_in_min_words:
                         self._log_barge_in_suppressed(
                             transcript, confidence, "min_words"
+                        )
+                    elif word_count == 2 and not self._has_2w_barge_in_command(transcript):
+                        self._log_barge_in_suppressed(
+                            transcript, confidence, "2w_no_command"
                         )
                     else:
                         self._log_barge_in_suppressed(

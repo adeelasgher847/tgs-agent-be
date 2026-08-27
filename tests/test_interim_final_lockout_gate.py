@@ -341,12 +341,12 @@ async def test_case_g_barge_in_thresholds_with_interim_disabled():
     await handler._maybe_process_interim("Hey", 0.95)
     assert handler._cancel_inflight_llm_response.call_count == 0
 
-    # 2. 2-word low-confidence utterance ("Hey there", conf=0.20 < 0.26) -> should NOT barge in
-    await handler._maybe_process_interim("Hey there", 0.20)
+    # 2. 2-word low-confidence command ("Stop please", conf=0.20 < 0.26) -> should NOT barge in
+    await handler._maybe_process_interim("Stop please", 0.20)
     assert handler._cancel_inflight_llm_response.call_count == 0
 
-    # 3. 2-word confident utterance ("Sorry what", conf=0.85 >= 0.26) -> SHOULD barge in
-    await handler._maybe_process_interim("Sorry what", 0.85)
+    # 3. 2-word confident command ("Stop please", conf=0.85 >= 0.26) -> SHOULD barge in
+    await handler._maybe_process_interim("Stop please", 0.85)
     assert handler._cancel_inflight_llm_response.call_count == 1
 
 @pytest.mark.asyncio
@@ -368,5 +368,60 @@ async def test_case_h_no_google_tts_precaching_on_call_startup():
         
         # Verify: Google TTS was NOT called for batch precaching
         assert mock_google_tts.call_count == 0
+
+@pytest.mark.asyncio
+async def test_case_i_conversational_backchannel_vs_explicit_command_barge_in():
+    """Case I: Verify that conversational 2-word backchannels/greetings do NOT cut TTS,
+    while 2-word explicit commands and 3+ word utterances DO cut TTS."""
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler._enable_interim_llm = False
+    handler._barge_in_min_words = 2
+    handler._barge_in_min_conf = 0.26
+    handler._barge_in_min_conf_1w = 0.36
+    handler._barge_in_dead_zone_ms = 600
+
+    handler._cancel_inflight_llm_response = AsyncMock()
+    handler._is_tts_playing = True
+    handler._tts_play_start_ts = time.perf_counter() - 1.0  # Dead-zone passed
+
+    # A. Conversational / backchannel phrases (MUST NOT cut TTS)
+    assert handler._should_barge_in_on_stt("Hey", 1.00) is False
+    assert handler._should_barge_in_on_stt("Hi", 1.00) is False
+    assert handler._should_barge_in_on_stt("Hey. Hi.", 1.00) is False
+    assert handler._should_barge_in_on_stt("Hi there", 1.00) is False
+    assert handler._should_barge_in_on_stt("Good morning", 1.00) is False
+    assert handler._should_barge_in_on_stt("Yeah yeah", 1.00) is False
+    assert handler._should_barge_in_on_stt("Okay okay", 1.00) is False
+    assert handler._should_barge_in_on_stt("Thank you", 1.00) is False
+    assert handler._should_barge_in_on_stt("Got it", 1.00) is False
+    assert handler._should_barge_in_on_stt("I see", 1.00) is False
+
+    # Simulate interim "Hey. Hi." arriving while TTS is playing -> verify no cancellation
+    await handler._maybe_process_interim("Hey. Hi.", 1.00)
+    assert handler._cancel_inflight_llm_response.call_count == 0
+
+    # B. Explicit 2-word interruption commands (MUST cut TTS)
+    assert handler._should_barge_in_on_stt("Stop please", 1.00) is True
+    assert handler._should_barge_in_on_stt("Wait please", 1.00) is True
+    assert handler._should_barge_in_on_stt("Hold on", 1.00) is True
+    assert handler._should_barge_in_on_stt("Pause please", 1.00) is True
+    assert handler._should_barge_in_on_stt("Cancel that", 1.00) is True
+    assert handler._should_barge_in_on_stt("Stop talking", 1.00) is True
+
+    # Simulate interim "Stop please" arriving -> verify cancellation is called
+    await handler._maybe_process_interim("Stop please", 1.00)
+    assert handler._cancel_inflight_llm_response.call_count == 1
+
+    # C. 3+ word utterances (MUST cut TTS)
+    assert handler._should_barge_in_on_stt("Wait a second", 1.00) is True
+    assert handler._should_barge_in_on_stt("I have a question", 1.00) is True
+    assert handler._should_barge_in_on_stt("Hey. Hi. Stop please", 1.00) is True
+
+
 
 

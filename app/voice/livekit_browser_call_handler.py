@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import re
 import struct
 import uuid
 from datetime import datetime, timezone
@@ -675,18 +676,54 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
+    _BARGE_IN_COMMAND_WORDS = frozenset(
+        {
+            "stop",
+            "wait",
+            "hold",
+            "pause",
+            "cancel",
+            "interrupt",
+            "shut",
+            "quiet",
+            "listen",
+            "no",
+            "wrong",
+            "quit",
+            "abort",
+        }
+    )
+
+    def _has_2w_barge_in_command(self, text: str) -> bool:
+        low = re.sub(r"[^a-z ]+", " ", (text or "").lower())
+        tokens = [t for t in low.split() if t]
+        if len(tokens) != 2:
+            return False
+        return any(t in self._BARGE_IN_COMMAND_WORDS for t in tokens)
+
+    def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
+        text = (transcript or "").strip()
+        if not text:
+            return False
+        word_count = len(text.split())
+        if word_count < self._barge_in_min_words:
+            return False
+        if word_count == 2:
+            if not self._has_2w_barge_in_command(text):
+                return False
+            return confidence >= self._barge_in_min_conf
+        if word_count >= 3:
+            return confidence >= self._barge_in_min_conf
+        return confidence >= self._barge_in_min_conf_1w
+
+    async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         try:
             text = (transcript or "").strip()
             if not text:
                 return
             word_count = len(text.split())
 
-            min_conf = self._barge_in_min_conf_1w if word_count < 2 else self._barge_in_min_conf
-            is_barge_in = (
-                self._is_tts_playing
-                and word_count >= self._barge_in_min_words
-                and confidence >= min_conf
-            )
+            is_barge_in = self._is_tts_playing and self._should_barge_in_on_stt(text, confidence)
             if is_barge_in:
                 logger.info(
                     "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
@@ -806,7 +843,7 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             if not text:
                 return
 
-            if self._is_tts_playing:
+            if self._is_tts_playing and self._should_barge_in_on_stt(text, confidence):
                 logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
                 await self._cancel_inflight_llm_response()
 
