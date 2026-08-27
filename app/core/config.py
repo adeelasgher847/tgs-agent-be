@@ -721,7 +721,7 @@ class Settings(BaseSettings):
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
     # interim → double replies + TTS "breaks." Default: final STT only (one reply per
     # utterance). Set True for lower first-token latency at the cost of stability.
-    VOICE_ENABLE_INTERIM_LLM: bool = True
+    VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
     VOICE_MIN_INTERIM_WORDS: int = 2
     VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14

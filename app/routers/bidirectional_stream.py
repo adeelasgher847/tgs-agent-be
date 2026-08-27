@@ -63,10 +63,8 @@ CACHING & LOW-LATENCY STRATEGIES:
    - greeting_message is not used on outbound calls
    - Bypasses LLM for that opening only; LLM is not instructed to repeat it verbatim on later "hi"
 
-2. Pre-cached Common Phrases (disabled — implementation commented in code):
-   - 36+ common phrases were pre-generated at connect to warm the MULAW TTS cache
-   - Greetings, acknowledgements, confirmations; <50ms when cache hit
-   - Re-enable by uncommenting asyncio.create_task(self._precache_common_phrases()) and the method
+2. Speculative TTS Prefetch:
+   - Synthesis starts during Deepgram endpointing window, maximising overlap with LLM TTFT.
 
 3. Quick Acknowledgement Pattern (5-Word Rule + Probability):
    - Eligible when user says 5+ words; then only ~38% chance we send "Got it" (more natural).
@@ -152,7 +150,6 @@ from app.voice.metrics import VoiceTurnMetrics
 from app.utils.ssml_utils import strip_ssml_tags
 from app.utils.webhook_templating import render_template
 from app.services.bidirectional_stream_service import (
-    generate_mulaw_tts,
     build_streaming_twiml,  # noqa: F401 - re-exported for app.routers.voice / voice_gather
     build_tts_only_twiml,  # noqa: F401 - re-exported for app.routers.voice
 )
@@ -564,10 +561,6 @@ class BidirectionalStreamHandler(
         # self._conversation = ConversationOrchestrator(self)
         # ─────────────────────────────────────────────────────────────────────
 
-        # Pre-cache quick-ack phrases so they hit the LRU audio cache instead of
-        # paying TTS API latency on the first "Got it" / "Sure" of the call.
-        asyncio.create_task(self._precache_common_phrases())
-
         # Fetch KB/business-knowledge blocks in the background at call start.
         # These are agent-level and don't change per-turn; caching them here
         # eliminates the 50-200ms parallel executor cost on every slow-path turn.
@@ -690,81 +683,6 @@ class BidirectionalStreamHandler(
         return is_jd_recruitment_voice_context(
             self.call_session.call_metadata.get("jd_context")
         )
-
-    async def _precache_common_phrases(self):
-        """
-        Pre-generate and cache common phrases for instant playback.
-        Runs in background during initialization.
-        """
-        try:
-            # Let call setup/pickup settle first so warmup does not contend with
-            # first-turn STT/LLM/TTS work.
-            await asyncio.sleep(1.5)
-            # Common phrases for instant responses (greetings, confirmations, acknowledgements)
-            common_phrases = [
-                # Greetings
-                "Hello",
-                "Hi there",
-                "Hi",
-                "Good morning",
-                "Good afternoon",
-                "Good evening",
-                # Acknowledgements (Quick feedback)
-                "Got it",
-                "I see",
-                "Okay",
-                "Sure",
-                "Alright",
-                "Perfect",
-                "Great",
-                "Understood",
-                # Confirmations
-                "Yes",
-                "No",
-                "Absolutely",
-                "Of course",
-                # Thinking/Processing
-                "Let me check that",
-                "One moment please",
-                "Just a second",
-                "Let me see",
-                # Transitions
-                "Thank you",
-                "Thanks",
-                "You're welcome",
-                # Closings
-                "Goodbye",
-                "Have a great day",
-                "Thank you for calling",
-                "Talk to you later",
-            ]
-
-            lang = self.agent.language if self.agent and self.agent.language else "en"
-            voice = (
-                self.agent.voice_type
-                if self.agent and self.agent.voice_type
-                else "female"
-            )
-
-            sem = asyncio.Semaphore(4)
-
-            async def _warm_phrase(phrase: str) -> None:
-                async with sem:
-                    try:
-                        await generate_mulaw_tts(
-                            text=phrase,
-                            lang=lang,
-                            voice=voice,
-                            use_chirp3_hd=True,
-                            speaking_rate=1.0,
-                            use_ssml=False,
-                        )
-                    except Exception:
-                        return
-
-            await asyncio.gather(*(_warm_phrase(phrase) for phrase in common_phrases))
-        except Exception as e:
-            logger.error(f"Error in precache_common_phrases: {e}")
 
     async def _prefetch_kb_blocks_at_call_start(self) -> None:
         """

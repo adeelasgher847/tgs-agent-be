@@ -23,7 +23,7 @@ from app.utils.audio_utils import (
 )
 from app.utils.tts_adapter import get_tts_adapter
 from app.utils.tts_preprocessing import detect_emotion
-from app.utils.ssml_utils import strip_ssml_tags, smart_chunk_text
+from app.utils.ssml_utils import smart_chunk_text
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.voice.humanization_engine import pause_frames_for_chunk
 from app.voice.tts_provider_capabilities import build_voice_settings_overlay
@@ -910,7 +910,6 @@ class TtsStreamMixin:
         """
         try:
             text = task.get("text", "")
-            use_ssml = task.get("use_ssml", False)
 
             if not text or not text.strip():
                 return None

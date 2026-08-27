@@ -14,7 +14,6 @@ from app.core.config import settings
 from typing import AsyncIterator
 import os
 import json
-import re
 from app.core.logger import logger
 from google.api_core.client_options import ClientOptions
 

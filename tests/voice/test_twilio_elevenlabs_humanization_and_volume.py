@@ -1,11 +1,6 @@
-import pytest
 import numpy as np
-from app.utils.ssml_utils import strip_ssml_tags
 from app.utils.eleven_tts_text import (
     prepare_tts_text_for_provider,
-    supports_elevenlabs_audio_tags,
-    apply_elevenlabs_breathing_fallback,
-    build_elevenlabs_audio_tag_prompt_block,
 )
 from app.voice.humanization_engine import (
     analyze_response,

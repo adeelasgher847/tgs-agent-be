@@ -14,7 +14,8 @@ from __future__ import annotations
 
 import re
 
-from app.core.config import settings
+from app.utils.ssml_utils import strip_ssml_tags
+
 
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
@@ -102,9 +103,6 @@ def strip_eleven_v3_style_tags_for_non_eleven_tts(text: str) -> str:
     out = _TAG_RE.sub(_repl, text)
     out = re.sub(r"[ \t]{2,}", " ", out)
     return out.strip()
-
-
-from app.utils.ssml_utils import strip_ssml_tags
 
 
 def prepare_tts_text_for_provider(text: str, provider_slug: str | None) -> str:

@@ -293,7 +293,16 @@ class DeepgramSTTService:
 
             def sender_loop(conn: Any) -> None:
                 while True:
-                    chunk = self._audio_q.get()
+                    try:
+                        chunk = self._audio_q.get(timeout=4.0)
+                    except queue.Empty:
+                        try:
+                            if hasattr(conn, "send_keep_alive"):
+                                conn.send_keep_alive()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("[Deepgram STT] send_keep_alive: %s", exc)
+                        continue
+
                     if chunk is None:
                         self._session_end_reason = "client_finish"
                         _close_connection(conn)
@@ -579,7 +588,16 @@ class DeepgramSTTService:
 
             def sender_loop(conn: Any) -> None:
                 while True:
-                    chunk = self._audio_q.get()
+                    try:
+                        chunk = self._audio_q.get(timeout=4.0)
+                    except queue.Empty:
+                        try:
+                            if hasattr(conn, "send_keep_alive"):
+                                conn.send_keep_alive()
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("[Deepgram Flux STT] send_keep_alive: %s", exc)
+                        continue
+
                     if chunk is None:
                         self._session_end_reason = "client_finish"
                         _close_connection(conn)

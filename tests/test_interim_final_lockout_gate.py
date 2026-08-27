@@ -267,3 +267,106 @@ async def test_case_e_concurrent_overlapping_turns_isolation():
     # 2. Turn A did NOT observe Turn B's success.
     assert "Turn A interim" in llm_generated_texts
     assert "Turn A final full text" in llm_generated_texts
+
+@pytest.mark.asyncio
+async def test_case_f_interim_disabled_waits_for_speech_final():
+    """Case F: Interim LLM disabled (default/demo mode) -> partials do NOT generate LLM -> speech_final triggers authoritative response."""
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler._enable_interim_llm = False
+
+    llm_generated_texts = []
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        llm_generated_texts.append(user_text)
+        await asyncio.sleep(0.01)
+        return "Hawk Auto Care provides automotive repair and maintenance services."
+
+    handler.generate_and_stream_response = mock_generate
+    handler._add_to_transcript = AsyncMock()
+    handler._prefetch_rag_context = AsyncMock()
+    handler._run_speculative_tts_prefetch = AsyncMock()
+    handler._should_accept_final_transcript = MagicMock(return_value=True)
+
+    # 1. Incomplete partial arrives ("Can you please")
+    await handler._maybe_process_interim("Can you please", 0.90)
+
+    # Verify: No LLM task was started
+    assert handler._turn_response_started is False
+    assert handler._llm_response_task is None
+    assert len(llm_generated_texts) == 0
+
+    # 2. Complete speech_final arrives ("Can you please tell me about your business?")
+    await handler._complete_llm_turn_after_stt_final("Can you please tell me about your business?", 0.95)
+
+    # Verify: Exactly one authoritative LLM response was generated
+    assert len(llm_generated_texts) == 1
+    assert llm_generated_texts[0] == "Can you please tell me about your business?"
+
+@pytest.mark.asyncio
+async def test_case_g_barge_in_thresholds_with_interim_disabled():
+    """Case G: Verify barge-in behavior with interim disabled:
+    - 1-word input does not barge in (min_words=2)
+    - 2+ word input with confidence >= 0.26 triggers barge-in
+    """
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler._enable_interim_llm = False
+    handler._barge_in_min_words = 2
+    handler._barge_in_min_conf = 0.26
+    handler._barge_in_min_conf_1w = 0.36
+    handler._barge_in_dead_zone_ms = 600
+
+    handler._cancel_inflight_llm_response = AsyncMock()
+    handler._is_tts_playing = True
+    handler._tts_play_start_ts = time.perf_counter() - 1.0  # Dead-zone passed
+
+    # 1. 1-word utterance ("Hey" or "Stop") -> should NOT barge in when min_words=2
+    await handler._maybe_process_interim("Hey", 0.95)
+    assert handler._cancel_inflight_llm_response.call_count == 0
+
+    # 2. 2-word low-confidence utterance ("Hey there", conf=0.20 < 0.26) -> should NOT barge in
+    await handler._maybe_process_interim("Hey there", 0.20)
+    assert handler._cancel_inflight_llm_response.call_count == 0
+
+    # 3. 2-word confident utterance ("Sorry what", conf=0.85 >= 0.26) -> SHOULD barge in
+    await handler._maybe_process_interim("Sorry what", 0.85)
+    assert handler._cancel_inflight_llm_response.call_count == 1
+
+@pytest.mark.asyncio
+async def test_case_h_no_google_tts_precaching_on_call_startup():
+    """Case H: Verify that initializing BidirectionalStreamHandler does NOT trigger bulk Google TTS precaching."""
+    with patch("app.services.google_tts_service.google_tts_service.text_to_speech") as mock_google_tts:
+        handler = BidirectionalStreamHandler(
+            websocket=DummyWebSocket(),
+            call_session_id=str(uuid.uuid4()),
+            agent_id=str(uuid.uuid4()),
+            db=None,
+        )
+        
+        # Let event loop spin and sleep to allow any pending background tasks to execute
+        await asyncio.sleep(0.1)
+        
+        # Verify: _precache_common_phrases attribute does NOT exist on handler
+        assert not hasattr(handler, "_precache_common_phrases")
+        
+        # Verify: Google TTS was NOT called for batch precaching
+        assert mock_google_tts.call_count == 0
+
+
