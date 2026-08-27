@@ -360,6 +360,14 @@ async def handle_incoming_call(
 
         target_flow = resolved_flow or default_call_flow
 
+        if resolved_agent is None:
+            logger.warning(
+                "No agent resolved for inbound call %s on phone number %s",
+                call_sid,
+                to_number,
+            )
+            return _fallback_twiml("Sorry, this call cannot be connected at this time.")
+
         # ── Inbound Rules & Number Blocking Check ──
         if target_flow and target_flow.inbound_rule_set_id:
             is_blocked, matched_rule = (
