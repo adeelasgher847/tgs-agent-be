@@ -48,6 +48,8 @@ from app.schemas.ab_testing import (
 from app.schemas.call_flow import (
     CallerMemorySettingsResponse,
     CallerMemorySettingsUpdate,
+    CallScreeningSettingsResponse,
+    CallScreeningSettingsUpdate,
     PaginatedSystemWebhookDeliveries,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
@@ -297,6 +299,68 @@ def get_voicemail_settings(
     db: Session = Depends(get_db),
 ) -> VoicemailSettingsResponse:
     return call_flow_service.get_voicemail_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/call-screening-settings",
+    response_model=CallScreeningSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure Call Screening Detection settings on a call flow",
+    description=(
+        "Configures the action to take when an automated call screener "
+        "(Google Call Screen, Apple/iOS Call Screen, Samsung Smart Call, IVR screeners) "
+        "answers an outbound call.\n\n"
+        "- **Action** (`call_screening_action`): `respond` (agent states who is calling and why) "
+        "or `hang_up` (disconnect immediately).\n\n"
+        "Requires admin rank."
+    ),
+)
+def update_call_screening_settings(
+    flow_id: uuid.UUID,
+    body: CallScreeningSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> CallScreeningSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_call_screening_settings(
+        db, flow_id, tenant_id, body
+    )
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="call_screening_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value={
+            "call_screening_action": result.call_screening_action,
+        },
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/call-screening-settings",
+    response_model=CallScreeningSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved Call Screening Detection settings for a call flow",
+    description=(
+        "Returns the currently-saved Call Screening configuration for this call flow "
+        "(action: respond or hang_up). "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_call_screening_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> CallScreeningSettingsResponse:
+    return call_flow_service.get_call_screening_settings(
         db, flow_id, _tenant_id(principal)
     )
 

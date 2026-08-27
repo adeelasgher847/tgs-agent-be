@@ -186,6 +186,11 @@ class CallFlow(Base):
         Integer, default=5, nullable=False, server_default="5"
     )
 
+    # Call Screening Detection Settings: action when automated screener (Google, Samsung, IVR) answers
+    call_screening_action = Column(
+        String(50), default="respond", nullable=False, server_default="respond"
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

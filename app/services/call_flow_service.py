@@ -33,6 +33,8 @@ from app.schemas.call_flow import (
     CallFlowListItem,
     CallFlowOut,
     AgentRef,
+    CallScreeningSettingsResponse,
+    CallScreeningSettingsUpdate,
     CallerMemorySettingsResponse,
     CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
@@ -839,6 +841,47 @@ class CallFlowService:
             voicemail_message=flow.voicemail_message,
             voicemail_advanced_detection_enabled=bool(flow.voicemail_advanced_detection_enabled),
             voicemail_detection_timeout=flow.voicemail_detection_timeout or 5,
+        )
+
+    # ── Call Screening Detection Settings ───────────────────────────────────
+
+    def update_call_screening_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: CallScreeningSettingsUpdate,
+    ) -> CallScreeningSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        action_val = (
+            body.call_screening_action.value
+            if hasattr(body.call_screening_action, "value")
+            else str(body.call_screening_action)
+        )
+        flow = repo.update(
+            flow,
+            {
+                "call_screening_action": action_val,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return CallScreeningSettingsResponse(
+            call_screening_action=flow.call_screening_action or "respond",
+        )
+
+    def get_call_screening_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> CallScreeningSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        return CallScreeningSettingsResponse(
+            call_screening_action=flow.call_screening_action or "respond",
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──

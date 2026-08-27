@@ -1227,6 +1227,10 @@ class BidirectionalStreamHandler(
                 if await self._check_and_end_call_if_voicemail(transcript):
                     return  # Stop processing - call is ending
 
+                # 🎯 Check for call screening detection - end call if action is hang_up
+                if await self._check_and_handle_call_screener(transcript):
+                    return  # Stop processing - call is ending
+
                 # 🎯 Send "in-progress" status when confident word is detected (like "hello")
                 if (
                     not self._in_progress_sent
