@@ -168,10 +168,10 @@ class TestPublishMulawBufferFormat:
         publisher._source = MagicMock()
         publisher._source.capture_frame = AsyncMock()
 
-        # One full MULAW_FRAME_BYTES chunk of silence bytes.
+        # One full MULAW_FRAME_BYTES chunk of non-zero audio bytes (0x00 = max negative in ulaw).
         from app.utils.audio_utils import MULAW_FRAME_BYTES
 
-        mulaw_bytes = bytes([0xFF]) * MULAW_FRAME_BYTES
+        mulaw_bytes = bytes([0x00]) * MULAW_FRAME_BYTES
 
         # No mocking of `livekit.rtc` here — we want the real AudioFrame
         # buffer-protocol behavior to be exercised.

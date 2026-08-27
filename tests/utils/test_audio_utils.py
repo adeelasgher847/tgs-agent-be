@@ -337,3 +337,44 @@ def test_pcm_stream_downsampler_same_rate_is_a_passthrough_encode():
     out = d.feed(pcm_bytes) + d.flush()
 
     assert out == bytes(linear_to_ulaw_sample(s) for s in samples)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# G.711 μ-law decoder compliance (ulaw_to_linear_sample)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _reference_g711_ulaw_to_linear(b: int) -> int:
+    """Standard ITU-T G.711 / Sun Microsystems / Python audioop reference decode."""
+    u_val = (~b) & 0xFF
+    t = ((u_val & 0x0F) << 3) + 0x84
+    t <<= (u_val & 0x70) >> 4
+    return (0x84 - t) if (u_val & 0x80) else (t - 0x84)
+
+
+def test_ulaw_to_linear_sample_silence_codes_decode_to_zero():
+    """G.711 mu-law silence byte codes 0xFF (+0) and 0x7F (-0) must decode to exact 0."""
+    assert ulaw_to_linear_sample(0xFF) == 0, "0xFF (positive zero) must decode to 0"
+    assert ulaw_to_linear_sample(0x7F) == 0, "0x7F (negative zero) must decode to 0"
+
+
+def test_ulaw_to_linear_sample_all_256_bytes_match_g711_reference():
+    """All 256 mu-law byte codes (0x00 to 0xFF) must match ITU-T G.711 reference exactly."""
+    for b in range(256):
+        expected = _reference_g711_ulaw_to_linear(b)
+        actual = ulaw_to_linear_sample(b)
+        assert actual == expected, (
+            f"Mismatch for byte 0x{b:02X}: expected {expected}, got {actual}"
+        )
+
+
+def test_ulaw_to_linear_sample_zero_crossing_continuity():
+    """Near-zero values must transition smoothly across zero with no 264-unit crossover jump."""
+    # 0xFF (+0) -> 0, 0xFE (+8) -> 8, 0x7F (-0) -> 0, 0x7E (-8) -> -8
+    assert ulaw_to_linear_sample(0xFE) == 8
+    assert ulaw_to_linear_sample(0xFF) == 0
+    assert ulaw_to_linear_sample(0x7F) == 0
+    assert ulaw_to_linear_sample(0x7E) == -8
+    # Step from +8 to -8 goes through 0, step between +0 and -0 is 0
+    assert abs(ulaw_to_linear_sample(0xFF) - ulaw_to_linear_sample(0x7F)) == 0
+
