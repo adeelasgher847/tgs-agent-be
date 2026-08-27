@@ -286,6 +286,21 @@ class CallControlMixin:
             if updated:
                 self.call_session = updated
 
+            # If call flow specifies stop_recording_on_transfer, halt recording before transfer handoff
+            call_flow = getattr(self, "call_flow", None)
+            if call_flow and getattr(call_flow, "stop_recording_on_transfer", False):
+                logger.info(
+                    "Halting call recording prior to transfer per call flow configuration"
+                )
+                if hasattr(self, "_teardown_livekit_recording"):
+                    try:
+                        await self._teardown_livekit_recording()
+                    except Exception as rec_stop_err:
+                        logger.warning(
+                            "Error tearing down LiveKit recording on transfer: %s",
+                            rec_stop_err,
+                        )
+
             base = settings.WEBHOOK_BASE_URL.rstrip("/")
             sid_str = str(self.call_session.id)
             ttype = (route.transfer_type or "cold").lower()

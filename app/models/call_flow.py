@@ -292,6 +292,20 @@ class CallFlow(Base):
         index=True,
     )
 
+    # ── Call Recording Settings ──
+    recording_enabled = Column(
+        Boolean, default=True, nullable=False, server_default="true"
+    )
+    public_recording_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    faster_inbound_pickup = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    stop_recording_on_transfer = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

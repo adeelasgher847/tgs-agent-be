@@ -2932,11 +2932,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
                 if _rec_enabled:
                     if settings.LIVEKIT_ENABLED:
-                        if self.call_session.call_type == "inbound":
-                            asyncio.create_task(self._start_livekit_recording())
+                        if (self.call_session.call_type or "").lower() == "inbound":
+                            faster_pickup = False
+                            if self.call_flow and getattr(
+                                self.call_flow, "faster_inbound_pickup", False
+                            ):
+                                faster_pickup = True
+
+                            if faster_pickup:
+                                asyncio.create_task(self._start_livekit_recording())
+                            else:
+                                await self._start_livekit_recording()
                         elif (self.call_session.call_type or "").lower() == "outbound":
                             asyncio.create_task(self._setup_livekit_agent_publisher())
-                    elif self.call_session.call_type == "inbound":
+                    elif (self.call_session.call_type or "").lower() == "inbound":
                         # Fallback: legacy Twilio recording when LiveKit is disabled
                         try:
                             account_sid, auth_token = get_twilio_credentials_for_call(

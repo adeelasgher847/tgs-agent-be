@@ -6873,6 +6873,72 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/recordings/{call_id}/public:
+    get:
+      tags:
+      - Call Recordings
+      summary: Get Public Recording
+      description: "Return a signed S3 URL for a call recording without authentication,\n\
+        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
+        \  - call_session not found\n  - recording not enabled for this call\n  -\
+        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
+        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
+        \ protected (cannot be public)"
+      operationId: get_public_recording_api_v1_recordings__call_id__public_get
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_RecordingResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/recordings/public/{call_id}:
+    get:
+      tags:
+      - Call Recordings
+      summary: Get Public Recording
+      description: "Return a signed S3 URL for a call recording without authentication,\n\
+        provided that the call flow has public_recording_enabled=True.\n\n404 cases:\n\
+        \  - call_session not found\n  - recording not enabled for this call\n  -\
+        \ recording upload failed or not available yet\n403 cases:\n  - call has no\
+        \ call_flow or call flow has public_recording_enabled=False\n  - flow is HIPAA\
+        \ protected (cannot be public)"
+      operationId: get_public_recording_api_v1_recordings_public__call_id__get
+      parameters:
+      - name: call_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Call Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_RecordingResponse_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/integrations/make/trigger:
     post:
       tags:
@@ -9499,6 +9565,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/FlowInboundRulesResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/flows/{flow_id}/recording-settings:
+    put:
+      tags:
+      - A/B Prompt Testing
+      summary: Configure Recording Settings on a call flow
+      description: 'Configures recording parameters for this call flow: master switch
+        (recording_enabled), public access (public_recording_enabled), faster pickup
+        timing (faster_inbound_pickup), and transfer behavior (stop_recording_on_transfer).
+        Admin rank (or API key) required.'
+      operationId: update_recording_settings_api_v2_flows__flow_id__recording_settings_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RecordingSettingsUpdate'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingSettingsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      tags:
+      - A/B Prompt Testing
+      summary: Get Recording Settings for a call flow
+      description: Returns the saved Recording Settings for this call flow. Read-only
+        rank is sufficient.
+      operationId: get_recording_settings_api_v2_flows__flow_id__recording_settings_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: flow_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Flow Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecordingSettingsResponse'
         '422':
           description: Validation Error
           content:
@@ -17768,6 +17903,49 @@ components:
       - url
       title: RecordingResponse
       description: Response for GET /api/v1/recordings/{call_id}.
+    RecordingSettingsResponse:
+      properties:
+        recording_enabled:
+          type: boolean
+          title: Recording Enabled
+          default: true
+        public_recording_enabled:
+          type: boolean
+          title: Public Recording Enabled
+          default: false
+        faster_inbound_pickup:
+          type: boolean
+          title: Faster Inbound Pickup
+          default: false
+        stop_recording_on_transfer:
+          type: boolean
+          title: Stop Recording On Transfer
+          default: false
+      type: object
+      title: RecordingSettingsResponse
+      description: Response body for ``GET/PUT /api/v2/flows/{flow_id}/recording-settings``.
+    RecordingSettingsUpdate:
+      properties:
+        recording_enabled:
+          type: boolean
+          title: Recording Enabled
+          default: true
+        public_recording_enabled:
+          type: boolean
+          title: Public Recording Enabled
+          default: false
+        faster_inbound_pickup:
+          type: boolean
+          title: Faster Inbound Pickup
+          default: false
+        stop_recording_on_transfer:
+          type: boolean
+          title: Stop Recording On Transfer
+          default: false
+      additionalProperties: false
+      type: object
+      title: RecordingSettingsUpdate
+      description: Request body for ``PUT /api/v2/flows/{flow_id}/recording-settings``.
     RecruitmentDashboardData:
       properties:
         summary:

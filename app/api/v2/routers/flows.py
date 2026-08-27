@@ -23,6 +23,10 @@ PUT  /api/v2/flows/{flow_id}/call-timing-settings
 GET  /api/v2/flows/{flow_id}/call-timing-settings
 PUT  /api/v2/flows/{flow_id}/inbound-redirect-settings
 GET  /api/v2/flows/{flow_id}/inbound-redirect-settings
+PUT  /api/v2/flows/{flow_id}/inbound-rules
+GET  /api/v2/flows/{flow_id}/inbound-rules
+PUT  /api/v2/flows/{flow_id}/recording-settings
+GET  /api/v2/flows/{flow_id}/recording-settings
 PUT  /api/v2/flows/{flow_id}/system-webhooks-settings
 GET  /api/v2/flows/{flow_id}/system-webhooks-settings
 POST /api/v2/flows/{flow_id}/system-webhooks/test
@@ -75,6 +79,8 @@ from app.schemas.call_flow import (
     PaginatedSystemWebhookDeliveries,
     PostCallActionsSettingsResponse,
     PostCallActionsSettingsUpdate,
+    RecordingSettingsResponse,
+    RecordingSettingsUpdate,
     SystemWebhookKindEnum,
     SystemWebhooksSettingsResponse,
     SystemWebhooksSettingsUpdate,
@@ -673,6 +679,58 @@ def get_flow_inbound_rules(
     db: Session = Depends(get_db),
 ) -> FlowInboundRulesResponse:
     return call_flow_service.get_flow_inbound_rules(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/recording-settings",
+    response_model=RecordingSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure Recording Settings on a call flow",
+    description=(
+        "Configures recording parameters for this call flow: master switch (recording_enabled), "
+        "public access (public_recording_enabled), faster pickup timing (faster_inbound_pickup), "
+        "and transfer behavior (stop_recording_on_transfer). Admin rank (or API key) required."
+    ),
+)
+def update_recording_settings(
+    flow_id: uuid.UUID,
+    body: RecordingSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> RecordingSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_recording_settings(
+        db, flow_id, tenant_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="recording_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/recording-settings",
+    response_model=RecordingSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get Recording Settings for a call flow",
+    description="Returns the saved Recording Settings for this call flow. Read-only rank is sufficient.",
+)
+def get_recording_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> RecordingSettingsResponse:
+    return call_flow_service.get_recording_settings(
         db, flow_id, _tenant_id(principal)
     )
 

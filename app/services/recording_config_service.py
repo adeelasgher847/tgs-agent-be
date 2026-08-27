@@ -21,22 +21,40 @@ def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bo
     """
     Return True if recording is enabled for this call.
 
-    Twilio calls (inbound/outbound) resolution order:
-    1. call_session.assistant_phone_number (set on outbound and inbound calls)
-    2. call_session.to_number (fallback for inbound — the number the caller dialled)
-    3. call_session.from_number (last resort for outbound)
-    Returns False if no NumberConfiguration is found (safe default).
-
-    Browser "Share Demo Link" calls (app.voice.livekit_browser_call_handler,
-    call_session.call_type == "web") have no Twilio phone number at all —
-    assistant_phone_number is the literal sentinel "web_agent" (see
-    app.routers.sdk::demo_call_token), which would never match a real
-    NumberConfiguration row. There is currently no per-tenant/agent/call-flow
-    recording toggle for this path, so it's gated on a single process-wide
-    flag (VOICE_BROWSER_DEMO_RECORDING_ENABLED, default True) instead — an
-    interim default until a proper per-tenant/agent config field is added via
-    a schema change (flag for db-migration).
+    Resolution order:
+    1. If call_session.call_flow_id is present, resolve CallFlow.recording_enabled.
+    2. For web calls (call_type == "web") without flow, fall back to VOICE_BROWSER_DEMO_RECORDING_ENABLED.
+    3. Twilio calls (inbound/outbound) resolution order via NumberConfiguration:
+       - call_session.assistant_phone_number (set on outbound and inbound calls)
+       - call_session.to_number (fallback for inbound — the number the caller dialled)
+       - call_session.from_number (last resort for outbound)
+       Returns False if no NumberConfiguration is found (safe default).
     """
+    if call_session.call_flow_id:
+        try:
+            from app.models.call_flow import CallFlow
+
+            flow = db.execute(
+                select(CallFlow).where(
+                    CallFlow.id == call_session.call_flow_id,
+                    CallFlow.tenant_id == call_session.tenant_id,
+                    ~CallFlow.is_deleted,
+                )
+            ).scalar_one_or_none()
+            if flow is not None:
+                return bool(
+                    flow.recording_enabled
+                    if flow.recording_enabled is not None
+                    else True
+                )
+        except Exception as exc:
+            logger.warning(
+                "recording_config: flow lookup failed for session %s (flow=%s): %s",
+                call_session.id,
+                call_session.call_flow_id,
+                exc,
+            )
+
     if (call_session.call_type or "").lower() == "web":
         return bool(settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED)
 
