@@ -50,6 +50,8 @@ from app.schemas.call_flow import (
     CallerMemorySettingsUpdate,
     CallScreeningSettingsResponse,
     CallScreeningSettingsUpdate,
+    IVRDTMFSettingsResponse,
+    IVRDTMFSettingsUpdate,
     MetadataSettingsResponse,
     MetadataSettingsUpdate,
     PaginatedSystemWebhookDeliveries,
@@ -422,6 +424,65 @@ def get_metadata_settings(
     db: Session = Depends(get_db),
 ) -> MetadataSettingsResponse:
     return call_flow_service.get_metadata_settings(
+        db, flow_id, _tenant_id(principal)
+    )
+
+
+@router.put(
+    "/{flow_id}/ivr-dtmf-settings",
+    response_model=IVRDTMFSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Configure IVR Phone Tree and DTMF Keypad settings on a call flow",
+    description=(
+        "Configures IVR navigation and real-time DTMF keypad input processing for this call flow.\n\n"
+        "- **IVR Navigation** (`ivr_enabled`, `ivr_action`, `ivr_navigation_mode`, `ivr_max_attempts`, "
+        "`ivr_keypress_delay`, `ivr_priority_list`, `ivr_wait_on_hold`, `ivr_max_hold_time`)\n"
+        "- **DTMF Keypad** (`dtmf_enabled`, `dtmf_button_press_delay`, `dtmf_allow_caller_interruption`, "
+        "`dtmf_max_digits`, `dtmf_allowed_exceeded_attempts`, `dtmf_exceeded_action`, `dtmf_end_call_message`)\n\n"
+        "Requires admin rank."
+    ),
+)
+def update_ivr_dtmf_settings(
+    flow_id: uuid.UUID,
+    body: IVRDTMFSettingsUpdate,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> IVRDTMFSettingsResponse:
+    tenant_id = _tenant_id(principal)
+    result = call_flow_service.update_ivr_dtmf_settings(
+        db, flow_id, tenant_id, body
+    )
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="ivr_dtmf_settings.updated",
+        resource_type="call_flow",
+        resource_id=flow_id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
+@router.get(
+    "/{flow_id}/ivr-dtmf-settings",
+    response_model=IVRDTMFSettingsResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Get the currently-saved IVR and DTMF settings for a call flow",
+    description=(
+        "Returns the currently-saved IVR Phone Tree navigation and DTMF keypad settings for this call flow. "
+        "Read-only rank is sufficient since no secret keys are exposed."
+    ),
+)
+def get_ivr_dtmf_settings(
+    flow_id: uuid.UUID,
+    principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
+    db: Session = Depends(get_db),
+) -> IVRDTMFSettingsResponse:
+    return call_flow_service.get_ivr_dtmf_settings(
         db, flow_id, _tenant_id(principal)
     )
 

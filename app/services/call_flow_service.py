@@ -46,6 +46,8 @@ from app.schemas.call_flow import (
     FlowValidationError,
     FlowValidationErrorItem,
     FlowValidationResponse,
+    IVRDTMFSettingsResponse,
+    IVRDTMFSettingsUpdate,
     MetadataSettingsResponse,
     MetadataSettingsUpdate,
     PaginatedFlowDataResponse,
@@ -920,6 +922,89 @@ class CallFlowService:
 
         return MetadataSettingsResponse(
             disable_metadata=bool(flow.disable_metadata),
+        )
+
+    # ── IVR Phone Tree & DTMF Keypad Settings ────────────────────────────────
+
+    def update_ivr_dtmf_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: IVRDTMFSettingsUpdate,
+    ) -> IVRDTMFSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        repo = CallFlowRepository(db)
+        flow = repo.update(
+            flow,
+            {
+                "ivr_enabled": bool(body.ivr_enabled),
+                "ivr_action": body.ivr_action,
+                "ivr_navigation_mode": body.ivr_navigation_mode,
+                "ivr_max_attempts": body.ivr_max_attempts,
+                "ivr_keypress_delay": body.ivr_keypress_delay,
+                "ivr_priority_list": body.ivr_priority_list or [],
+                "ivr_wait_on_hold": bool(body.ivr_wait_on_hold),
+                "ivr_max_hold_time": body.ivr_max_hold_time,
+                "dtmf_enabled": bool(body.dtmf_enabled),
+                "dtmf_button_press_delay": body.dtmf_button_press_delay,
+                "dtmf_allow_caller_interruption": bool(
+                    body.dtmf_allow_caller_interruption
+                ),
+                "dtmf_max_digits": body.dtmf_max_digits,
+                "dtmf_allowed_exceeded_attempts": body.dtmf_allowed_exceeded_attempts,
+                "dtmf_exceeded_action": body.dtmf_exceeded_action,
+                "dtmf_end_call_message": body.dtmf_end_call_message,
+            },
+        )
+        db.commit()
+        db.refresh(flow)
+        return self._to_ivr_dtmf_response(flow)
+
+    def get_ivr_dtmf_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> IVRDTMFSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_ivr_dtmf_response(flow)
+
+    @staticmethod
+    def _to_ivr_dtmf_response(flow: CallFlow) -> IVRDTMFSettingsResponse:
+        return IVRDTMFSettingsResponse(
+            ivr_enabled=bool(flow.ivr_enabled),
+            ivr_action=flow.ivr_action or "dial_through",
+            ivr_navigation_mode=flow.ivr_navigation_mode or "let_ai_converse",
+            ivr_max_attempts=(
+                flow.ivr_max_attempts if flow.ivr_max_attempts is not None else 3
+            ),
+            ivr_keypress_delay=(
+                flow.ivr_keypress_delay if flow.ivr_keypress_delay is not None else 8
+            ),
+            ivr_priority_list=list(flow.ivr_priority_list or []),
+            ivr_wait_on_hold=bool(flow.ivr_wait_on_hold),
+            ivr_max_hold_time=(
+                flow.ivr_max_hold_time if flow.ivr_max_hold_time is not None else 120
+            ),
+            dtmf_enabled=bool(flow.dtmf_enabled),
+            dtmf_button_press_delay=(
+                flow.dtmf_button_press_delay
+                if flow.dtmf_button_press_delay is not None
+                else 2
+            ),
+            dtmf_allow_caller_interruption=bool(flow.dtmf_allow_caller_interruption),
+            dtmf_max_digits=(
+                flow.dtmf_max_digits if flow.dtmf_max_digits is not None else 50
+            ),
+            dtmf_allowed_exceeded_attempts=(
+                flow.dtmf_allowed_exceeded_attempts
+                if flow.dtmf_allowed_exceeded_attempts is not None
+                else 10
+            ),
+            dtmf_exceeded_action=flow.dtmf_exceeded_action or "end_call",
+            dtmf_end_call_message=flow.dtmf_end_call_message,
         )
 
     # ── System Webhooks (pre-inbound / dynamic routing / post-call / status) ──

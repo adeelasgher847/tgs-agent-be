@@ -588,6 +588,306 @@ class CallControlMixin:
                     return False
 
         return False
+
+    async def _check_and_handle_ivr_and_hold(self, transcript: str) -> bool:
+        """Detect automated IVR phone trees and hold queues, executing call flow action."""
+        if getattr(self, "_call_ended", False):
+            return False
+
+        if not transcript or not transcript.strip():
+            return False
+
+        flow = getattr(self, "call_flow", None)
+        if (
+            flow is None
+            and self.call_session
+            and self.call_session.call_flow_id
+            and getattr(self, "db", None)
+        ):
+            try:
+                from app.models.call_flow import CallFlow
+
+                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+            except Exception:
+                flow = None
+
+        if not flow or not getattr(flow, "ivr_enabled", False):
+            return False
+
+        ivr_keywords = [
+            "press 1",
+            "press 2",
+            "press 3",
+            "for english press",
+            "menu options",
+            "listen carefully as our menu options have changed",
+            "main menu",
+            "to speak with",
+            "please press",
+            "dial the extension",
+            "press the pound key",
+            "press star",
+        ]
+
+        hold_keywords = [
+            "all of our agents are busy",
+            "all representatives are currently busy",
+            "your call is important to us",
+            "please hold",
+            "please remain on the line",
+            "next available representative",
+            "estimated wait time",
+            "you are number in line",
+            "thank you for holding",
+            "please stay on the line",
+        ]
+
+        transcript_lower = transcript.lower().strip()
+
+        # Check IVR menu keywords
+        for keyword in ivr_keywords:
+            if keyword in transcript_lower:
+                action = getattr(flow, "ivr_action", "dial_through") or "dial_through"
+                if action == "hang_up":
+                    try:
+                        self._call_ended = True
+
+                        if self.call_session:
+                            updated = call_session_service.update_call_session_status(
+                                self.db,
+                                self.call_session.id,
+                                "completed",
+                                ended_reason="IVR phone tree detected",
+                            )
+                            if updated:
+                                self.call_session = updated
+
+                        if self.call_sid and self.call_session:
+                            try:
+                                account_sid, auth_token = (
+                                    get_twilio_credentials_for_call(
+                                        self.db, self.call_session
+                                    )
+                                )
+                                twilio_service.end_call_with_credentials(
+                                    self.call_sid, account_sid, auth_token
+                                )
+                            except Exception as end_err:
+                                logger.warning(
+                                    "Could not end Twilio call with DB credentials "
+                                    "(call_sid=%s, session=%s): %s",
+                                    self.call_sid,
+                                    self.call_session.id if self.call_session else None,
+                                    end_err,
+                                )
+
+                        if self.call_session:
+                            try:
+                                await broadcast_call_status_update(
+                                    call_session_id=str(self.call_session.id),
+                                    status="completed",
+                                    metadata={
+                                        "call_sid": self.call_sid,
+                                        "stream_sid": self.stream_sid,
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "message": "call_ended",
+                                        "event": "ivr_detected",
+                                        "detected_phrase": keyword,
+                                        "transcript": transcript,
+                                        "reason": "IVR phone tree detected",
+                                    },
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    f"WebSocket broadcast failed after IVR detection: {e}"
+                                )
+
+                        asyncio.create_task(self._full_shutdown())
+                        return True
+                    except Exception as e:
+                        logger.error(
+                            f"Error ending call after IVR detection: {e}", exc_info=True
+                        )
+                        return False
+                else:
+                    logger.info(
+                        "IVR phone tree detected ('%s'); action is %s, navigating menu",
+                        keyword,
+                        action,
+                    )
+                    return False
+
+        # Check Hold queue keywords
+        for keyword in hold_keywords:
+            if keyword in transcript_lower:
+                if getattr(flow, "ivr_wait_on_hold", False):
+                    max_hold = getattr(flow, "ivr_max_hold_time", 120) or 120
+                    logger.info(
+                        "Hold queue detected ('%s'); waiting on hold up to %s seconds",
+                        keyword,
+                        max_hold,
+                    )
+                return False
+
+        return False
+
+    async def handle_dtmf_message(self, message: dict) -> None:
+        """Handle incoming WebSocket DTMF event with debounce buffering and limit enforcement."""
+        if getattr(self, "_call_ended", False):
+            return
+
+        flow = getattr(self, "call_flow", None)
+        if (
+            flow is None
+            and self.call_session
+            and self.call_session.call_flow_id
+            and getattr(self, "db", None)
+        ):
+            try:
+                from app.models.call_flow import CallFlow
+
+                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
+            except Exception:
+                flow = None
+
+        if not flow or not getattr(flow, "dtmf_enabled", False):
+            return
+
+        digit = (message.get("dtmf") or {}).get("digit") or message.get("digit")
+        if not digit:
+            return
+
+        if not hasattr(self, "_dtmf_buffer"):
+            self._dtmf_buffer = ""
+        if not hasattr(self, "_dtmf_debounce_task"):
+            self._dtmf_debounce_task = None
+        if not hasattr(self, "_dtmf_exceeded_count"):
+            self._dtmf_exceeded_count = 0
+
+        # Suppress STT acoustic processing during digit press if interruption not allowed
+        if not getattr(flow, "dtmf_allow_caller_interruption", False):
+            self._dtmf_suppress_stt = True
+
+        if self._dtmf_debounce_task and not self._dtmf_debounce_task.done():
+            self._dtmf_debounce_task.cancel()
+
+        self._dtmf_buffer += str(digit)
+        max_digits_raw = getattr(flow, "dtmf_max_digits", 50)
+        max_digits = max_digits_raw if max_digits_raw is not None else 50
+
+        if len(self._dtmf_buffer) > max_digits:
+            self._dtmf_exceeded_count += 1
+            allowed_raw = getattr(flow, "dtmf_allowed_exceeded_attempts", 10)
+            allowed = allowed_raw if allowed_raw is not None else 10
+            action = getattr(flow, "dtmf_exceeded_action", "end_call") or "end_call"
+            if self._dtmf_exceeded_count > allowed and action == "end_call":
+                logger.warning(
+                    "DTMF max digits exceeded %d times (allowed: %d) — ending call",
+                    self._dtmf_exceeded_count,
+                    allowed,
+                )
+                self._dtmf_buffer = ""
+                try:
+                    self._call_ended = True
+
+                    # Play configured end-call message before hangup if present
+                    end_msg = (
+                        getattr(flow, "dtmf_end_call_message", None) or ""
+                    ).strip()
+                    if end_msg:
+                        try:
+                            if hasattr(self, "_play_tts_message") and callable(
+                                self._play_tts_message
+                            ):
+                                await self._play_tts_message(end_msg)
+                            elif hasattr(self, "_tts_pipeline") and hasattr(
+                                self._tts_pipeline, "say"
+                            ):
+                                await self._tts_pipeline.say(end_msg)
+                        except Exception as tts_err:
+                            logger.warning(
+                                "Could not play DTMF end call message before hangup: %s",
+                                tts_err,
+                            )
+
+                    if self.call_session:
+                        updated = call_session_service.update_call_session_status(
+                            self.db,
+                            self.call_session.id,
+                            "completed",
+                            ended_reason="DTMF input limit exceeded",
+                        )
+                        if updated:
+                            self.call_session = updated
+
+                    if self.call_sid and self.call_session:
+                        try:
+                            account_sid, auth_token = (
+                                get_twilio_credentials_for_call(
+                                    self.db, self.call_session
+                                )
+                            )
+                            twilio_service.end_call_with_credentials(
+                                self.call_sid, account_sid, auth_token
+                            )
+                        except Exception as end_err:
+                            logger.warning(
+                                "Could not end Twilio call on DTMF limit: %s", end_err
+                            )
+
+                    if self.call_session:
+                        try:
+                            await broadcast_call_status_update(
+                                call_session_id=str(self.call_session.id),
+                                status="completed",
+                                metadata={
+                                    "call_sid": self.call_sid,
+                                    "stream_sid": self.stream_sid,
+                                    "timestamp": datetime.now(
+                                        timezone.utc
+                                    ).isoformat(),
+                                    "message": "call_ended",
+                                    "event": "dtmf_limit_exceeded",
+                                    "reason": "DTMF input limit exceeded",
+                                },
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                f"WebSocket broadcast failed after DTMF limit exceeded: {e}"
+                            )
+
+                    asyncio.create_task(self._full_shutdown())
+                except Exception as e:
+                    logger.error(f"Error ending call on DTMF limit: {e}", exc_info=True)
+                return
+            else:
+                self._dtmf_buffer = ""
+                return
+
+        delay_raw = getattr(flow, "dtmf_button_press_delay", 2)
+        delay = delay_raw if delay_raw is not None else 2
+        self._dtmf_debounce_task = asyncio.create_task(
+            self._flush_dtmf_buffer_after_delay(float(delay))
+        )
+
+    async def _flush_dtmf_buffer_after_delay(self, delay: float) -> None:
+        """Wait debounce delay and flush collected DTMF digits to conversation processing."""
+        try:
+            await asyncio.sleep(delay)
+            digits = getattr(self, "_dtmf_buffer", "")
+            self._dtmf_buffer = ""
+            self._dtmf_suppress_stt = False
+            if digits:
+                logger.info("DTMF buffer flushed: %r", digits)
+                await self._process_transcript(
+                    f"User input DTMF: {digits}", confidence=1.0
+                )
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Error flushing DTMF buffer: {e}", exc_info=True)
     
     async def _add_to_transcript(
         self,
