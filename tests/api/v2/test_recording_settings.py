@@ -397,7 +397,42 @@ class TestPublicRecordingAccessEndpoint:
         resp = recording_app.get(f"/api/v1/recordings/public/{session.id}")
         assert resp.status_code == 403
 
-    def test_public_recording_access_not_found_when_recording_disabled_on_flow(
+    def test_public_recording_accessible_when_s3_path_present_even_if_flow_recording_disabled(
+        self, db, workspace, flow, recording_app
+    ):
+        flow.public_recording_enabled = True
+        flow.recording_enabled = False  # recording flag toggled off later
+        db.commit()
+
+        session = CallSession(
+            tenant_id=workspace.id,
+            user_id=uuid.uuid4(),
+            agent_id=flow.agent_id,
+            call_flow_id=flow.id,
+            call_type="inbound",
+            status="completed",
+            start_time=flow.created_at,
+            recording_s3_path="recordings/test/session_rec_disabled/audio.opus",
+            duration=95,
+        )
+        db.add(session)
+        db.commit()
+
+        with (
+            patch(
+                "app.services.s3_recording_service.generate_signed_url",
+                return_value="https://s3.example.com/signed-url-for-existing-file",
+            ),
+            patch(
+                "app.services.s3_recording_service.get_object_size",
+                return_value=81920,
+            ),
+        ):
+            resp = recording_app.get(f"/api/v1/recordings/public/{session.id}")
+            assert resp.status_code == 200
+            assert resp.json()["data"]["url"] == "https://s3.example.com/signed-url-for-existing-file"
+
+    def test_public_recording_not_found_when_no_s3_path_and_recording_disabled(
         self, db, workspace, flow, recording_app
     ):
         flow.public_recording_enabled = True
@@ -412,7 +447,8 @@ class TestPublicRecordingAccessEndpoint:
             call_type="inbound",
             status="completed",
             start_time=flow.created_at,
-            recording_s3_path="recordings/test/session_rec_disabled/audio.opus",
+            recording_s3_path=None,
+            recording_error=False,
         )
         db.add(session)
         db.commit()
@@ -421,11 +457,12 @@ class TestPublicRecordingAccessEndpoint:
         assert resp.status_code == 404
         assert "Recording not enabled" in resp.text
 
-    def test_public_recording_access_not_found_when_session_missing(
+    def test_public_recording_access_forbidden_when_session_missing(
         self, recording_app
     ):
+        # Must return 403 (not 404) to avoid session existence oracle
         resp = recording_app.get(f"/api/v1/recordings/public/{uuid.uuid4()}")
-        assert resp.status_code == 404
+        assert resp.status_code == 403
 
     def test_public_recording_upload_failed_and_not_ready_errors(
         self, db, workspace, flow, recording_app

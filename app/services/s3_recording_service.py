@@ -186,18 +186,22 @@ def delete_workspace_recordings(workspace_id: uuid.UUID) -> int:
 
 
 def generate_signed_url(
-    gcs_path: str,
+    s3_path: str | None = None,
     expiry_seconds: int = settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
+    *,
+    gcs_path: str | None = None,
 ) -> str:
     """
     Generate a short-lived presigned URL for direct client download.
 
-    Parameter name kept as `gcs_path` for signature compatibility with the
-    GCS implementation it replaces; it holds the S3 object key.
+    Supports `s3_path` (canonical S3 object key) with fallback to legacy `gcs_path`.
     """
+    key = s3_path or gcs_path
+    if not key:
+        raise ValueError("s3_path or gcs_path is required to generate signed recording URL")
     client = get_s3_client()
     return client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.S3_RECORDINGS_BUCKET, "Key": gcs_path},
+        Params={"Bucket": settings.S3_RECORDINGS_BUCKET, "Key": key},
         ExpiresIn=expiry_seconds,
     )

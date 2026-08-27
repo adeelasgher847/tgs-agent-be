@@ -38,7 +38,7 @@ def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bo
                 select(CallFlow).where(
                     CallFlow.id == call_session.call_flow_id,
                     CallFlow.tenant_id == call_session.tenant_id,
-                    ~CallFlow.is_deleted,
+                    CallFlow.is_deleted.is_(False),
                 )
             ).scalar_one_or_none()
             if flow is not None:
@@ -48,12 +48,14 @@ def get_recording_enabled_for_call(db: Session, call_session: CallSession) -> bo
                     else True
                 )
         except Exception as exc:
-            logger.warning(
-                "recording_config: flow lookup failed for session %s (flow=%s): %s",
+            logger.error(
+                "recording_config: flow lookup failed due to DB error for session %s (flow=%s): %s",
                 call_session.id,
                 call_session.call_flow_id,
                 exc,
+                exc_info=True,
             )
+            return False
 
     if (call_session.call_type or "").lower() == "web":
         return bool(settings.VOICE_BROWSER_DEMO_RECORDING_ENABLED)
