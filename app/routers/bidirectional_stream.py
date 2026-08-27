@@ -509,6 +509,19 @@ class BidirectionalStreamHandler(
         self._interim_task_response_produced = False
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
         self._llm_response_task: asyncio.Task | None = None
+        # The background task currently executing _process_transcript() for a
+        # FINAL transcript (spawned fire-and-forget by VoiceOrchestrator._on_final
+        # via asyncio.create_task — see module docstring). Unlike
+        # _llm_response_task (only ever populated by the interim-LLM path),
+        # this is the ONLY handle available to cancel an in-flight
+        # generate_and_stream_response() call that was triggered by a FINAL
+        # transcript (the default, non-interim-LLM flow). Without cancelling
+        # this, a barge-in only clears the TtsPipeline's already-queued audio
+        # (see _cancel_inflight_llm_response) while the orphaned prior
+        # _process_transcript task keeps running in the background and can
+        # later re-queue stale TTS chunks into the same shared TtsPipeline
+        # instance, corrupting/silencing the NEW turn's response.
+        self._active_final_task: asyncio.Task | None = None
         self._auto_greeting_sent = False
         self._recording_started = False
         self._lk_caller_publisher = None
@@ -878,6 +891,36 @@ class BidirectionalStreamHandler(
                 await t
             except asyncio.CancelledError:
                 pass
+
+        # Cancel an in-flight FINAL-triggered _process_transcript task too (see
+        # _active_final_task's docstring in __init__). This is the ONLY handle
+        # to the default (non-interim-LLM) generate_and_stream_response() call
+        # — without cancelling it here, the orphaned task keeps running after a
+        # barge-in and can re-queue stale TTS chunks into the shared
+        # TtsPipeline once _tts_cancel is cleared for the new turn, corrupting
+        # or silencing the caller's actual next response. Guard against
+        # cancelling ourselves: _complete_llm_turn_after_stt_final calls this
+        # method from WITHIN the very final-task it registered.
+        # getattr default: some tests construct a handler via object.__new__()
+        # with only a handful of attributes wired up, bypassing __init__ (see
+        # tests/voice/test_call_pipeline.py) -- must degrade to "nothing to
+        # cancel" rather than raise AttributeError for those minimal doubles.
+        final_t = getattr(self, "_active_final_task", None)
+        _current = None
+        try:
+            _current = asyncio.current_task()
+        except RuntimeError:
+            pass
+        if final_t and final_t is not _current and not final_t.done():
+            final_t.cancel()
+            try:
+                await final_t
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                # Any other exception from the cancelled task is not this
+                # caller's concern -- it was already logged at its own site.
+                pass
         if self._tts_pipeline:
             await self._tts_pipeline.cancel_current_and_clear_queue()
         # Twilio Media Streams protocol: cancelling our TTS task locally does not
@@ -1224,6 +1267,18 @@ class BidirectionalStreamHandler(
     ):
         """Process a transcript (final result)"""
         try:
+            # Register this task as the currently-active final-transcript task so a
+            # SUBSEQUENT barge-in (interim or final) can cancel it via
+            # _cancel_inflight_llm_response() — see _active_final_task's docstring
+            # in __init__ for why this is necessary (the final-triggered
+            # generate_and_stream_response() call below has no other cancellable
+            # handle). Best-effort: absent in minimal test doubles that construct
+            # a handler without going through asyncio.create_task().
+            try:
+                self._active_final_task = asyncio.current_task()
+            except RuntimeError:
+                pass
+
             # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
             if self._is_tts_playing:
                 _should_barge = self._should_barge_in_on_stt(transcript, confidence)

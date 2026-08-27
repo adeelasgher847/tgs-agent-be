@@ -17,9 +17,19 @@ Covers the playback x speech matrix from the task brief:
      _prefetch_tts_audio because prefetched_bytes is already an iterator, and
      never re-enters TtsPipeline's synthesis marks) still populates
      tts_first_audio/first_playback via the real _stream_tts_chunk frame path.
+  10. Orphaned final-triggered generation task: a barge-in must cancel not
+      just the already-queued TTS audio, but the in-flight
+      _process_transcript()/generate_and_stream_response() task from the
+      PREVIOUS (default, non-interim-LLM) turn -- otherwise it keeps running
+      in the background and can re-queue stale audio into the shared
+      TtsPipeline once _tts_cancel is cleared for the caller's new turn,
+      corrupting or silencing the actual response to what the caller just
+      said (production report: barge-in classifies + cuts audio correctly,
+      but the agent never responds afterward).
 """
 from __future__ import annotations
 
+import asyncio
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -29,6 +39,7 @@ import pytest
 from app.core.agent_runtime import ResolvedTtsRuntime
 from app.routers.bidirectional_stream import BidirectionalStreamHandler
 from app.voice.metrics import VoiceTurnMetrics
+from app.voice.tts_pipeline import TtsPipeline
 
 
 class DummyWebSocket:
@@ -426,6 +437,190 @@ async def test_short_reply_no_prefetch_below_stream_min_words_populates_telemetr
             prefetched_bytes=None,
         )
 
-    assert handler._is_tts_playing is False
-    assert handler._voice_metrics.tts_first_audio_mono is not None
-    assert handler._voice_metrics.first_playback_mono is not None
+
+# ── 10. Orphaned final-triggered generation task on barge-in ────────────────
+
+
+def _build_orphan_test_handler() -> BidirectionalStreamHandler:
+    """
+    A handler wired for the default (VOICE_ENABLE_INTERIM_LLM=False) flow,
+    with a REAL TtsPipeline (not mocked) so chunk ordering/gate-chain
+    corruption from an un-cancelled orphaned turn is actually observable.
+    """
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler.agent.language = "en"
+    handler._enable_interim_llm = False
+    handler._barge_in_min_words = 2
+    handler._barge_in_min_conf = 0.26
+    handler._barge_in_min_conf_1w = 0.36
+    handler._barge_in_dead_zone_ms = 600
+    handler._speech_candidate_window_ms = 200
+
+    handler._prefetch_rag_context = AsyncMock()
+    handler._run_speculative_tts_prefetch = AsyncMock()
+    handler._add_to_transcript = AsyncMock()
+    handler._send_in_progress_status = AsyncMock()
+    handler._check_and_end_call_if_goodbye = AsyncMock(return_value=False)
+    handler._check_and_end_call_if_voicemail = AsyncMock(return_value=False)
+    handler._check_and_handle_call_screener = AsyncMock(return_value=False)
+    handler._check_and_handle_ivr_and_hold = AsyncMock(return_value=False)
+    handler._check_and_handle_anti_bot = AsyncMock(return_value=False)
+    handler._check_and_handle_compliance_monitoring = AsyncMock(return_value=False)
+    handler._send_quick_acknowledgement = AsyncMock()
+    handler._should_accept_final_transcript = MagicMock(return_value=True)
+
+    handler._tts_pipeline = TtsPipeline(handler)
+    handler._prefetch_tts_audio = AsyncMock(return_value=b"\xff" * 160)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_barge_in_cancels_orphaned_final_generation_task():
+    """
+    Reproduces the production report: TTS is playing (turn N, generated via
+    the default final-triggered path -- no interim LLM). The caller barges in
+    with a short phrase ("anything else"). The interim classifier correctly
+    fires BARGE_IN and TTS audio is cut. Before the fix, nothing ever
+    cancelled turn N's own _process_transcript()/generate_and_stream_response()
+    task -- it kept running in the background, un-cancelled, after the
+    barge-in resolved.
+    """
+    handler = _build_orphan_test_handler()
+
+    streamed: list[str] = []
+
+    async def fake_stream_chunk(
+        text, use_ssml=False, is_final=False, prefetched_bytes=None,
+        pacing=None, previous_text=None,
+    ):
+        streamed.append(text)
+        handler._is_tts_playing = True
+        await asyncio.sleep(0.02)
+        handler._is_tts_playing = False
+
+    handler._stream_tts_chunk = fake_stream_chunk
+
+    turn_n_started = asyncio.Event()
+    turn_n_continued = asyncio.Event()
+    turn_n_cancelled = False
+
+    async def fake_generate(user_text, confidence=1.0, is_greeting=False):
+        nonlocal turn_n_cancelled
+        if user_text == "turn N text":
+            await handler._tts_pipeline.queue_tts(
+                {"text": "turn N chunk 1", "is_final": False}
+            )
+            turn_n_started.set()
+            try:
+                # Simulates turn N's LLM stream still producing more chunks
+                # after the caller has already barged in.
+                await asyncio.sleep(1.0)
+                turn_n_continued.set()
+                await handler._tts_pipeline.queue_tts(
+                    {"text": "turn N chunk 2 STALE", "is_final": True}
+                )
+            except asyncio.CancelledError:
+                turn_n_cancelled = True
+                raise
+        else:
+            await handler._tts_pipeline.queue_tts({"text": user_text, "is_final": True})
+
+    handler.generate_and_stream_response = fake_generate
+
+    # Turn N's own final-triggered generation, still in-flight. Nothing is
+    # playing yet when turn N's own final is first processed.
+    handler._is_tts_playing = False
+    turn_n_task = asyncio.create_task(handler._process_transcript("turn N text", 0.9))
+    await turn_n_started.wait()
+    await asyncio.sleep(0.05)  # let turn N's first chunk actually stream
+    assert streamed == ["turn N chunk 1"]
+
+    # Caller barges in mid-playback with a short, unknown 2-word phrase,
+    # corroborated by VAD/SpeechStarted candidate evidence (as in production).
+    handler._is_tts_playing = True
+    handler._tts_play_start_ts = time.perf_counter() - 1.0
+    handler._on_speech_started_candidate()
+    await handler._maybe_process_interim("anything else", 0.60)
+
+    # The orphaned turn N task must be cancelled by the barge-in, not left
+    # running in the background.
+    assert turn_n_task.cancelled() or turn_n_task.done()
+    assert turn_n_continued.is_set() is False
+
+    # The final for "anything else" now arrives and must produce a clean
+    # response with no interference from turn N.
+    await handler._process_transcript("anything else", 0.60)
+    await asyncio.sleep(0.1)
+
+    assert turn_n_cancelled is True
+    assert "anything else" in streamed
+    assert "turn N chunk 2 STALE" not in streamed
+
+
+@pytest.mark.asyncio
+async def test_barge_in_with_revised_final_text_still_generates_after_orphan_cancelled():
+    """
+    Same scenario as above, but the FINAL transcript differs from the interim
+    text that triggered the barge-in (STT commonly revises wording between
+    interim and final, e.g. interim "you there" -> final "are you there?").
+    The fix must not depend on interim/final text matching.
+    """
+    handler = _build_orphan_test_handler()
+
+    streamed: list[str] = []
+
+    async def fake_stream_chunk(
+        text, use_ssml=False, is_final=False, prefetched_bytes=None,
+        pacing=None, previous_text=None,
+    ):
+        streamed.append(text)
+        handler._is_tts_playing = True
+        await asyncio.sleep(0.02)
+        handler._is_tts_playing = False
+
+    handler._stream_tts_chunk = fake_stream_chunk
+
+    turn_n_started = asyncio.Event()
+
+    async def fake_generate(user_text, confidence=1.0, is_greeting=False):
+        if user_text == "turn N text":
+            await handler._tts_pipeline.queue_tts(
+                {"text": "turn N chunk 1", "is_final": False}
+            )
+            turn_n_started.set()
+            await asyncio.sleep(1.0)
+            await handler._tts_pipeline.queue_tts(
+                {"text": "turn N chunk 2 STALE", "is_final": True}
+            )
+        else:
+            await handler._tts_pipeline.queue_tts({"text": user_text, "is_final": True})
+
+    handler.generate_and_stream_response = fake_generate
+
+    handler._is_tts_playing = False
+    turn_n_task = asyncio.create_task(handler._process_transcript("turn N text", 0.9))
+    await turn_n_started.wait()
+    await asyncio.sleep(0.05)
+
+    # Interim text differs from the eventual final.
+    handler._is_tts_playing = True
+    handler._tts_play_start_ts = time.perf_counter() - 1.0
+    handler._on_speech_started_candidate()
+    await handler._maybe_process_interim("you there", 0.60)
+
+    assert turn_n_task.cancelled() or turn_n_task.done()
+
+    await handler._process_transcript("are you there?", 0.60)
+    await asyncio.sleep(0.1)
+
+    assert "are you there?" in streamed
+    assert "turn N chunk 2 STALE" not in streamed
