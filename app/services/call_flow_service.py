@@ -39,6 +39,10 @@ from app.schemas.call_flow import (
     CallScreeningSettingsUpdate,
     CallTimingSettingsResponse,
     CallTimingSettingsUpdate,
+    ComplianceDetectionSettingsResponse,
+    ComplianceDetectionSettingsUpdate,
+    DataRetentionSettingsResponse,
+    DataRetentionSettingsUpdate,
     CallerMemorySettingsResponse,
     CallerMemorySettingsUpdate,
     CallFlowSettingsUpdate,
@@ -1032,7 +1036,6 @@ class CallFlowService:
         update_dict = body.model_dump(exclude_unset=True)
         if "reminder_messages" in update_dict and update_dict["reminder_messages"] is not None:
             update_dict["reminder_messages"] = list(update_dict["reminder_messages"])
-        update_dict["updated_at"] = datetime.now(timezone.utc)
 
         repo = CallFlowRepository(db)
         flow = repo.update(flow, update_dict)
@@ -1092,10 +1095,9 @@ class CallFlowService:
                 c.model_dump() if hasattr(c, "model_dump") else dict(c)
                 for c in update_dict["redirect_conditions"]
             ]
-        update_dict["updated_at"] = datetime.now(timezone.utc)
 
         repo = CallFlowRepository(db)
-        repo.update(flow, update_dict)
+        flow = repo.update(flow, update_dict)
         db.commit()
         db.refresh(flow)
         return self._to_inbound_redirect_response(flow)
@@ -1300,7 +1302,6 @@ class CallFlowService:
 
         update_dict = {
             "inbound_rule_set_id": body.inbound_rule_set_id,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)
@@ -1381,7 +1382,6 @@ class CallFlowService:
             "public_recording_enabled": body.public_recording_enabled,
             "faster_inbound_pickup": body.faster_inbound_pickup,
             "stop_recording_on_transfer": body.stop_recording_on_transfer,
-            "updated_at": datetime.now(timezone.utc),
         }
 
         repo = CallFlowRepository(db)
@@ -1421,6 +1421,138 @@ class CallFlowService:
                 flow.stop_recording_on_transfer
                 if flow.stop_recording_on_transfer is not None
                 else False
+            ),
+        )
+
+    # ── Compliance & Detection Settings ──
+
+    def update_compliance_detection_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: ComplianceDetectionSettingsUpdate,
+    ) -> ComplianceDetectionSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        update_dict = {
+            "compliance_monitoring_enabled": body.compliance_monitoring_enabled,
+            "anti_bot_detection_enabled": body.anti_bot_detection_enabled,
+            "terminate_on_fake_voice": body.terminate_on_fake_voice,
+        }
+
+        repo = CallFlowRepository(db)
+        repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_compliance_detection_response(flow)
+
+    def get_compliance_detection_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> ComplianceDetectionSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_compliance_detection_response(flow)
+
+    @staticmethod
+    def _to_compliance_detection_response(
+        flow: CallFlow,
+    ) -> ComplianceDetectionSettingsResponse:
+        return ComplianceDetectionSettingsResponse(
+            compliance_monitoring_enabled=bool(
+                flow.compliance_monitoring_enabled
+                if flow.compliance_monitoring_enabled is not None
+                else False
+            ),
+            anti_bot_detection_enabled=bool(
+                flow.anti_bot_detection_enabled
+                if flow.anti_bot_detection_enabled is not None
+                else False
+            ),
+            terminate_on_fake_voice=bool(
+                flow.terminate_on_fake_voice
+                if flow.terminate_on_fake_voice is not None
+                else False
+            ),
+        )
+
+    # ── Data Retention Policy Settings ──
+
+    def update_data_retention_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+        body: DataRetentionSettingsUpdate,
+    ) -> DataRetentionSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+
+        update_dict = {
+            "retention_policy_enabled": body.retention_policy_enabled,
+            "retention_transcript_enabled": body.retention_transcript_enabled,
+            "retention_transcript_days": body.retention_transcript_days,
+            "retention_summary_enabled": body.retention_summary_enabled,
+            "retention_summary_days": body.retention_summary_days,
+            "retention_recording_enabled": body.retention_recording_enabled,
+            "retention_recording_days": body.retention_recording_days,
+        }
+
+        repo = CallFlowRepository(db)
+        repo.update(flow, update_dict)
+        db.commit()
+        db.refresh(flow)
+        return self._to_data_retention_response(flow)
+
+    def get_data_retention_settings(
+        self,
+        db: Session,
+        flow_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> DataRetentionSettingsResponse:
+        flow = self._get_flow_or_404(db, flow_id, tenant_id)
+        return self._to_data_retention_response(flow)
+
+    @staticmethod
+    def _to_data_retention_response(
+        flow: CallFlow,
+    ) -> DataRetentionSettingsResponse:
+        return DataRetentionSettingsResponse(
+            retention_policy_enabled=bool(
+                flow.retention_policy_enabled
+                if flow.retention_policy_enabled is not None
+                else False
+            ),
+            retention_transcript_enabled=bool(
+                flow.retention_transcript_enabled
+                if flow.retention_transcript_enabled is not None
+                else False
+            ),
+            retention_transcript_days=int(
+                flow.retention_transcript_days
+                if flow.retention_transcript_days is not None
+                else 30
+            ),
+            retention_summary_enabled=bool(
+                flow.retention_summary_enabled
+                if flow.retention_summary_enabled is not None
+                else False
+            ),
+            retention_summary_days=int(
+                flow.retention_summary_days
+                if flow.retention_summary_days is not None
+                else 30
+            ),
+            retention_recording_enabled=bool(
+                flow.retention_recording_enabled
+                if flow.retention_recording_enabled is not None
+                else False
+            ),
+            retention_recording_days=int(
+                flow.retention_recording_days
+                if flow.retention_recording_days is not None
+                else 30
             ),
         )
 

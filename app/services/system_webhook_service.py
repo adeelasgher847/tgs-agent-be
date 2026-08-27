@@ -232,11 +232,12 @@ def _filter_query_params_metadata(
     for k, v in params:
         k_lower = str(k).lower().strip()
         if (
-            k_lower in ("metadata", "call_metadata", "_metadata")
+            k_lower in ("metadata", "call_metadata", "_metadata", "custom_metadata")
             or k_lower.startswith("metadata[")
             or k_lower.startswith("metadata.")
             or k_lower.startswith("_metadata.")
             or k_lower.startswith("call_metadata.")
+            or k_lower.startswith("custom_metadata")
         ):
             continue
         filtered.append((k, v))
@@ -323,7 +324,7 @@ async def fetch_pre_inbound_webhook_variables(
                     key,
                     call_flow.id,
                 )
-                break
+                continue
             parsed[key] = value[:_PRE_INBOUND_MAX_VARIABLE_VALUE_CHARS]
         variables = parsed
 

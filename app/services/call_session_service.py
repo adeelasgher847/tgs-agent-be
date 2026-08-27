@@ -389,9 +389,13 @@ class CallSessionService:
                 if status in ["completed", "failed", "busy", "no_answer"]:
                     call_session.end_time = datetime.now(timezone.utc)
                     if call_session.start_time:
-                        duration = (
-                            call_session.end_time - call_session.start_time
-                        ).total_seconds()
+                        start_t = call_session.start_time
+                        end_t = call_session.end_time
+                        if end_t.tzinfo is not None and start_t.tzinfo is None:
+                            start_t = start_t.replace(tzinfo=timezone.utc)
+                        elif end_t.tzinfo is None and start_t.tzinfo is not None:
+                            end_t = end_t.replace(tzinfo=timezone.utc)
+                        duration = (end_t - start_t).total_seconds()
                         call_session.duration = int(duration)
 
                     # Status Webhook — "end" event, fired once per terminal status

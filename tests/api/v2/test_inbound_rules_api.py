@@ -269,6 +269,23 @@ class TestInboundRuleSetsCRUD:
         assert body["name"] == "Updated Set Name"
         assert body["rules_count"] == 2
 
+        # Verify old rule was soft-deleted, not hard-deleted
+        from app.models.inbound_rule import InboundRule
+        from sqlalchemy import select
+
+        old_rules = (
+            db.execute(
+                select(InboundRule).where(
+                    InboundRule.rule_set_id == uuid.UUID(set_id),
+                    InboundRule.normalized_digits == "5551111111",
+                )
+            )
+            .scalars()
+            .all()
+        )
+        assert len(old_rules) == 1
+        assert old_rules[0].is_deleted is True
+
     def test_delete_rule_set_detaches_flow(self, db, workspace, flow):
         principal = _principal(workspace.id)
         client = _build_app(db, principal)

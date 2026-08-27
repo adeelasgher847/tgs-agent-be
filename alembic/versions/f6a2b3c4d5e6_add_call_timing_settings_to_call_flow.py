@@ -73,7 +73,7 @@ def upgrade() -> None:
             'max_duration_message',
             sa.Text(),
             nullable=True,
-            server_default="I appreciate the conversation, but we've reached our time limit for this call.",
+            server_default=sa.text("'I appreciate the conversation, but we''ve reached our time limit for this call.'"),
         ),
     )
 

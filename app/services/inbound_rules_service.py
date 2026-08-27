@@ -43,19 +43,22 @@ class InboundRulesService:
             .scalars()
             .all()
         )
+        if not rule_sets:
+            return []
+
+        counts_rows = db.execute(
+            select(InboundRule.rule_set_id, func.count(InboundRule.id))
+            .where(
+                InboundRule.tenant_id == tenant_id,
+                InboundRule.is_deleted.is_(False),
+            )
+            .group_by(InboundRule.rule_set_id)
+        ).all()
+        counts_map = {row[0]: row[1] for row in counts_rows}
 
         result: List[InboundRuleSetListItem] = []
         for rs in rule_sets:
-            count = (
-                db.execute(
-                    select(func.count(InboundRule.id)).where(
-                        InboundRule.rule_set_id == rs.id,
-                        InboundRule.tenant_id == tenant_id,
-                        InboundRule.is_deleted.is_(False),
-                    )
-                ).scalar()
-                or 0
-            )
+            count = counts_map.get(rs.id, 0)
             result.append(
                 InboundRuleSetListItem(
                     id=rs.id,
@@ -133,19 +136,21 @@ class InboundRulesService:
         rs.updated_at = datetime.now(timezone.utc)
 
         if body.rules is not None:
-            # Mark existing rules as deleted or delete
+            # Mark existing active rules as deleted (soft delete)
             existing_rules = (
                 db.execute(
                     select(InboundRule).where(
                         InboundRule.rule_set_id == rs.id,
                         InboundRule.tenant_id == tenant_id,
+                        InboundRule.is_deleted.is_(False),
                     )
                 )
                 .scalars()
                 .all()
             )
             for er in existing_rules:
-                db.delete(er)
+                er.is_deleted = True
+                er.updated_at = datetime.now(timezone.utc)
             db.flush()
 
             seen_digits = set()
@@ -338,6 +343,21 @@ class InboundRulesService:
         Matching handles exact digits, 10-digit national variants (with/without country code 1).
         """
         if not phone_number or not rule_set_id:
+            return False, None
+
+        # Tenant isolation check on the rule set
+        rule_set = (
+            db.execute(
+                select(InboundRuleSet).where(
+                    InboundRuleSet.id == rule_set_id,
+                    InboundRuleSet.tenant_id == tenant_id,
+                    InboundRuleSet.is_deleted.is_(False),
+                )
+            )
+            .scalars()
+            .first()
+        )
+        if not rule_set:
             return False, None
 
         digits = normalize_phone_digits(phone_number)

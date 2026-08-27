@@ -6,7 +6,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+import re
+from typing import TYPE_CHECKING, Any
 import uuid
 
 from app.core.config import settings
@@ -395,6 +396,36 @@ class CallControlMixin:
         except Exception as e:
             logger.error("Error during human transfer: %s", e, exc_info=True)
     
+    def _resolve_flow(self) -> Any:
+        """Resolve CallFlow with tenant-scoped filtering to prevent cross-tenant object access."""
+        flow = getattr(self, "call_flow", None)
+        if flow is not None:
+            return flow
+        sess = getattr(self, "call_session", None)
+        db = getattr(self, "db", None)
+        if sess and getattr(sess, "call_flow_id", None) and db:
+            try:
+                from app.models.call_flow import CallFlow
+                from sqlalchemy import select
+
+                stmt = select(CallFlow).where(
+                    CallFlow.id == sess.call_flow_id,
+                    CallFlow.is_deleted.is_(False),
+                )
+                if getattr(sess, "tenant_id", None):
+                    stmt = stmt.where(CallFlow.tenant_id == sess.tenant_id)
+                flow = db.execute(stmt).scalar_one_or_none()
+                if flow:
+                    self.call_flow = flow
+                return flow
+            except Exception as e:
+                logger.warning(
+                    "Flow fetch failed (call_flow_id=%s): %s",
+                    getattr(sess, "call_flow_id", None),
+                    e,
+                )
+        return None
+
     async def _check_and_end_call_if_voicemail(self, transcript: str):
         """
         Check if transcript contains voicemail keywords and handle voicemail action if detected.
@@ -404,14 +435,13 @@ class CallControlMixin:
             return False  # Already ended
 
         # Check call_flow voicemail detection settings if attached
-        flow = getattr(self, "call_flow", None)
-        if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
-            try:
-                from app.models.call_flow import CallFlow
-
-                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
-                flow = None
+        has_flow_attached = bool(
+            getattr(self, "call_session", None)
+            and getattr(self.call_session, "call_flow_id", None)
+        )
+        flow = self._resolve_flow()
+        if has_flow_attached and flow is None:
+            return False
 
         # If flow has voicemail detection disabled -> bypass keyword check
         if flow is not None and not getattr(flow, "voicemail_detection_enabled", True):
@@ -541,16 +571,19 @@ class CallControlMixin:
 
         transcript_lower = transcript.lower().strip()
         for keyword in screener_keywords:
-            if keyword in transcript_lower:
-                flow = getattr(self, "call_flow", None)
-                if flow is None and self.call_session and self.call_session.call_flow_id and getattr(self, "db", None):
-                    try:
-                        from app.models.call_flow import CallFlow
+            pattern = r"\b" + re.escape(keyword) + r"\b"
+            match = re.search(pattern, transcript_lower)
+            if match:
+                # Check for negation immediately preceding the match (e.g. "not a screening service")
+                start_pos = match.start()
+                preceding_text = transcript_lower[max(0, start_pos - 30):start_pos].strip()
+                if re.search(
+                    r"\b(?:not|no|never|isn't|aren't|wasn't|don't|doesn't)(?:\s+(?:a|an|using\s+a|using))?\s*$",
+                    preceding_text,
+                ):
+                    continue
 
-                        flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-                    except Exception:
-                        flow = None
-
+                flow = self._resolve_flow()
                 action = (
                     getattr(flow, "call_screening_action", "respond")
                     if flow
@@ -561,7 +594,7 @@ class CallControlMixin:
                     try:
                         self._call_ended = True
 
-                        if self.call_session:
+                        if getattr(self, "call_session", None):
                             updated = call_session_service.update_call_session_status(
                                 self.db,
                                 self.call_session.id,
@@ -571,7 +604,7 @@ class CallControlMixin:
                             if updated:
                                 self.call_session = updated
 
-                        if self.call_sid and self.call_session:
+                        if getattr(self, "call_sid", None) and self.call_session:
                             try:
                                 account_sid, auth_token = get_twilio_credentials_for_call(
                                     self.db, self.call_session
@@ -588,14 +621,14 @@ class CallControlMixin:
                                     end_err,
                                 )
 
-                        if self.call_session:
+                        if getattr(self, "call_session", None):
                             try:
                                 await broadcast_call_status_update(
                                     call_session_id=str(self.call_session.id),
                                     status="completed",
                                     metadata={
-                                        "call_sid": self.call_sid,
-                                        "stream_sid": self.stream_sid,
+                                        "call_sid": getattr(self, "call_sid", None),
+                                        "stream_sid": getattr(self, "stream_sid", None),
                                         "timestamp": datetime.now(timezone.utc).isoformat(),
                                         "message": "call_ended",
                                         "event": "call_screener_detected",
@@ -605,46 +638,28 @@ class CallControlMixin:
                                     },
                                 )
                             except Exception as e:
-                                logger.debug(f"WebSocket broadcast failed after screener detection: {e}")
+                                logger.debug("WebSocket broadcast failed after call screening hang up: %s", e)
 
                         asyncio.create_task(self._full_shutdown())
                         return True
 
                     except Exception as e:
-                        logger.error(f"Error ending call after call screener detection: {e}", exc_info=True)
+                        logger.error("Error ending call after call screener detection: %s", e, exc_info=True)
                         return False
                 else:
-                    # action == "respond" -> do not hang up, allow conversation to proceed
-                    logger.info(
-                        "Call screener detected ('%s'); responding to screener per call flow configuration",
-                        keyword,
-                    )
                     return False
 
         return False
 
     async def _check_and_handle_ivr_and_hold(self, transcript: str) -> bool:
-        """Detect automated IVR phone trees and hold queues, executing call flow action."""
+        """Detect phone tree/IVR prompts or hold queues and handle accordingly."""
         if getattr(self, "_call_ended", False):
             return False
 
         if not transcript or not transcript.strip():
             return False
 
-        flow = getattr(self, "call_flow", None)
-        if (
-            flow is None
-            and self.call_session
-            and self.call_session.call_flow_id
-            and getattr(self, "db", None)
-        ):
-            try:
-                from app.models.call_flow import CallFlow
-
-                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
-                flow = None
-
+        flow = self._resolve_flow()
         if not flow or not getattr(flow, "ivr_enabled", False):
             return False
 
@@ -767,25 +782,229 @@ class CallControlMixin:
 
         return False
 
+    async def _check_and_handle_anti_bot(
+        self, transcript: str, *, role: str = "user"
+    ) -> bool:
+        """
+        Detect automated bots and synthetic voices, and terminate call if configured.
+
+        Scoped strictly to caller utterances (role == 'user') to prevent the AI agent from
+        false-positively triggering on its own greetings or disclosure scripts.
+        """
+        if getattr(self, "_call_ended", False):
+            return False
+
+        if role != "user":
+            return False
+
+        if not transcript or not transcript.strip():
+            return False
+
+        flow = self._resolve_flow()
+        if not flow or not getattr(flow, "anti_bot_detection_enabled", False):
+            return False
+
+        bot_keywords = [
+            "this is an automated call",
+            "this is an automated message",
+            "press 1 to speak",
+            "press 1 to connect",
+            "press 1 now",
+            "press 2 to",
+            "press 1 or press 2",
+            "automated telephone banking",
+            "you have reached the automated",
+            "to hear this message again",
+            "this is a pre-recorded message",
+            "is a pre-recorded message",
+            "synthetic voice detected",
+            "robocall",
+        ]
+
+        transcript_lower = transcript.lower().strip()
+        for keyword in bot_keywords:
+            if keyword in transcript_lower:
+                logger.info(
+                    "Anti-bot detected automated caller signature on call %s: keyword=%r",
+                    getattr(self, "call_sid", None),
+                    keyword,
+                )
+                if getattr(self, "call_session", None):
+                    meta = self.call_session.call_metadata or {}
+                    if not isinstance(meta, dict):
+                        meta = {}
+                    meta["anti_bot"] = {
+                        "detected": True,
+                        "keyword": keyword,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    self.call_session.call_metadata = meta
+                    if getattr(self, "db", None):
+                        try:
+                            from sqlalchemy.orm.attributes import flag_modified
+
+                            flag_modified(self.call_session, "call_metadata")
+                            self.db.commit()
+                        except Exception as db_err:
+                            logger.debug(
+                                "Failed to persist anti-bot metadata: %s",
+                                db_err,
+                            )
+
+                if getattr(flow, "terminate_on_fake_voice", False):
+                    logger.info(
+                        "Bot/fake voice detected on call %s — terminating immediately",
+                        getattr(self, "call_sid", None),
+                    )
+                    try:
+                        self._call_ended = True
+
+                        if getattr(self, "call_session", None):
+                            updated = call_session_service.update_call_session_status(
+                                self.db,
+                                self.call_session.id,
+                                "completed",
+                                ended_reason="Bot or fake voice detected",
+                            )
+                            if updated:
+                                self.call_session = updated
+
+                        if getattr(self, "call_sid", None) and getattr(
+                            self, "call_session", None
+                        ):
+                            try:
+                                account_sid, auth_token = (
+                                    get_twilio_credentials_for_call(
+                                        self.db, self.call_session
+                                    )
+                                )
+                                twilio_service.end_call_with_credentials(
+                                    self.call_sid, account_sid, auth_token
+                                )
+                            except Exception as end_err:
+                                logger.warning(
+                                    "Could not end Twilio call with DB credentials "
+                                    "(call_sid=%s, session=%s): %s",
+                                    self.call_sid,
+                                    self.call_session.id
+                                    if self.call_session
+                                    else None,
+                                    end_err,
+                                )
+
+                        if getattr(self, "call_session", None):
+                            try:
+                                await broadcast_call_status_update(
+                                    call_session_id=str(self.call_session.id),
+                                    status="completed",
+                                    metadata={
+                                        "call_sid": getattr(
+                                            self, "call_sid", None
+                                        ),
+                                        "stream_sid": getattr(
+                                            self, "stream_sid", None
+                                        ),
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
+                                        "message": "call_ended",
+                                        "event": "bot_detected",
+                                        "detected_phrase": keyword,
+                                        "transcript": transcript,
+                                        "reason": "Bot or fake voice detected",
+                                    },
+                                )
+                            except Exception as e:
+                                logger.debug(
+                                    "WebSocket broadcast failed after bot detection: %s",
+                                    e,
+                                )
+
+                        asyncio.create_task(self._full_shutdown())
+                        return True
+                    except Exception as e:
+                        logger.error(
+                            "Error ending call after bot detection: %s",
+                            e,
+                            exc_info=True,
+                        )
+                        return False
+                return False
+
+        return False
+
+    async def _check_and_handle_compliance_monitoring(
+        self, transcript: str
+    ) -> None:
+        """Monitor conversation against compliance policies and flag violations in metadata."""
+        if not transcript or not transcript.strip():
+            return
+
+        flow = self._resolve_flow()
+        if not flow or not getattr(flow, "compliance_monitoring_enabled", False):
+            return
+
+        compliance_triggers = [
+            "unauthorized transaction",
+            "wire money immediately",
+            "share your password",
+            "tell me your credit card cvv",
+            "send gift cards",
+            "social security number is",
+            "my ssn is",
+        ]
+
+        transcript_lower = transcript.lower().strip()
+        matched = []
+        for trigger in compliance_triggers:
+            if trigger in transcript_lower:
+                matched.append(trigger)
+
+        if matched and getattr(self, "call_session", None):
+            logger.warning(
+                "Compliance monitoring flagged potential policy violation on call %s: triggers=%r",
+                getattr(self, "call_sid", None),
+                matched,
+            )
+            meta = self.call_session.call_metadata or {}
+            if not isinstance(meta, dict):
+                meta = {}
+            comp = meta.get("compliance", {"flagged": True, "violations": []})
+            if not isinstance(comp, dict):
+                comp = {"flagged": True, "violations": []}
+            comp["flagged"] = True
+            violations = comp.get("violations", [])
+            if not isinstance(violations, list):
+                violations = []
+            for m in matched:
+                violations.append(
+                    {
+                        "trigger": m,
+                        "transcript_snippet": transcript[:200],
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                )
+            comp["violations"] = violations
+            meta["compliance"] = comp
+            self.call_session.call_metadata = meta
+
+            if getattr(self, "db", None):
+                try:
+                    from sqlalchemy.orm.attributes import flag_modified
+
+                    flag_modified(self.call_session, "call_metadata")
+                    self.db.commit()
+                except Exception as db_err:
+                    logger.debug(
+                        "Failed to persist compliance metadata: %s", db_err
+                    )
+
     async def handle_dtmf_message(self, message: dict) -> None:
         """Handle incoming WebSocket DTMF event with debounce buffering and limit enforcement."""
         if getattr(self, "_call_ended", False):
             return
 
-        flow = getattr(self, "call_flow", None)
-        if (
-            flow is None
-            and self.call_session
-            and self.call_session.call_flow_id
-            and getattr(self, "db", None)
-        ):
-            try:
-                from app.models.call_flow import CallFlow
-
-                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
-                flow = None
-
+        flow = self._resolve_flow()
         if not flow or not getattr(flow, "dtmf_enabled", False):
             return
 
@@ -818,13 +1037,14 @@ class CallControlMixin:
             allowed_raw = getattr(flow, "dtmf_allowed_exceeded_attempts", 10)
             allowed = allowed_raw if allowed_raw is not None else 10
             action = getattr(flow, "dtmf_exceeded_action", "end_call") or "end_call"
-            if self._dtmf_exceeded_count > allowed and action == "end_call":
+            if self._dtmf_exceeded_count >= allowed and action == "end_call":
                 logger.warning(
                     "DTMF max digits exceeded %d times (allowed: %d) — ending call",
                     self._dtmf_exceeded_count,
                     allowed,
                 )
                 self._dtmf_buffer = ""
+                self._dtmf_suppress_stt = False
                 try:
                     self._call_ended = True
 
@@ -893,6 +1113,7 @@ class CallControlMixin:
                 return
             else:
                 self._dtmf_buffer = ""
+                self._dtmf_suppress_stt = False
                 return
 
         delay_raw = getattr(flow, "dtmf_button_press_delay", 2)
@@ -907,7 +1128,6 @@ class CallControlMixin:
             await asyncio.sleep(delay)
             digits = getattr(self, "_dtmf_buffer", "")
             self._dtmf_buffer = ""
-            self._dtmf_suppress_stt = False
             if digits:
                 logger.info("DTMF buffer flushed: %r", digits)
                 await self._process_transcript(
@@ -917,6 +1137,8 @@ class CallControlMixin:
             pass
         except Exception as e:
             logger.error(f"Error flushing DTMF buffer: {e}", exc_info=True)
+        finally:
+            self._dtmf_suppress_stt = False
 
     def _cancel_silence_watchdog(self) -> None:
         """Cancel the active silence watchdog timer and reset retry count on user activity."""
@@ -940,20 +1162,7 @@ class CallControlMixin:
     async def _silence_watchdog_loop(self) -> None:
         """Background loop that plays silence reminders and terminates after final timeout."""
         try:
-            flow = getattr(self, "call_flow", None)
-            if (
-                flow is None
-                and self.call_session
-                and self.call_session.call_flow_id
-                and getattr(self, "db", None)
-            ):
-                try:
-                    from app.models.call_flow import CallFlow
-
-                    flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-                except Exception:
-                    flow = None
-
+            flow = self._resolve_flow()
             if not flow:
                 return
 
@@ -982,6 +1191,7 @@ class CallControlMixin:
                         break
                     # If TTS is currently playing, skip reminder this tick
                     if getattr(self, "_is_tts_playing", False):
+                        await asyncio.sleep(1)
                         continue
 
                     retry_idx = getattr(self, "_silence_retry_count", 0)
@@ -1013,6 +1223,7 @@ class CallControlMixin:
                     if getattr(self, "_call_ended", False):
                         break
                     if getattr(self, "_is_tts_playing", False):
+                        await asyncio.sleep(1)
                         continue
 
                     logger.info(
@@ -1083,25 +1294,14 @@ class CallControlMixin:
             logger.error(
                 f"Unexpected error in silence watchdog: {e}", exc_info=True
             )
+        finally:
+            self._silence_retry_count = 0
 
     def _arm_max_duration_timer(self) -> None:
         """Arm hard timer for maximum call duration."""
         if getattr(self, "_call_ended", False):
             return
-        flow = getattr(self, "call_flow", None)
-        if (
-            flow is None
-            and self.call_session
-            and self.call_session.call_flow_id
-            and getattr(self, "db", None)
-        ):
-            try:
-                from app.models.call_flow import CallFlow
-
-                flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-            except Exception:
-                flow = None
-
+        flow = self._resolve_flow()
         if not flow:
             return
 
@@ -1125,20 +1325,7 @@ class CallControlMixin:
             logger.info(
                 "Max call duration (%ss) reached — ending call", max_seconds
             )
-            flow = getattr(self, "call_flow", None)
-            if (
-                flow is None
-                and self.call_session
-                and self.call_session.call_flow_id
-                and getattr(self, "db", None)
-            ):
-                try:
-                    from app.models.call_flow import CallFlow
-
-                    flow = self.db.get(CallFlow, self.call_session.call_flow_id)
-                except Exception:
-                    flow = None
-
+            flow = self._resolve_flow()
             departure_msg = (
                 getattr(flow, "max_duration_message", None) or ""
             ).strip()

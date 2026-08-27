@@ -19,6 +19,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.models.agent import Agent
 from app.models.call_flow import CallFlow
@@ -298,9 +299,9 @@ class TestInboundRedirectionWebhookRuntime:
         db.commit()
         db.refresh(user)
 
-        model = (
-            db.query(Model).filter(Model.model_name == "gpt-4o-mini").first()
-        )
+        model = db.execute(
+            select(Model).where(Model.model_name == "gpt-4o-mini")
+        ).scalar_one_or_none()
         if not model:
             provider = Provider(name="openai", is_active=True)
             db.add(provider)

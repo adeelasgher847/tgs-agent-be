@@ -1140,6 +1140,7 @@ class TestGetRecordingEnabledForCallBrowserGating:
 
         call_session = MagicMock()
         call_session.call_type = "web"
+        call_session.call_flow_id = None
         db = MagicMock()
 
         with patch(
@@ -1155,6 +1156,7 @@ class TestGetRecordingEnabledForCallBrowserGating:
 
         call_session = MagicMock()
         call_session.call_type = "web"
+        call_session.call_flow_id = None
         db = MagicMock()
 
         with patch(
@@ -1171,6 +1173,7 @@ class TestGetRecordingEnabledForCallBrowserGating:
 
         call_session = MagicMock()
         call_session.call_type = "inbound"
+        call_session.call_flow_id = None
         call_session.assistant_phone_number = "+15551234567"
         call_session.tenant_id = uuid.uuid4()
         db = MagicMock()

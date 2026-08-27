@@ -15,6 +15,7 @@ from __future__ import annotations
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_db, require_tenant
@@ -47,14 +48,12 @@ def _enforce_hipaa_recording_access(
     if call_session.call_flow_id is None:
         return
 
-    flow = (
-        db.query(CallFlow)
-        .filter(
+    flow = db.execute(
+        select(CallFlow).where(
             CallFlow.id == call_session.call_flow_id,
             CallFlow.tenant_id == call_session.tenant_id,
         )
-        .first()
-    )
+    ).scalar_one_or_none()
     if flow is None or not flow.hipaa_compliance:
         return
 
@@ -86,35 +85,38 @@ async def get_recording(
     tenant_id = principal.current_tenant_id
 
     # Tenant-scoped lookup
-    session = (
-        db.query(CallSession)
-        .filter(CallSession.id == call_id, CallSession.tenant_id == tenant_id)
-        .first()
-    )
+    session = db.execute(
+        select(CallSession).where(
+            CallSession.id == call_id,
+            CallSession.tenant_id == tenant_id,
+        )
+    ).scalar_one_or_none()
     if session is None:
         raise HTTPException(status_code=404, detail="Recording not found")
 
     # HIPAA RBAC gate — must run before returning any data
     _enforce_hipaa_recording_access(principal, session, db)
 
-    # Check recording was enabled for this call's number
-    if not get_recording_enabled_for_call(db, session):
-        raise HTTPException(status_code=404, detail="Recording not enabled for this call")
-
-    # No path + error = upload failed
-    if not session.recording_s3_path and session.recording_error:
-        raise HTTPException(status_code=404, detail="Recording upload failed for this call")
-
-    # No path yet = not uploaded (may still be processing)
+    # Check if a recorded file exists on S3 for this session
     if not session.recording_s3_path:
-        raise HTTPException(status_code=404, detail="Recording not available yet")
+        if session.recording_error:
+            raise HTTPException(
+                status_code=404, detail="Recording upload failed for this call"
+            )
+        if not get_recording_enabled_for_call(db, session):
+            raise HTTPException(
+                status_code=404, detail="Recording not enabled for this call"
+            )
+        raise HTTPException(
+            status_code=404, detail="Recording not available yet"
+        )
 
     # Generate signed URL
     try:
         from app.services import s3_recording_service
 
         signed_url = s3_recording_service.generate_signed_url(
-            gcs_path=session.recording_s3_path,
+            s3_path=session.recording_s3_path,
             expiry_seconds=settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
         )
     except Exception as exc:
@@ -154,37 +156,28 @@ async def get_public_recording(
     Return a signed S3 URL for a call recording without authentication,
     provided that the call flow has public_recording_enabled=True.
 
-    404 cases:
-      - call_session not found
-      - recording not enabled for this call
-      - recording upload failed or not available yet
-    403 cases:
-      - call has no call_flow or call flow has public_recording_enabled=False
-      - flow is HIPAA protected (cannot be public)
+    Security note: To prevent probing/enumerating call session existence across tenants,
+    any unknown call_id, session without flow, or non-public flow uniformly returns 403 Forbidden.
+    The tenant boundary is derived directly from the session's parent call flow.
     """
-    session = (
-        db.query(CallSession)
-        .filter(CallSession.id == call_id)
-        .first()
-    )
-    if session is None:
-        raise HTTPException(status_code=404, detail="Recording not found")
+    session = db.execute(
+        select(CallSession).where(CallSession.id == call_id)
+    ).scalar_one_or_none()
 
-    if not session.call_flow_id:
+    # Collapse non-existent session and unattached flow into uniform 403 to avoid information leakage
+    if session is None or not session.call_flow_id:
         raise HTTPException(
             status_code=403,
             detail="Public recording access is not enabled for this call",
         )
 
-    flow = (
-        db.query(CallFlow)
-        .filter(
+    flow = db.execute(
+        select(CallFlow).where(
             CallFlow.id == session.call_flow_id,
             CallFlow.tenant_id == session.tenant_id,
-            ~CallFlow.is_deleted,
+            CallFlow.is_deleted.is_(False),
         )
-        .first()
-    )
+    ).scalar_one_or_none()
     if not flow or not flow.public_recording_enabled:
         raise HTTPException(
             status_code=403,
@@ -197,28 +190,26 @@ async def get_public_recording(
             detail="Public recording access is not permitted for HIPAA-compliant flows",
         )
 
-    # Check recording was enabled for this call
-    if not get_recording_enabled_for_call(db, session):
-        raise HTTPException(
-            status_code=404, detail="Recording not enabled for this call"
-        )
-
-    # No path + error = upload failed
-    if not session.recording_s3_path and session.recording_error:
-        raise HTTPException(
-            status_code=404, detail="Recording upload failed for this call"
-        )
-
-    # No path yet = not uploaded
+    # Check if a recorded file exists on S3 for this session
     if not session.recording_s3_path:
-        raise HTTPException(status_code=404, detail="Recording not available yet")
+        if session.recording_error:
+            raise HTTPException(
+                status_code=404, detail="Recording upload failed for this call"
+            )
+        if not get_recording_enabled_for_call(db, session):
+            raise HTTPException(
+                status_code=404, detail="Recording not enabled for this call"
+            )
+        raise HTTPException(
+            status_code=404, detail="Recording not available yet"
+        )
 
     # Generate signed URL
     try:
         from app.services import s3_recording_service
 
         signed_url = s3_recording_service.generate_signed_url(
-            gcs_path=session.recording_s3_path,
+            s3_path=session.recording_s3_path,
             expiry_seconds=settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
         )
     except Exception as exc:

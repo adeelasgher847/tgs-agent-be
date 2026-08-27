@@ -1063,13 +1063,15 @@ class BidirectionalStreamHandler(
                 ),
                 timeout=12.0,
             )
+            self._arm_silence_watchdog()
         except asyncio.TimeoutError:
             logger.error(
                 "[LLM] generate_and_stream_response timed out (12s) — aborting turn"
             )
-
-        finally:
             self._arm_silence_watchdog()
+        except asyncio.CancelledError:
+            # Turn was interrupted by caller barge-in; do NOT re-arm silence watchdog while caller speaks
+            pass
 
     def _should_accept_final_transcript(
         self, transcript: str, confidence: float
@@ -1242,6 +1244,13 @@ class BidirectionalStreamHandler(
                 # 🎯 Check for IVR phone tree / hold queue detection
                 if await self._check_and_handle_ivr_and_hold(transcript):
                     return  # Stop processing - call is ending
+
+                # 🎯 Check for Anti-Bot / Fake Voice detection - end call if terminate_on_fake_voice is true
+                if await self._check_and_handle_anti_bot(transcript):
+                    return  # Stop processing - call is ending
+
+                # 🎯 Check for Compliance monitoring - flag policy violations
+                await self._check_and_handle_compliance_monitoring(transcript)
 
                 # 🎯 Send "in-progress" status when confident word is detected (like "hello")
                 if (
@@ -2933,16 +2942,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 if _rec_enabled:
                     if settings.LIVEKIT_ENABLED:
                         if (self.call_session.call_type or "").lower() == "inbound":
-                            faster_pickup = False
-                            if self.call_flow and getattr(
-                                self.call_flow, "faster_inbound_pickup", False
-                            ):
-                                faster_pickup = True
-
-                            if faster_pickup:
-                                asyncio.create_task(self._start_livekit_recording())
-                            else:
-                                await self._start_livekit_recording()
+                            # Egress API calls perform network I/O; start in background task to avoid
+                            # blocking handle_start_message and delaying initial Twilio audio frames.
+                            asyncio.create_task(self._start_livekit_recording())
                         elif (self.call_session.call_type or "").lower() == "outbound":
                             asyncio.create_task(self._setup_livekit_agent_publisher())
                     elif (self.call_session.call_type or "").lower() == "inbound":
@@ -3118,6 +3120,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             and not self._dtmf_debounce_task.done()
         ):
             self._dtmf_debounce_task.cancel()
+            self._dtmf_suppress_stt = False
 
         if (
             hasattr(self, "_silence_watchdog_task")

@@ -55,6 +55,7 @@ from app.services.bidirectional_stream_service import generate_mulaw_tts
 from app.services.transcript_service import transcript_service
 from app.utils.audio_utils import MULAW_FRAME_BYTES, ulaw_to_linear_sample
 from app.utils.ssml_utils import strip_ssml_tags
+from app.voice.call_control_mixin import CallControlMixin
 from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_TUNABLES
 from app.voice.gemini_live_audio_bridge import GEMINI_OUTPUT_PCM_RATE_HZ
 from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI_REALTIME_AUDIO_RATE_HZ
@@ -395,7 +396,7 @@ class _OpenAIRealtimeAudioSink:
             )
 
 
-class LiveKitBrowserCallHandler:
+class LiveKitBrowserCallHandler(CallControlMixin):
     """
     Transport adapter: implements exactly the attribute/method surface that
     VoiceOrchestrator, TtsPipeline, and ConversationOrchestrator need on
@@ -423,6 +424,8 @@ class LiveKitBrowserCallHandler:
         self.call_flow = call_flow
         self.call_session_id = str(call_session.id)
         self.agent_id = str(agent.id) if agent else None
+        self.call_sid: str | None = None
+        self._call_ended: bool = False
 
         # Twilio-only naming (`streamSid`). Nothing in this path sends Twilio
         # media-stream frames, but VoiceOrchestrator reads this attribute for
@@ -809,6 +812,10 @@ class LiveKitBrowserCallHandler:
 
             if hasattr(self, "_voice_metrics") and self._voice_metrics:
                 self._voice_metrics.begin_turn_at_stt_final(acoustic_speech_end_mono)
+
+            # 🎯 Check for call screening detection - end call if action is hang_up
+            if await self._check_and_handle_call_screener(text):
+                return  # Stop processing - call is ending
 
             await self._add_to_transcript("client", text, "speech", confidence)
             self._update_booking_memory_from_user_turn(text)

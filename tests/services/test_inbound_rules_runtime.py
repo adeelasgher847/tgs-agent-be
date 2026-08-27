@@ -16,6 +16,7 @@ from unittest.mock import patch
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 
 from app.models.agent import Agent
 from app.models.call_flow import CallFlow
@@ -125,6 +126,45 @@ class TestInboundRulesServiceUnit:
             is False
         )
 
+    def test_is_number_blocked_rejects_foreign_tenant_ruleset(self, db):
+        tenant_a = Tenant(
+            name=f"TenantA-{uuid.uuid4().hex[:8]}",
+            schema_name=f"tenant_a_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        tenant_b = Tenant(
+            name=f"TenantB-{uuid.uuid4().hex[:8]}",
+            schema_name=f"tenant_b_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add_all([tenant_a, tenant_b])
+        db.commit()
+
+        # Rule set belonging to tenant A
+        rs_a = InboundRuleSet(
+            tenant_id=tenant_a.id,
+            name="Tenant A Blocklist",
+        )
+        db.add(rs_a)
+        db.commit()
+
+        rule = InboundRule(
+            tenant_id=tenant_a.id,
+            rule_set_id=rs_a.id,
+            phone_number_pattern="+15559990000",
+            normalized_digits="15559990000",
+            action="deny",
+        )
+        db.add(rule)
+        db.commit()
+
+        # Querying with Tenant B's tenant_id must NOT match Tenant A's rule set
+        blocked, matched = inbound_rules_service.is_number_blocked(
+            db, tenant_b.id, rs_a.id, "+15559990000"
+        )
+        assert blocked is False
+        assert matched is None
+
 
 class TestInboundRulesWebhookRuntime:
     @pytest.fixture
@@ -161,9 +201,9 @@ class TestInboundRulesWebhookRuntime:
         db.commit()
         db.refresh(user)
 
-        model = (
-            db.query(Model).filter(Model.model_name == "gpt-4o-mini").first()
-        )
+        model = db.execute(
+            select(Model).where(Model.model_name == "gpt-4o-mini")
+        ).scalar_one_or_none()
         if not model:
             provider = Provider(name="openai", is_active=True)
             db.add(provider)

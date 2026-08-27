@@ -298,6 +298,36 @@ class TestMaxCallDurationRuntime:
         handler._cancel_silence_watchdog()
 
     @pytest.mark.anyio
+    async def test_direct_task_cancellation_resets_silence_retry_count(self):
+        flow = MagicMock(spec=CallFlow)
+        flow.silence_timeout = 0.01
+        flow.reminder_retries = 2
+        flow.end_call_after_reminder = 10
+        flow.reminder_messages = ["Are you there?"]
+
+        session = MagicMock(spec=CallSession)
+        session.id = uuid.uuid4()
+        session.call_flow_id = uuid.uuid4()
+
+        handler = DummyHostHandler(call_session=session, call_flow=flow)
+        handler._arm_silence_watchdog()
+
+        # Let it trigger at least one reminder
+        await asyncio.sleep(0.03)
+        assert handler._silence_retry_count >= 1
+
+        # Direct task cancel (e.g. barge-in or unhandled coroutine cancel)
+        if handler._silence_watchdog_task:
+            handler._silence_watchdog_task.cancel()
+            try:
+                await handler._silence_watchdog_task
+            except asyncio.CancelledError:
+                pass
+
+        # finally block in watchdog coroutine MUST reset retry_count to 0
+        assert handler._silence_retry_count == 0
+
+    @pytest.mark.anyio
     async def test_default_play_tts_message_queues_to_tts_pipeline(self):
         class RealMixinHandler(CallControlMixin):
             def __init__(self):
@@ -326,6 +356,7 @@ class TestMaxCallDurationRuntime:
         session.call_flow_id = uuid.uuid4()
 
         db_mock = MagicMock()
+        db_mock.execute.return_value.scalar_one_or_none.return_value = flow
         db_mock.get.return_value = flow
 
         # handler.call_flow is None, should look up via handler.db.get(CallFlow, ...)

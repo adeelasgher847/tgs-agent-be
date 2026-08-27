@@ -42,7 +42,7 @@ def _tenant_id(principal: User | ApiKeyPrincipal) -> uuid.UUID:
     summary="List all Inbound Rule Sets for the workspace",
     description="Returns all non-deleted inbound rule sets with active rules count for current workspace. Read-only rank is sufficient.",
 )
-def list_rule_sets(
+async def list_rule_sets(
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
 ) -> List[InboundRuleSetListItem]:
@@ -57,7 +57,7 @@ def list_rule_sets(
     summary="Create a new Inbound Rule Set",
     description="Creates a new rule set and optionally initializes it with number rules. Admin rank or API key required.",
 )
-def create_rule_set(
+async def create_rule_set(
     body: InboundRuleSetCreate,
     request: Request,
     principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
@@ -81,6 +81,37 @@ def create_rule_set(
     return result
 
 
+@router.post(
+    "/sets/import",
+    response_model=InboundRuleImportResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Bulk import number rules from CSV / text",
+    description="Imports number rules from multiline text or CSV data with optional labels into an existing or new rule set. Admin rank or API key required.",
+)
+async def import_rules(
+    body: InboundRuleImportRequest,
+    request: Request,
+    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> InboundRuleImportResponse:
+    tenant_id = _tenant_id(principal)
+    user_id = principal.id if isinstance(principal, User) else None
+    result = inbound_rules_service.import_rules_from_text(
+        db, tenant_id, user_id, body
+    )
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="inbound_rule_set.imported",
+        resource_type="inbound_rule_set",
+        resource_id=result.rule_set.id,
+        new_value=result.model_dump(),
+        actor_user_id=principal.id,
+    )
+    return result
+
+
 @router.get(
     "/sets/{set_id}",
     response_model=InboundRuleSetResponse,
@@ -88,7 +119,7 @@ def create_rule_set(
     summary="Get single Inbound Rule Set with rules list",
     description="Returns rule set details and all its active number rules. Read-only rank is sufficient.",
 )
-def get_rule_set(
+async def get_rule_set(
     set_id: uuid.UUID,
     principal: User | ApiKeyPrincipal = Depends(require_readonly_or_api_key),
     db: Session = Depends(get_db),
@@ -104,7 +135,7 @@ def get_rule_set(
     summary="Update Inbound Rule Set",
     description="Updates name/description and batch replaces number rules if rules array is provided. Admin rank or API key required.",
 )
-def update_rule_set(
+async def update_rule_set(
     set_id: uuid.UUID,
     body: InboundRuleSetUpdate,
     request: Request,
@@ -134,7 +165,7 @@ def update_rule_set(
     summary="Delete an Inbound Rule Set",
     description="Soft deletes the rule set and its rules, detaching it from any call flows. Admin rank or API key required.",
 )
-def delete_rule_set(
+async def delete_rule_set(
     set_id: uuid.UUID,
     request: Request,
     principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
@@ -151,34 +182,3 @@ def delete_rule_set(
         resource_id=set_id,
         actor_user_id=principal.id,
     )
-
-
-@router.post(
-    "/sets/import",
-    response_model=InboundRuleImportResponse,
-    status_code=status.HTTP_200_OK,
-    summary="Bulk import number rules from CSV / text",
-    description="Imports number rules from multiline text or CSV data with optional labels into an existing or new rule set. Admin rank or API key required.",
-)
-def import_rules(
-    body: InboundRuleImportRequest,
-    request: Request,
-    principal: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
-    db: Session = Depends(get_db),
-) -> InboundRuleImportResponse:
-    tenant_id = _tenant_id(principal)
-    user_id = principal.id if isinstance(principal, User) else None
-    result = inbound_rules_service.import_rules_from_text(
-        db, tenant_id, user_id, body
-    )
-    log_audit_event(
-        db,
-        request=request,
-        tenant_id=tenant_id,
-        action="inbound_rule_set.imported",
-        resource_type="inbound_rule_set",
-        resource_id=result.rule_set.id,
-        new_value=result.model_dump(),
-        actor_user_id=principal.id,
-    )
-    return result

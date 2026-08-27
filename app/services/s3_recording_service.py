@@ -138,6 +138,24 @@ def set_bucket_default_kms_key(kms_key_name: str) -> None:
     )
 
 
+def delete_recording_object(key: str) -> bool:
+    """
+    Delete a single call recording object from S3.
+
+    Returns True if deleted or already absent, False on error.
+    """
+    if not key or not isinstance(key, str) or not key.strip():
+        return True
+    client = get_s3_client()
+    try:
+        client.delete_object(Bucket=settings.S3_RECORDINGS_BUCKET, Key=key)
+        logger.info("S3 recording deleted: %s", key)
+        return True
+    except Exception as exc:
+        logger.warning("Failed to delete S3 recording object %s: %s", key, exc)
+        return False
+
+
 def delete_workspace_recordings(workspace_id: uuid.UUID) -> int:
     """
     Delete every recording object under recordings/{workspace_id}/ in S3.
@@ -168,18 +186,22 @@ def delete_workspace_recordings(workspace_id: uuid.UUID) -> int:
 
 
 def generate_signed_url(
-    gcs_path: str,
+    s3_path: str | None = None,
     expiry_seconds: int = settings.GCS_RECORDINGS_SIGNED_URL_EXPIRY_SECONDS,
+    *,
+    gcs_path: str | None = None,
 ) -> str:
     """
     Generate a short-lived presigned URL for direct client download.
 
-    Parameter name kept as `gcs_path` for signature compatibility with the
-    GCS implementation it replaces; it holds the S3 object key.
+    Supports `s3_path` (canonical S3 object key) with fallback to legacy `gcs_path`.
     """
+    key = s3_path or gcs_path
+    if not key:
+        raise ValueError("s3_path or gcs_path is required to generate signed recording URL")
     client = get_s3_client()
     return client.generate_presigned_url(
         "get_object",
-        Params={"Bucket": settings.S3_RECORDINGS_BUCKET, "Key": gcs_path},
+        Params={"Bucket": settings.S3_RECORDINGS_BUCKET, "Key": key},
         ExpiresIn=expiry_seconds,
     )

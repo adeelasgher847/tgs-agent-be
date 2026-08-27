@@ -306,6 +306,40 @@ class CallFlow(Base):
         Boolean, default=False, nullable=False, server_default="false"
     )
 
+    # ── Compliance & Detection Settings ──
+    compliance_monitoring_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    anti_bot_detection_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    terminate_on_fake_voice = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+
+    # ── Data Retention Policy Settings ──
+    retention_policy_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    retention_transcript_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    retention_transcript_days = Column(
+        Integer, default=30, nullable=False, server_default="30"
+    )
+    retention_summary_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    retention_summary_days = Column(
+        Integer, default=30, nullable=False, server_default="30"
+    )
+    retention_recording_enabled = Column(
+        Boolean, default=False, nullable=False, server_default="false"
+    )
+    retention_recording_days = Column(
+        Integer, default=30, nullable=False, server_default="30"
+    )
+
     hipaa_compliance = Column(
         Boolean, default=False, nullable=False, server_default="false"
     )

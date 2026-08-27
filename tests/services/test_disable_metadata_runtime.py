@@ -62,6 +62,9 @@ class TestMetadataHelpers:
             ("metadata.user_id", "456"),
             ("_metadata.token", "tok"),
             ("call_metadata.source", "web"),
+            ("custom_metadata", "stripped_custom"),
+            ("custom_metadata[tier]", "pro"),
+            ("custom_metadata.plan", "gold"),
             ("status", "completed"),
         ]
         filtered = _filter_query_params_metadata(params)
@@ -73,7 +76,7 @@ class TestMetadataHelpers:
 
 class TestPreInboundMetadataRuntime:
     @pytest.mark.anyio
-    async def test_pre_inbound_includes_metadata_when_disabled(self):
+    async def test_pre_inbound_includes_metadata_when_not_disabled(self):
         flow = MagicMock(spec=CallFlow)
         flow.id = uuid.uuid4()
         flow.tenant_id = uuid.uuid4()
@@ -115,6 +118,7 @@ class TestPreInboundMetadataRuntime:
             {"key": "env", "value": "prod"},
             {"key": "metadata", "value": "strip_me"},
             {"key": "_metadata.key", "value": "strip_me_too"},
+            {"key": "custom_metadata[tier]", "value": "strip_me_three"},
         ]
 
         captured_kwargs = {}
@@ -135,6 +139,44 @@ class TestPreInboundMetadataRuntime:
             "to": "+15553334444",
         }
         assert captured_kwargs["query_params"] == [("env", "prod")]
+
+    @pytest.mark.anyio
+    async def test_pre_inbound_skips_non_string_variable_and_continues_parsing(self):
+        import httpx
+
+        flow = MagicMock(spec=CallFlow)
+        flow.id = uuid.uuid4()
+        flow.tenant_id = uuid.uuid4()
+        flow.disable_metadata = False
+        flow.pre_inbound_webhook_url = "https://example.com/pre-inbound"
+        flow.pre_inbound_webhook_headers_encrypted = None
+        flow.pre_inbound_webhook_static_metadata = {}
+        flow.pre_inbound_webhook_query_params = []
+
+        fake_resp = MagicMock(spec=httpx.Response)
+        fake_resp.content = b'{"variables": {"var1": "hello", "var2_bad": 12345, "var3": "world"}}'
+        fake_resp.json.return_value = {
+            "variables": {
+                "var1": "hello",
+                "var2_bad": 12345,
+                "var3": "world",
+            }
+        }
+
+        async def fake_deliver(db, **kwargs):
+            if "on_response" in kwargs and kwargs["on_response"]:
+                kwargs["on_response"](fake_resp)
+            return MagicMock(spec=SystemWebhookDeliveryLog, status="success")
+
+        with patch("app.services.system_webhook_service._deliver", side_effect=fake_deliver):
+            vars_result = await fetch_pre_inbound_webhook_variables(
+                MagicMock(), flow, from_number="+15551112222", to_number="+15553334444"
+            )
+
+        assert vars_result == {
+            "var1": "hello",
+            "var3": "world",
+        }
 
 
 class TestPostCallAndStatusMetadataRuntime:

@@ -21,6 +21,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import HTMLResponse
+from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
 from twilio.twiml.voice_response import VoiceResponse
 
@@ -196,7 +197,12 @@ async def amd_callback(
     elif call_session and call_session.call_flow_id:
         from app.models.call_flow import CallFlow
 
-        flow = db.get(CallFlow, call_session.call_flow_id)
+        flow = db.execute(
+            select(CallFlow).where(
+                CallFlow.id == call_session.call_flow_id,
+                CallFlow.tenant_id == call_session.tenant_id,
+            )
+        ).scalar_one_or_none()
         if flow and flow.voicemail_detection_enabled:
             voicemail_action = flow.voicemail_action or "hang_up"
             voicemail_message = flow.voicemail_message
@@ -219,14 +225,14 @@ async def amd_callback(
             # already off "active" instead of racing to double-count/bill it.
             if record is not None:
                 await worker_svc.mark_voicemail_skipped(record.id)
-            _persist_amd_result(db, call_session, "machine_start")
+            _persist_amd_result(db, call_session, "machine_start", set_ended_reason=True)
             if call_sid:
                 _hangup(db, call_session, call_sid)
         elif voicemail_action == "leave_message":
-            _persist_amd_result(db, call_session, "machine_start")
+            _persist_amd_result(db, call_session, "machine_start", set_ended_reason=False)
             # nothing else to do yet — wait for machine_end_beep below.
         else:  # "continue" (or no job/flow resolved) — let the normal flow proceed
-            _persist_amd_result(db, call_session, "continue")
+            _persist_amd_result(db, call_session, "continue", set_ended_reason=False)
 
     elif answered_by == "machine_end_beep":
         if voicemail_action == "leave_message" and call_sid:
@@ -234,32 +240,52 @@ async def amd_callback(
             if message:
                 if record is not None:
                     await worker_svc.mark_voicemail_message_left(record.id)
+                _persist_amd_result(db, call_session, "machine_end_beep", set_ended_reason=False)
                 _play_voicemail_and_hangup(db, call_session, call_sid, message)
             else:
                 # No message configured — nothing to deliver, treat as a skip.
                 if record is not None:
                     await worker_svc.mark_voicemail_skipped(record.id)
+                _persist_amd_result(db, call_session, "machine_end_beep", set_ended_reason=True)
                 _hangup(db, call_session, call_sid)
         elif is_hangup and call_sid:
-            if record is not None:
-                await worker_svc.mark_voicemail_skipped(record.id)
-            _hangup(db, call_session, call_sid)
+            # Guard against double-hangup when Twilio sends both machine_start and machine_end_beep:
+            # check that the call session is still active before executing this branch.
+            is_active = True
+            if call_session is not None and (
+                call_session.status != "active" or call_session.ended_reason is not None
+            ):
+                is_active = False
+            if record is not None and record.status != "active":
+                is_active = False
+
+            if is_active:
+                if record is not None:
+                    await worker_svc.mark_voicemail_skipped(record.id)
+                _persist_amd_result(db, call_session, "machine_end_beep", set_ended_reason=True)
+                _hangup(db, call_session, call_sid)
 
     elif answered_by in ("human", "unknown"):
-        _persist_amd_result(db, call_session, answered_by)
+        _persist_amd_result(db, call_session, answered_by, set_ended_reason=False)
 
     # "fax" / anything else: no special handling — let the call proceed/expire naturally.
 
     return HTMLResponse("", media_type="application/xml")
 
 
-def _persist_amd_result(db: Session, call_session, result: str) -> None:
+def _persist_amd_result(
+    db: Session,
+    call_session,
+    result: str,
+    *,
+    set_ended_reason: bool = False,
+) -> None:
     if call_session is None:
         return
     md = {**(call_session.call_metadata or {})}
     md["amd_result"] = result
     call_session.call_metadata = md
-    if result in ("machine_start", "machine_end_beep") and not call_session.ended_reason:
+    if set_ended_reason and not call_session.ended_reason:
         call_session.ended_reason = "Voicemail detected"
     db.commit()
 
