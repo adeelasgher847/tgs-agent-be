@@ -67,6 +67,14 @@ class VoiceTurnMetrics:
         self.tts_first_audio_mono = None
         self.first_playback_mono = None
         self.turn_complete_mono = None
+        # Internal per-turn sequence counter backing self.turn_id. Not itself
+        # a dataclass field — start_generation() bumps it and republishes the
+        # new value into self.turn_id so telemetry/log consumers and any
+        # caller wanting to validate turn ownership (see mark_rag_start /
+        # mark_rag_end / mark_llm_request below) see a real, monotonically
+        # increasing per-call turn counter instead of the permanently-None
+        # default the field previously carried.
+        self._turn_seq: int = 0
 
     def mark_call_pickup(self) -> None:
         if self.call_pickup_mono is None:
@@ -84,29 +92,69 @@ class VoiceTurnMetrics:
         if acoustic_speech_end_mono is not None:
             self.acoustic_speech_end_mono = acoustic_speech_end_mono
 
-    def start_generation(self) -> None:
-        """Call at the start of each generate_and_stream_response (non-greeting)."""
+    def start_generation(self) -> int:
+        """Call once at the start of each turn's generation, BEFORE any
+        mark_* calls for that turn (rag/llm/tts marks included) — this is
+        the single per-turn reset point. Returns the new turn_id so callers
+        that fire detached background tasks (e.g. RAG prefetch, which starts
+        speculatively on an interim transcript and can outlive the turn that
+        eventually consumes it, or gets cancelled by a barge-in) can snapshot
+        "the turn I was started for" and pass it back into mark_rag_start /
+        mark_rag_end / mark_llm_request so a write arriving after the turn
+        has already moved on is rejected instead of silently corrupting the
+        new turn's fields.
+
+        Resets every field that is turn-scoped. rag_start_mono / rag_end_mono
+        / llm_request_mono are deliberately included here — historically they
+        were NOT reset, which meant their write-once-per-call idempotent
+        guards (`if self.x is None`) only ever fired on the call's first
+        turn and then stayed frozen for the rest of the call, corrupting
+        every later turn's rag_latency_ms / llm_ttft_ms.
+        """
         now = time.perf_counter()
+        self._turn_seq += 1
+        self.turn_id = self._turn_seq
         self.generation_start_mono = now
         self.generation_anchor_mono = now
         self.prompt_start_mono = now
+        self.rag_start_mono = None
+        self.rag_end_mono = None
+        self.llm_request_mono = None
         self.turn_llm_first_token_mono = None
         self.turn_first_tts_queued_mono = None
         self.tts_first_audio_mono = None
         self.first_playback_mono = None
         self.turn_complete_mono = None
+        return self.turn_id
 
-    def mark_rag_start(self) -> None:
+    def mark_rag_start(self, expected_turn_id: int | None = None) -> None:
+        """expected_turn_id: reserved for a detached background task to pass
+        the turn_id it snapshotted when scheduled (e.g. speculative RAG
+        prefetch fired from an interim transcript, before start_generation()
+        for the eventual real turn may even have run) — if the current
+        turn_id has since moved on (barge-in / new turn started), the write
+        is dropped rather than corrupting the new turn's fields. NOT YET
+        WIRED to any production caller as of this writing (the RAG-prefetch
+        background task does not call mark_rag_start()/mark_llm_request() at
+        all today, so this parameter is always None in practice) — kept as
+        forward-looking infrastructure for whichever caller ends up needing
+        it. Do not assume this guard is currently protecting anything."""
+        if expected_turn_id is not None and expected_turn_id != self.turn_id:
+            return
         if self.rag_start_mono is None:
             self.rag_start_mono = time.perf_counter()
 
-    def mark_rag_end(self) -> None:
+    def mark_rag_end(self, expected_turn_id: int | None = None) -> None:
+        if expected_turn_id is not None and expected_turn_id != self.turn_id:
+            return
         self.rag_end_mono = time.perf_counter()
 
     def mark_prompt_ready(self) -> None:
         self.prompt_ready_mono = time.perf_counter()
 
-    def mark_llm_request(self) -> None:
+    def mark_llm_request(self, expected_turn_id: int | None = None) -> None:
+        if expected_turn_id is not None and expected_turn_id != self.turn_id:
+            return
         if self.llm_request_mono is None:
             self.llm_request_mono = time.perf_counter()
 

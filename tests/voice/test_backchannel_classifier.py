@@ -388,6 +388,48 @@ def test_single_word_unclassified_never_bypasses_configured_min_words():
     assert reason == "below_word_count_threshold"
 
 
+def test_classifier_task_brief_phrase_matrix_while_tts_playing():
+    """
+    The exact 8-phrase classifier matrix from the barge-in/VAD task brief,
+    all evaluated while TTS is playing:
+      - Pure backchannels/acknowledgements -> suppressed (agent keeps talking).
+      - Short interruption/attention phrases -> barge-in.
+      - Question/actionable-shaped short phrases -> barge-in.
+      - Clearly actionable longer phrases -> barge-in.
+    """
+    suppress = ["uh huh", "mm hmm", "yes", "okay"]
+    for phrase in suppress:
+        assert (
+            classify_turn(phrase, 0.90, is_tts_playing=True)
+            == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+        ), f"expected suppress for {phrase!r}"
+
+    interruption = ["wait", "stop", "hold on"]
+    for phrase in interruption:
+        assert (
+            classify_turn(phrase, 0.90, is_tts_playing=True)
+            == TurnClassification.BARGE_IN
+        ), f"expected barge-in for {phrase!r}"
+
+    question_shaped = ["can you", "can you please", "are you there", "sorry what"]
+    for phrase in question_shaped:
+        assert (
+            classify_turn(phrase, 0.90, is_tts_playing=True)
+            == TurnClassification.BARGE_IN
+        ), f"expected barge-in for {phrase!r}"
+
+    actionable_longer = [
+        "I need help",
+        "book me an appointment",
+        "tell me about yourself",
+    ]
+    for phrase in actionable_longer:
+        assert (
+            classify_turn(phrase, 0.90, is_tts_playing=True)
+            == TurnClassification.BARGE_IN
+        ), f"expected barge-in for {phrase!r}"
+
+
 def test_classify_turn_backward_compatible_signature_accepts_candidate_kwarg():
     # classify_turn() itself keeps returning only the enum (existing call
     # sites/tests are unaffected), with the new kwarg optional and unused

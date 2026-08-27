@@ -934,6 +934,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             _vm = getattr(self._h, "_voice_metrics", None)
             if _vm:
+                # Single per-turn reset point — MUST run before any mark_*
+                # call below for this turn. This call was previously entirely
+                # absent on the browser/LiveKit transport (VoiceTurnMetrics
+                # is instantiated once per CALL in
+                # LiveKitBrowserCallHandler.__init__, never per turn), which
+                # meant generation_start_mono/generation_anchor_mono/
+                # prompt_start_mono stayed None for the whole call AND
+                # rag_start_mono/llm_request_mono's write-once idempotent
+                # guards froze on the call's first turn exactly like the
+                # (already-fixed) Twilio path used to.
+                _vm.start_generation()
                 _vm.transport = (
                     "livekit_demo"
                     if "LiveKit" in self._h.__class__.__name__

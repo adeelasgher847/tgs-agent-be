@@ -349,6 +349,9 @@ class BidirectionalStreamHandler(
         self._rag_prefetch_min_confidence: float = float(
             getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
         )
+        self._rag_prefetch_min_chars: int = max(
+            1, int(getattr(settings, "VOICE_RAG_PREFETCH_MIN_CHARS", 4) or 4)
+        )
         self._min_interim_interval_sec = self.STT_INTERIM_INTERVAL_MS / 1000.0
 
         # TTS (Output) state - Parallel Pipeline
@@ -1429,6 +1432,7 @@ class BidirectionalStreamHandler(
                     not _prefetch
                     and not self._turn_response_started
                     and word_count >= self._rag_prefetch_min_words
+                    and len(transcript.strip()) >= self._rag_prefetch_min_chars
                     and confidence >= self._rag_prefetch_min_confidence
                 ):
                     self._rag_prefetch_user_text = transcript
@@ -1666,7 +1670,14 @@ class BidirectionalStreamHandler(
         import json
         from datetime import datetime, timezone
 
-        self._voice_metrics.start_generation()
+        # NOTE: per-turn metrics reset (start_generation()) now happens once,
+        # earlier, at the top of generate_and_stream_response — BEFORE this
+        # method's caller marks mark_rag_start()/mark_llm_request() for the
+        # turn. It used to live here, which meant it ran AFTER
+        # mark_rag_start() in the same turn (this method is invoked from
+        # generate_and_stream_response after that mark), silently wiping the
+        # very timestamp that had just been recorded. See
+        # generate_and_stream_response for the new call site.
         self._metric_gen_start_ts = time.perf_counter()
         _stt_to_gen_ms = (self._metric_gen_start_ts - self._metric_stt_final_ts) * 1000
         if self._metric_stt_final_ts > 0:
@@ -2382,6 +2393,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
 
             if self._voice_metrics:
+                # Single per-turn reset point — MUST run before any mark_*
+                # call for this turn (mark_rag_start below included). See
+                # VoiceTurnMetrics.start_generation() docstring: this used to
+                # live inside _build_system_prompt_full, which ran AFTER
+                # mark_rag_start() below (that method is called from here,
+                # further down in the same turn), so the reset wiped the
+                # timestamp mark_rag_start() had just written, and — because
+                # rag_start_mono/rag_end_mono/llm_request_mono were never
+                # reset at all — every later turn's mark_rag_start()/
+                # mark_llm_request() was a no-op against the turn-1 value
+                # (idempotent `if x is None` guard), freezing those fields
+                # for the rest of the call.
+                self._voice_metrics.start_generation()
                 self._voice_metrics.transport = "telephony"
                 self._voice_metrics.agent_id = (
                     str(self.agent.id) if self.agent else None

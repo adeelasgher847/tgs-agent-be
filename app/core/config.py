@@ -781,6 +781,14 @@ class Settings(BaseSettings):
     # Allow RAG prefetch to start earlier than interim-LLM gates.
     VOICE_RAG_PREFETCH_MIN_WORDS: int = 1
     VOICE_RAG_PREFETCH_MIN_CONFIDENCE: float = 0.05
+    # Minimum stripped-transcript character length before RAG prefetch fires.
+    # VOICE_RAG_PREFETCH_MIN_WORDS=1 alone lets a single 1-2 character interim
+    # fragment ("hi", "is", "no") through on every interim update while the
+    # user is still mid-utterance, firing a wasted embedding call per
+    # fragment. A short minimum length still allows prefetch to start early
+    # on genuinely short real queries (e.g. "book", "help") — it only rejects
+    # near-empty fragments too short to embed meaningfully.
+    VOICE_RAG_PREFETCH_MIN_CHARS: int = 4
     # TTS speed/volume bounds — shared by API schema (TtsSettingsJsonSchema) and
     # runtime clamping (resolve_tts_runtime). Tune per deploy without code changes.
     TTS_SPEED_MIN: float = 0.25

@@ -508,6 +508,9 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         self._rag_prefetch_min_confidence: float = float(
             getattr(settings, "VOICE_RAG_PREFETCH_MIN_CONFIDENCE", 0.05) or 0.05
         )
+        self._rag_prefetch_min_chars: int = max(
+            1, int(getattr(settings, "VOICE_RAG_PREFETCH_MIN_CHARS", 4) or 4)
+        )
         # Pickup-detection tunables: unused by this path (LiveKit rooms have no
         # Twilio ringing/system-message phase to skip) but VoiceOrchestrator's
         # __init__ reads them off the handler unconditionally.
@@ -810,7 +813,11 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         flow_kb_ids = (self.call_flow.knowledge_base_ids or []) if self.call_flow else []
         if not flow_kb_ids or not self.db:
             return  # RAG/KB not configured for this call flow — nothing to prefetch
-        if word_count < self._rag_prefetch_min_words or confidence < self._rag_prefetch_min_confidence:
+        if (
+            word_count < self._rag_prefetch_min_words
+            or len(text.strip()) < self._rag_prefetch_min_chars
+            or confidence < self._rag_prefetch_min_confidence
+        ):
             return
         self._rag_prefetch_source_text = text
         self._rag_prefetch_task = asyncio.create_task(
