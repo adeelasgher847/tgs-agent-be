@@ -188,7 +188,8 @@ def _run_extraction(db: Session, call_session: CallSession, call_flow: CallFlow)
 
     variable_names = [v["name"] for v in variables]
     instructions = "\n".join(
-        f'- "{v["name"]}": {v["description"]}' for v in variables
+        f'- "{v["name"]}" (type: {v.get("type", "string")}): {v["description"]}'
+        for v in variables
     )
 
     prompt = f"""

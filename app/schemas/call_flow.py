@@ -224,6 +224,22 @@ class PostCallAnalysisVariableSpec(BaseModel):
             "residential plumbing, commercial plumbing, or industrial supplies.'"
         ),
     )
+    type: str = Field(
+        default="string",
+        min_length=1,
+        max_length=50,
+        description="Data type of the variable (e.g. 'string', 'number', 'boolean', 'date', 'enum').",
+    )
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _sanitize_type(cls, value: Any) -> str:
+        if value is None:
+            return "string"
+        if isinstance(value, str):
+            cleaned = value.strip().lower()
+            return cleaned if cleaned else "string"
+        return str(value).strip().lower() or "string"
 
 
 class PostCallAnalysisSettingsUpdate(BaseModel):

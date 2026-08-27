@@ -17865,6 +17865,14 @@ components:
           title: Description
           description: What the model should extract, e.g. 'Extract whether the caller
             is seeking residential plumbing, commercial plumbing, or industrial supplies.'
+        type:
+          type: string
+          maxLength: 50
+          minLength: 1
+          title: Type
+          description: Data type of the variable (e.g. 'string', 'number', 'boolean',
+            'date', 'enum').
+          default: string
       additionalProperties: false
       type: object
       required:

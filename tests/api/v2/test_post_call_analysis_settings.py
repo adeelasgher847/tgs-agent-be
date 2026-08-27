@@ -217,15 +217,15 @@ class TestUpdatePostCallAnalysisSettings:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body["variables_to_extract"] == [
-            {"name": "service_type", "description": "What service was requested."},
-            {"name": "urgency", "description": "How urgent the request is."},
+            {"name": "service_type", "description": "What service was requested.", "type": "string"},
+            {"name": "urgency", "description": "How urgent the request is.", "type": "string"},
         ]
         assert body["analysis_model"] == "gpt-4o-mini"
 
         db.refresh(flow)
         assert flow.post_call_analysis_variables == [
-            {"name": "service_type", "description": "What service was requested."},
-            {"name": "urgency", "description": "How urgent the request is."},
+            {"name": "service_type", "description": "What service was requested.", "type": "string"},
+            {"name": "urgency", "description": "How urgent the request is.", "type": "string"},
         ]
         assert flow.post_call_analysis_model == "gpt-4o-mini"
 
@@ -319,7 +319,11 @@ class TestUpdatePostCallAnalysisSettings:
             f"/flows/{flow.id}/post-call-analysis-settings",
             json={
                 "variables_to_extract": [
-                    {"name": "service_type", "description": "desc", "type": "string"}
+                    {
+                        "name": "service_type",
+                        "description": "desc",
+                        "unsupported_extra_field": "invalid",
+                    }
                 ],
                 "analysis_model": None,
             },
@@ -452,11 +456,65 @@ class TestUpdatePostCallAnalysisSettings:
         assert kwargs["resource_id"] == flow.id
         assert kwargs["new_value"] == {
             "variables_to_extract": [
-                {"name": "service_type", "description": "Extract the service type."}
+                {
+                    "name": "service_type",
+                    "description": "Extract the service type.",
+                    "type": "string",
+                }
             ],
             "analysis_model": "gpt-4o-mini",
         }
         assert kwargs["actor_user_id"] == principal.id
+
+    def test_admin_can_configure_variables_with_explicit_types(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        variables = [
+            {"name": "customer_name", "description": "Name of caller", "type": "string"},
+            {"name": "call_duration", "description": "Call length in minutes", "type": "number"},
+            {"name": "is_followup_needed", "description": "Needs followup?", "type": "boolean"},
+            {"name": "appointment_date", "description": "Date requested", "type": "date"},
+            {"name": "priority_level", "description": "Priority level", "type": "enum"},
+        ]
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-analysis-settings",
+            json={
+                "variables_to_extract": variables,
+                "analysis_model": "gpt-4o-mini",
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["variables_to_extract"] == variables
+
+        db.refresh(flow)
+        assert flow.post_call_analysis_variables == variables
+
+    def test_type_sanitization_and_defaulting(self, db, workspace, flow):
+        principal = _admin_principal(workspace.id)
+        client = _build_app(db, principal)
+
+        resp = client.put(
+            f"/flows/{flow.id}/post-call-analysis-settings",
+            json={
+                "variables_to_extract": [
+                    {"name": "var_uppercase", "description": "Upper", "type": " NUMBER "},
+                    {"name": "var_none", "description": "None type", "type": None},
+                    {"name": "var_omitted", "description": "Omitted type"},
+                ],
+                "analysis_model": None,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["variables_to_extract"] == [
+            {"name": "var_uppercase", "description": "Upper", "type": "number"},
+            {"name": "var_none", "description": "None type", "type": "string"},
+            {"name": "var_omitted", "description": "Omitted type", "type": "string"},
+        ]
 
 
 @pytest.mark.usefixtures("db")
@@ -508,8 +566,8 @@ class TestGetPostCallAnalysisSettings:
         admin_client = _build_app(db, _admin_principal(workspace.id))
         put_payload = {
             "variables_to_extract": [
-                {"name": "service_type", "description": "What service was requested."},
-                {"name": "urgency", "description": "How urgent the request is."},
+                {"name": "service_type", "description": "What service was requested.", "type": "string"},
+                {"name": "urgency", "description": "How urgent the request is.", "type": "string"},
             ],
             "analysis_model": "gpt-4o-mini",
         }
@@ -530,12 +588,47 @@ class TestGetPostCallAnalysisSettings:
         assert get_body["variables_to_extract"][0] == {
             "name": "service_type",
             "description": "What service was requested.",
+            "type": "string",
         }
         assert get_body["variables_to_extract"][1] == {
             "name": "urgency",
             "description": "How urgent the request is.",
+            "type": "string",
         }
         assert get_body["analysis_model"] == "gpt-4o-mini"
+
+    def test_get_legacy_flow_without_type_in_db_defaults_to_string(self, db, workspace, agent):
+        from app.models.call_flow import CallFlow
+
+        flow = CallFlow(
+            tenant_id=workspace.id,
+            agent_id=agent.id,
+            name="Legacy Variables Flow",
+            direction="inbound",
+            post_call_analysis_variables=[
+                {"name": "legacy_var", "description": "Legacy variable without type"}
+            ],
+            post_call_analysis_model=None,
+        )
+        db.add(flow)
+        db.commit()
+        db.refresh(flow)
+
+        principal = _readonly_principal(workspace.id)
+        client = _build_readonly_app(db, principal)
+
+        resp = client.get(f"/flows/{flow.id}/post-call-analysis-settings")
+        assert resp.status_code == 200, resp.text
+        assert resp.json() == {
+            "variables_to_extract": [
+                {
+                    "name": "legacy_var",
+                    "description": "Legacy variable without type",
+                    "type": "string",
+                }
+            ],
+            "analysis_model": None,
+        }
 
     def test_get_flow_from_other_tenant_returns_404(self, db, flow):
         from app.models.tenant import Tenant
@@ -635,7 +728,11 @@ class TestGetPostCallAnalysisSettings:
         assert get_resp.status_code == 200, get_resp.text
         assert get_resp.json() == {
             "variables_to_extract": [
-                {"name": "caller_intent", "description": "Why the caller called."}
+                {
+                    "name": "caller_intent",
+                    "description": "Why the caller called.",
+                    "type": "string",
+                }
             ],
             "analysis_model": None,
         }

@@ -592,6 +592,72 @@ class TestRunExtraction:
             "urgency": "y",
         }
 
+    def test_extraction_prompt_includes_type_specifier(self):
+        from app.services import post_call_analysis_service as pcas
+
+        db = _make_db()
+        call_session = _make_call_session(call_metadata=None)
+        custom_vars = [
+            {"name": "customer_age", "description": "Age of the customer", "type": "number"},
+            {"name": "is_homeowner", "description": "Is a homeowner?", "type": "boolean"},
+            {"name": "preferred_date", "description": "Requested booking date", "type": "date"},
+        ]
+        call_flow = _make_call_flow(variables=custom_vars)
+
+        model = self._mock_model()
+        content = '{"customer_age": "35", "is_homeowner": "true", "preferred_date": "2026-09-01"}'
+
+        with (
+            patch.object(
+                pcas.transcript_service,
+                "get_messages_by_session",
+                return_value=self._transcript_msgs(),
+            ),
+            patch.object(pcas.agent_service, "get_agent_by_id", side_effect=Exception("no agent")),
+            patch.object(pcas._model_service, "get_model_by_name", return_value=model),
+            patch.object(pcas, "decrypt_api_key", return_value=None),
+            patch.object(
+                pcas, "generate_analysis_text", return_value={"content": content}
+            ) as mock_gen,
+        ):
+            pcas._run_extraction(db, call_session, call_flow)
+
+        prompt_arg = mock_gen.call_args[0][2]
+        assert '- "customer_age" (type: number): Age of the customer' in prompt_arg
+        assert '- "is_homeowner" (type: boolean): Is a homeowner?' in prompt_arg
+        assert '- "preferred_date" (type: date): Requested booking date' in prompt_arg
+
+    def test_extraction_prompt_defaults_type_to_string_when_omitted(self):
+        from app.services import post_call_analysis_service as pcas
+
+        db = _make_db()
+        call_session = _make_call_session(call_metadata=None)
+        legacy_vars = [
+            {"name": "service_type", "description": "What service was requested."}
+        ]
+        call_flow = _make_call_flow(variables=legacy_vars)
+
+        model = self._mock_model()
+        content = '{"service_type": "residential plumbing"}'
+
+        with (
+            patch.object(
+                pcas.transcript_service,
+                "get_messages_by_session",
+                return_value=self._transcript_msgs(),
+            ),
+            patch.object(pcas.agent_service, "get_agent_by_id", side_effect=Exception("no agent")),
+            patch.object(pcas._model_service, "get_model_by_name", return_value=model),
+            patch.object(pcas, "decrypt_api_key", return_value=None),
+            patch.object(
+                pcas, "generate_analysis_text", return_value={"content": content}
+            ) as mock_gen,
+        ):
+            pcas._run_extraction(db, call_session, call_flow)
+
+        prompt_arg = mock_gen.call_args[0][2]
+        assert '- "service_type" (type: string): What service was requested.' in prompt_arg
+
 
 # ── Partial-parse backfill (missing-key completeness invariant) ─────────────
 
