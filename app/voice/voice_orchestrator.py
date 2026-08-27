@@ -112,6 +112,11 @@ class VoiceOrchestrator:
         # Resolved STT config (set by caller before first audio arrives)
         self._resolved_stt: "ResolvedSttRuntime" | None = None
         self._stt_event_bus: SttEventBus = SttEventBus()
+        # Route acoustic/VAD onset events straight to the handler. This is the
+        # ONLY consumer of SttSpeechStartedEvent — it must never cancel TTS or
+        # the LLM itself, only record candidate-evidence state for the
+        # barge-in classifier to consult (see handler._on_speech_started_candidate).
+        self._stt_event_bus.subscribe(self._on_stt_event)
         # LiveKit audio subscriber task (Google STT path only)
         self._livekit_audio_task: asyncio.Task | None = None
 
@@ -664,6 +669,24 @@ class VoiceOrchestrator:
             logger.error(
                 "[VoiceOrchestrator] _on_final callback error: %s", exc, exc_info=True
             )
+
+    async def _on_stt_event(self, event: Any) -> None:
+        """
+        Generic SttEventBus subscriber. Currently only acts on
+        SttSpeechStartedEvent (acoustic/VAD onset) — routes it to the
+        handler's candidate-recording hook if present. Never touches
+        _tts_cancel or cancels the in-flight LLM response; it only records
+        state for the barge-in classifier to consult on the next
+        interim/final transcript.
+        """
+        try:
+            if getattr(event, "type", None) != "speech_started":
+                return
+            hook = getattr(self._h, "_on_speech_started_candidate", None)
+            if callable(hook):
+                hook()
+        except Exception as exc:
+            logger.debug("[VoiceOrchestrator] _on_stt_event error: %s", exc)
 
     # ── Gemini Live (native-audio speech-to-speech) ────────────────────────────
 

@@ -15,6 +15,7 @@ from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from deepgram.listen.v1.types.listen_v1results import ListenV1Results
 from deepgram.listen.v1.types.listen_v1utterance_end import ListenV1UtteranceEnd
+from deepgram.listen.v1.types.listen_v1speech_started import ListenV1SpeechStarted
 from deepgram.listen.v2.types.listen_v2fatal_error import ListenV2FatalError
 from deepgram.listen.v2.types.listen_v2turn_info import ListenV2TurnInfo
 
@@ -134,6 +135,14 @@ class DeepgramSTTService:
 
             def on_message(message: Any) -> None:
                 try:
+                    if isinstance(message, ListenV1SpeechStarted):
+                        # Acoustic/VAD onset — fires ahead of any interim/final
+                        # transcript text. Pushed as a distinct minimal result
+                        # shape so SttPipeline._reader_loop can emit it as its
+                        # own event without disturbing transcript handling.
+                        self._push_result({"speech_started": True})
+                        return
+
                     if isinstance(message, ListenV1UtteranceEnd):
                         # Word-timing-based fallback: fires when Deepgram sees a large
                         # gap between words, independent of audio silence. Only acts
@@ -343,6 +352,10 @@ class DeepgramSTTService:
                     endpointing=endpointing,
                     punctuate="true",
                     utterance_end_ms=utterance_end_ms,
+                    # SDK urlencodes Python bools wrong (see interim_q above) — pass
+                    # the string form. Enables ListenV1SpeechStarted acoustic-onset
+                    # events (VAD layer) used as barge-in corroborating evidence.
+                    vad_events="true",
                 ) as connection:
                     connection.on(EventType.MESSAGE, on_message)
                     connection.on(EventType.ERROR, on_error)

@@ -744,6 +744,17 @@ class Settings(BaseSettings):
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
     # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.36
+    # Speech-candidate (VAD/SpeechStarted) evidence window: how long a Deepgram
+    # SpeechStarted event recorded while TTS is playing remains valid corroborating
+    # evidence for the barge-in classifier's unclassified-fallback branch (see
+    # backchannel_classifier.classify_turn_detailed). Chosen well below
+    # DEEPGRAM_STT_ENDPOINTING_MS (350ms default) / DEEPGRAM_STT_UTTERANCE_END_MS
+    # (1000ms default): SpeechStarted fires near-instantly on acoustic onset, so a
+    # window in the 150-250ms range comfortably covers the gap between onset and the
+    # first interim transcript arriving, without staying "active" long enough to
+    # (mis)corroborate a *later*, unrelated STT hit once the original candidate speech
+    # has already resolved into its own interim/final.
+    VOICE_SPEECH_CANDIDATE_WINDOW_MS: int = 200
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the

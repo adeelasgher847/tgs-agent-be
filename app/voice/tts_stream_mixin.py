@@ -288,6 +288,18 @@ class TtsStreamMixin:
                                     self._metric_first_audio_ts = _first_audio_ts
                                     # Record for barge-in dead zone (see _maybe_process_interim)
                                     self._tts_play_start_ts = _first_audio_ts
+                                    # Single authoritative source for both telemetry marks:
+                                    # this is the actual frame-transmission moment, the same
+                                    # event that flips _is_tts_playing True. mark_tts_first_audio/
+                                    # mark_first_playback are idempotent per turn (guarded
+                                    # internally, reset by VoiceTurnMetrics.start_generation()),
+                                    # so calling both here — regardless of which TTS/synthesis
+                                    # code path (HTTP, cache hit, or ElevenLabs WS "relayed") led
+                                    # to this frame — always populates them exactly once per turn.
+                                    _vm = getattr(self, "_voice_metrics", None)
+                                    if _vm:
+                                        _vm.mark_tts_first_audio()
+                                        _vm.mark_first_playback()
                                     _first_token_ts = getattr(
                                         self, "_metric_first_token_ts", 0.0
                                     )
@@ -772,6 +784,28 @@ class TtsStreamMixin:
                                 ),
                             )
                         )
+
+                        # Mark audio as actively playing at the point transmission
+                        # of the first real frame begins. Mirrors the streaming
+                        # branch's send_frame() marker above — this is the batch/
+                        # cache-hit path (prefetched plain bytes from the LRU
+                        # phrase cache, or any utterance under
+                        # VOICE_TTS_STREAM_MIN_WORDS), which never runs
+                        # send_frame() and would otherwise never populate these
+                        # marks (mark_tts_first_audio/mark_first_playback are
+                        # idempotent per turn, so this is safe even if the
+                        # streaming branch also fired earlier in the same turn).
+                        if not getattr(self, "_is_tts_playing", False):
+                            self._is_tts_playing = True
+                            import time as _time
+
+                            _first_audio_ts = _time.perf_counter()
+                            self._metric_first_audio_ts = _first_audio_ts
+                            self._tts_play_start_ts = _first_audio_ts
+                            _vm = getattr(self, "_voice_metrics", None)
+                            if _vm:
+                                _vm.mark_tts_first_audio()
+                                _vm.mark_first_playback()
 
                         await stream_mulaw_bytes_over_twilio(
                             websocket=self.websocket,

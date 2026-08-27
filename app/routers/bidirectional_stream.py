@@ -167,7 +167,7 @@ from app.voice.flow_pipeline_mixin import FlowPipelineMixin
 from app.voice.pipeline_session import PipelineSession
 from app.voice.backchannel_classifier import (
     TurnClassification,
-    classify_turn,
+    classify_turn_detailed,
     is_known_non_actionable_backchannel,
     is_pure_acoustic_filler,
 )
@@ -445,6 +445,19 @@ class BidirectionalStreamHandler(
         self._barge_in_dead_zone_ms: float = float(
             getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 600) or 600
         )
+        # Speech-candidate (VAD/SpeechStarted) evidence — set ONLY while TTS is
+        # playing, by _on_speech_started_candidate (routed from
+        # VoiceOrchestrator's SttEventBus subscription). This never cancels
+        # TTS/LLM by itself; it is purely corroborating evidence consulted by
+        # the barge-in classifier's unclassified-fallback branch. Reset
+        # whenever a turn resolves (barge-in fires, backchannel suppressed,
+        # or the window expires with no actionable interim/final).
+        self._speech_candidate_active: bool = False
+        self._speech_candidate_ts: float = 0.0
+        self._speech_candidate_window_ms: float = float(
+            getattr(settings, "VOICE_SPEECH_CANDIDATE_WINDOW_MS", 200) or 200
+        )
+        self._last_classification_reason: str = ""
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -1090,22 +1103,101 @@ class BidirectionalStreamHandler(
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
         return is_pure_acoustic_filler(transcript)
 
+    # ── Speech-candidate (VAD/SpeechStarted) evidence ─────────────────────────
+
+    def _on_speech_started_candidate(self) -> None:
+        """
+        Routed from VoiceOrchestrator's SttEventBus on a Deepgram SpeechStarted
+        (acoustic onset) event. ONLY records a candidate marker when TTS is
+        currently playing — this method must NEVER cancel TTS, touch
+        _tts_cancel, or call _cancel_inflight_llm_response. It exists purely to
+        give the barge-in classifier corroborating evidence for the next
+        interim/final transcript.
+        """
+        if not self._is_tts_playing:
+            return
+        self._speech_candidate_active = True
+        self._speech_candidate_ts = time.perf_counter()
+
+    def _speech_candidate_age_ms(self) -> float | None:
+        """
+        Age (ms) of the current speech-candidate marker if still within its
+        configured window, else None (expired or never set). Does not mutate
+        state — callers explicitly reset via _reset_speech_candidate() once a
+        turn resolves.
+
+        Defensive getattr defaults: some tests construct a handler via
+        object.__new__() with only a handful of attributes wired up, bypassing
+        __init__ — this must degrade to "no candidate evidence" rather than
+        raise AttributeError for those minimal test doubles.
+        """
+        if not getattr(self, "_speech_candidate_active", False):
+            return None
+        ts = getattr(self, "_speech_candidate_ts", 0.0)
+        if ts <= 0:
+            return None
+        age_ms = (time.perf_counter() - ts) * 1000
+        window_ms = getattr(self, "_speech_candidate_window_ms", 200.0)
+        if age_ms > window_ms:
+            return None
+        return age_ms
+
+    def _reset_speech_candidate(self) -> None:
+        """Clear candidate state — call whenever a turn resolves (barge-in fires,
+        backchannel suppressed, or normal-turn processing consumes the evidence)."""
+        self._speech_candidate_active = False
+        self._speech_candidate_ts = 0.0
+
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         """
         True when STT represents an actionable user turn or explicit interruption
         over active TTS playback, rejecting known non-actionable backchannels.
+        Also stashes the classifier's reason on self for structured logging at
+        the call site (see _log_classification).
         """
         if getattr(self, "_dtmf_suppress_stt", False):
+            self._last_classification_reason = "dtmf_suppressed"
             return False
-        classification = classify_turn(
+        classification, reason = classify_turn_detailed(
             transcript,
             confidence,
             is_tts_playing=True,
             min_confidence=self._barge_in_min_conf,
             min_words=self._barge_in_min_words,
             min_confidence_1w=self._barge_in_min_conf_1w,
+            speech_candidate_age_ms=self._speech_candidate_age_ms(),
         )
+        self._last_classification_reason = reason
         return classification == TurnClassification.BARGE_IN
+
+    def _log_classification(
+        self,
+        classification: str,
+        *,
+        reason: str,
+        source: str,
+        transcript: str,
+        confidence: float,
+        prefix: str = "TurnClassifier",
+    ) -> None:
+        """Structured classification log — shape matches the barge-in observability spec."""
+        candidate_age = self._speech_candidate_age_ms()
+        extra = ""
+        if classification == "BARGE_IN" and candidate_age is not None:
+            extra = f" speech_candidate_age_ms={candidate_age:.0f}"
+        logger.info(
+            "[%s] classification=%s reason=%s source=%s words=%d confidence=%.2f "
+            "tts_playing=%s%s transcript=%r",
+            prefix,
+            classification,
+            reason,
+            source,
+            len((transcript or "").split()),
+            confidence,
+            str(self._is_tts_playing).lower(),
+            extra,
+            (transcript or "")[:60],
+        )
 
     def _log_barge_in_suppressed(
         self, transcript: str, confidence: float, reason: str
@@ -1131,12 +1223,17 @@ class BidirectionalStreamHandler(
         try:
             # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
             if self._is_tts_playing:
-                if self._should_barge_in_on_stt(transcript, confidence):
+                _should_barge = self._should_barge_in_on_stt(transcript, confidence)
+                self._log_classification(
+                    "BARGE_IN" if _should_barge else "SUPPRESS_NON_ACTIONABLE_BACKCHANNEL",
+                    reason=self._last_classification_reason,
+                    source="final",
+                    transcript=transcript,
+                    confidence=confidence,
+                    prefix="Barge-in" if _should_barge else "TurnClassifier",
+                )
+                if _should_barge:
                     self._metric_barge_in_ts = time.perf_counter()
-                    logger.info(
-                        "[Barge-in/final] TTS cut by final STT: %r",
-                        (transcript or "")[:40],
-                    )
                     await self._cancel_inflight_llm_response()
                     self._metric_audio_cut_ts = time.perf_counter()
                     _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
@@ -1148,15 +1245,13 @@ class BidirectionalStreamHandler(
                     self._turn_response_started = False
                     self._turn_response_seed_text = ""
                     self._last_interim_text = ""
+                    self._reset_speech_candidate()
                     # Fall through — still process transcript and generate new response.
                 else:
                     # Final STT arrived while TTS was playing and was classified as a
                     # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
                     # Suppress LLM response so active playback completes undisturbed.
-                    logger.info(
-                        "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
-                        (transcript or "")[:40],
-                    )
+                    self._reset_speech_candidate()
                     return
 
             async with self._voice_transcript_lock:
@@ -1301,31 +1396,19 @@ class BidirectionalStreamHandler(
                         self._log_barge_in_suppressed(
                             transcript, confidence, "tts_dead_zone"
                         )
-                elif self._should_barge_in_on_stt(transcript, confidence):
-                    is_barge_in = True
-                elif (transcript or "").strip():
-                    if is_pure_acoustic_filler(transcript):
-                        self._log_barge_in_suppressed(transcript, confidence, "filler")
-                    elif is_known_non_actionable_backchannel(transcript):
-                        self._log_barge_in_suppressed(
-                            transcript, confidence, "backchannel"
-                        )
-                    elif word_count < self._barge_in_min_words:
-                        self._log_barge_in_suppressed(
-                            transcript, confidence, "min_words"
-                        )
-                    else:
-                        self._log_barge_in_suppressed(
-                            transcript, confidence, "confidence"
+                else:
+                    is_barge_in = self._should_barge_in_on_stt(transcript, confidence)
+                    if (transcript or "").strip():
+                        self._log_classification(
+                            "BARGE_IN" if is_barge_in else "SUPPRESS_NON_ACTIONABLE_BACKCHANNEL",
+                            reason=self._last_classification_reason,
+                            source="interim",
+                            transcript=transcript,
+                            confidence=confidence,
+                            prefix="Barge-in" if is_barge_in else "TurnClassifier",
                         )
             if is_barge_in:
                 self._metric_barge_in_ts = time.perf_counter()
-                logger.info(
-                    "[Barge-in] triggered: words=%d conf=%.2f transcript=%r",
-                    word_count,
-                    confidence,
-                    (transcript or "")[:40],
-                )
                 await self._cancel_inflight_llm_response()
                 self._metric_audio_cut_ts = time.perf_counter()
                 _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
@@ -1336,6 +1419,7 @@ class BidirectionalStreamHandler(
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
+                self._reset_speech_candidate()
                 return
 
             # RAG prefetch: fire vector-DB retrieval only on genuine queries (not backchannels)

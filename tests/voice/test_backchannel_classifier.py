@@ -1,6 +1,8 @@
 from app.voice.backchannel_classifier import (
     TurnClassification,
     classify_turn,
+    classify_turn_detailed,
+    has_actionable_shape,
     has_explicit_interruption_intent,
     is_known_non_actionable_backchannel,
     is_pure_acoustic_filler,
@@ -241,4 +243,158 @@ def test_classify_turn_when_tts_silent():
     assert (
         classify_turn("um", 1.00, is_tts_playing=False)
         == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    )
+
+
+# ── Shape heuristic (supporting signal only) ──────────────────────────────────
+
+
+def test_has_actionable_shape_interrogative_openers():
+    assert has_actionable_shape("What now") is True
+    assert has_actionable_shape("Who is that") is True
+    assert has_actionable_shape("How much") is True
+    assert has_actionable_shape("Is it ready") is True
+    assert has_actionable_shape("Can you help") is True
+
+
+def test_has_actionable_shape_imperative_verbs():
+    assert has_actionable_shape("Call John") is True
+    assert has_actionable_shape("Book appointment") is True
+    assert has_actionable_shape("Please cancel") is True
+    assert has_actionable_shape("I need help") is True
+    assert has_actionable_shape("Repeat") is True
+
+
+def test_has_actionable_shape_negative():
+    assert has_actionable_shape("Blue widget") is False
+    assert has_actionable_shape("One more") is False
+    assert has_actionable_shape("Try this") is False
+    assert has_actionable_shape("") is False
+
+
+# ── classify_turn_detailed: word count / confidence are no longer sufficient
+#    alone -- unclassified-fallback branch requires shape OR candidate evidence
+#    (or a materially higher confidence bar as the never-silently-drop safety net) ──
+
+
+def test_unclassified_branch_requires_supporting_signal_reason_threading():
+    # Explicit interruption -> reason reflects that branch specifically.
+    _, reason = classify_turn_detailed("Stop please", 0.90, is_tts_playing=True)
+    assert reason == "explicit_interruption"
+
+    # Known backchannel -> reason reflects that branch.
+    _, reason = classify_turn_detailed("Hey there", 1.00, is_tts_playing=True)
+    assert reason == "known_backchannel"
+
+    # Unknown phrase with shape match (imperative verb) -> corroborated barge-in.
+    classification, reason = classify_turn_detailed("Tell me", 0.30, is_tts_playing=True)
+    assert classification == TurnClassification.BARGE_IN
+    assert reason == "unknown_actionable_shape"
+
+    # Unknown phrase with speech-candidate evidence (no shape match) -> corroborated barge-in.
+    classification, reason = classify_turn_detailed(
+        "Blue widget", 0.30, is_tts_playing=True, speech_candidate_age_ms=150.0
+    )
+    assert classification == TurnClassification.BARGE_IN
+    assert reason == "unknown_actionable_candidate"
+
+    # Unknown phrase, no shape, no candidate, but high confidence -> still never
+    # silently dropped (safety net), just with a materially higher bar than before.
+    classification, reason = classify_turn_detailed("Blue widget", 0.90, is_tts_playing=True)
+    assert classification == TurnClassification.BARGE_IN
+    assert reason == "unknown_actionable_high_confidence"
+
+
+def test_weak_evidence_unknown_phrase_is_suppressed_not_blindly_barged_in():
+    """
+    The actual production bug: word count + marginal confidence alone used to
+    be sufficient to barge in on ANY 2+-word STT hit. A marginal-confidence,
+    shape-less, candidate-less phrase (the realistic false-positive pattern —
+    misheard line noise/background chatter) must now require corroboration
+    before interrupting the caller's active TTS.
+    """
+    classification, reason = classify_turn_detailed(
+        "some garbled noise", 0.30, is_tts_playing=True
+    )
+    assert classification == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    assert reason == "weak_evidence_suppressed"
+
+
+def test_single_word_unknown_phrase_never_raises_and_reflects_evidence():
+    """1-word unclassified phrases must never be a hard drop/crash -- they
+    always resolve to a valid classification, and shape/candidate evidence
+    (not word count) decides which one, PROVIDED the caller has actually
+    configured min_words=1 (the single-word branch is gated on the
+    configured min_words, not on the incoming utterance's word_count --
+    see test_single_word_unclassified_never_bypasses_configured_min_words
+    below for the min_words=2 production-default case).
+
+    min_confidence is set above min_confidence_1w here specifically to make
+    the earlier word_count >= min_words branch NOT already claim the case
+    (it requires confidence >= min_confidence too), isolating the
+    single-word branch's own gating/evidence logic for this test -- at the
+    real production defaults (min_confidence=0.26 < min_confidence_1w=0.36)
+    the multi-word branch always wins once min_words=1, since word_count>=1
+    is trivially true; that's expected and unrelated to this fix.
+    """
+    # Shape match ("repeat" is an imperative action verb) -> corroborated barge-in.
+    classification, reason = classify_turn_detailed(
+        "Repeat", 0.40, is_tts_playing=True, min_words=1, min_confidence=0.90
+    )
+    assert classification == TurnClassification.BARGE_IN
+    assert reason == "unknown_actionable_shape_1w"
+
+    # No shape, no candidate, marginal confidence -> held back (suppressed),
+    # but the call itself never raises and always returns a definite result.
+    classification, reason = classify_turn_detailed(
+        "blah", 0.40, is_tts_playing=True, min_words=1, min_confidence=0.90
+    )
+    assert classification == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    assert reason == "weak_evidence_suppressed_1w"
+
+    # Same phrase, but with candidate evidence -> corroborated barge-in instead
+    # of being dropped.
+    classification, reason = classify_turn_detailed(
+        "blah",
+        0.40,
+        is_tts_playing=True,
+        min_words=1,
+        min_confidence=0.90,
+        speech_candidate_age_ms=100.0,
+    )
+    assert classification == TurnClassification.BARGE_IN
+    assert reason == "unknown_actionable_candidate_1w"
+
+
+def test_single_word_unclassified_never_bypasses_configured_min_words():
+    """
+    At the production default (min_words=2), a 1-word unclassified utterance
+    must NOT be able to reach the single-word BARGE_IN branch regardless of
+    confidence or shape/candidate evidence -- it must fall straight through
+    to below_word_count_threshold, exactly matching pre-fix behavior. The
+    single-word branch is only reachable when min_words is explicitly
+    configured to 1; word_count alone must never widen its own gate.
+    """
+    # Shape match + high confidence + candidate evidence -- would all trigger
+    # BARGE_IN if word_count==1 alone were sufficient to enter the branch.
+    classification, reason = classify_turn_detailed(
+        "Repeat",
+        0.99,
+        is_tts_playing=True,
+        min_words=2,
+        speech_candidate_age_ms=50.0,
+    )
+    assert classification == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    assert reason == "below_word_count_threshold"
+
+
+def test_classify_turn_backward_compatible_signature_accepts_candidate_kwarg():
+    # classify_turn() itself keeps returning only the enum (existing call
+    # sites/tests are unaffected), with the new kwarg optional and unused
+    # by default.
+    assert (
+        classify_turn(
+            "Tell me", 0.30, is_tts_playing=True, speech_candidate_age_ms=None
+        )
+        == TurnClassification.BARGE_IN
     )

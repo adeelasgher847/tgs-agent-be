@@ -28,7 +28,13 @@ from typing import Awaitable, Callable, TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.voice.stt_events import SttEventBus, SttInterimEvent, SttFinalEvent, SttErrorEvent
+from app.voice.stt_events import (
+    SttEventBus,
+    SttInterimEvent,
+    SttFinalEvent,
+    SttErrorEvent,
+    SttSpeechStartedEvent,
+)
 
 if TYPE_CHECKING:
     from app.core.agent_runtime import ResolvedSttRuntime
@@ -283,6 +289,12 @@ class SttPipeline:
                 continue
             if result.get("done"):
                 break
+            if result.get("speech_started"):
+                # Acoustic/VAD onset — no transcript text, just an event.
+                await self._event_bus.emit(
+                    SttSpeechStartedEvent(timestamp_mono=time.monotonic())
+                )
+                continue
             if result.get("error"):
                 err_msg = result.get("error", "unknown")
                 recoverable = bool(result.get("recoverable", True))

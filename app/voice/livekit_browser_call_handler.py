@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import struct
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -62,7 +63,7 @@ from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI
 from app.voice.humanization_engine import pause_frames_for_chunk
 from app.voice.backchannel_classifier import (
     TurnClassification,
-    classify_turn,
+    classify_turn_detailed,
     is_known_non_actionable_backchannel,
 )
 
@@ -474,6 +475,19 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         )
         self._barge_in_min_words: int = max(1, int(getattr(settings, "VOICE_BARGE_IN_MIN_WORDS", 2) or 2))
 
+        # ── Speech-candidate (VAD/SpeechStarted) evidence ───────────────────
+        # Same mechanism as BidirectionalStreamHandler (Twilio): routed from
+        # VoiceOrchestrator's SttEventBus subscription when the underlying
+        # STT provider emits an acoustic-onset event (Deepgram only today —
+        # see module-level note near _should_barge_in_on_stt). Never cancels
+        # TTS/LLM itself; corroborating evidence only.
+        self._speech_candidate_active: bool = False
+        self._speech_candidate_ts: float = 0.0
+        self._speech_candidate_window_ms: float = float(
+            getattr(settings, "VOICE_SPEECH_CANDIDATE_WINDOW_MS", 200) or 200
+        )
+        self._last_classification_reason: str = ""
+
         # ── RAG interim-prefetch ─────────────────────────────────────────────
         # Mirrors bidirectional_stream.py's _prefetch_rag_context pattern
         # (fire vector/KB retrieval in the background on the first qualifying
@@ -647,6 +661,77 @@ class LiveKitBrowserCallHandler(CallControlMixin):
 
     # ── STT → turn handling (wired as SttPipeline on_interim/on_final) ─────
 
+    # ── Speech-candidate (VAD/SpeechStarted) evidence ──────────────────────
+    # Shares SttPipeline/SttEventBus with the Twilio path via VoiceOrchestrator
+    # (see module docstring's "reused unmodified" claim, verified against
+    # voice_orchestrator.py's single _stt_event_bus subscription routing to
+    # handler._on_speech_started_candidate). Only Deepgram currently emits
+    # SttSpeechStartedEvent (vad_events=true on the v1/listen connect) — a
+    # browser call resolved to a different STT provider simply never gets
+    # this signal, and the classifier falls back to shape/confidence alone
+    # for that call, exactly as if no candidate evidence had arrived yet.
+
+    def _on_speech_started_candidate(self) -> None:
+        """Routed from VoiceOrchestrator's SttEventBus. Never cancels TTS/LLM —
+        only records corroborating evidence for the barge-in classifier."""
+        if not self._is_tts_playing:
+            return
+        self._speech_candidate_active = True
+        self._speech_candidate_ts = time.perf_counter()
+
+    def _speech_candidate_age_ms(self) -> float | None:
+        if not self._speech_candidate_active or self._speech_candidate_ts <= 0:
+            return None
+        age_ms = (time.perf_counter() - self._speech_candidate_ts) * 1000
+        if age_ms > self._speech_candidate_window_ms:
+            return None
+        return age_ms
+
+    def _reset_speech_candidate(self) -> None:
+        self._speech_candidate_active = False
+        self._speech_candidate_ts = 0.0
+
+    def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
+        classification, reason = classify_turn_detailed(
+            transcript,
+            confidence,
+            is_tts_playing=True,
+            min_confidence=self._barge_in_min_conf,
+            min_words=self._barge_in_min_words,
+            min_confidence_1w=self._barge_in_min_conf_1w,
+            speech_candidate_age_ms=self._speech_candidate_age_ms(),
+        )
+        self._last_classification_reason = reason
+        return classification == TurnClassification.BARGE_IN
+
+    def _log_classification(
+        self,
+        classification: str,
+        *,
+        reason: str,
+        source: str,
+        transcript: str,
+        confidence: float,
+        prefix: str = "TurnClassifier",
+    ) -> None:
+        candidate_age = self._speech_candidate_age_ms()
+        extra = ""
+        if classification == "BARGE_IN" and candidate_age is not None:
+            extra = f" speech_candidate_age_ms={candidate_age:.0f}"
+        logger.info(
+            "[%s] classification=%s reason=%s source=%s words=%d confidence=%.2f "
+            "tts_playing=%s%s transcript=%r",
+            prefix,
+            classification,
+            reason,
+            source,
+            len((transcript or "").split()),
+            confidence,
+            str(self._is_tts_playing).lower(),
+            extra,
+            (transcript or "")[:60],
+        )
+
     async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         """
         Barge-in + RAG interim-prefetch trigger.
@@ -680,31 +765,26 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
-    def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
-        classification = classify_turn(
-            transcript,
-            confidence,
-            is_tts_playing=True,
-            min_confidence=self._barge_in_min_conf,
-            min_words=self._barge_in_min_words,
-            min_confidence_1w=self._barge_in_min_conf_1w,
-        )
-        return classification == TurnClassification.BARGE_IN
-
-    async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         try:
             text = (transcript or "").strip()
             if not text:
                 return
             word_count = len(text.split())
 
-            is_barge_in = self._is_tts_playing and self._should_barge_in_on_stt(text, confidence)
-            if is_barge_in:
-                logger.info(
-                    "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
-                    word_count, confidence, text[:40],
+            is_barge_in = False
+            if self._is_tts_playing:
+                is_barge_in = self._should_barge_in_on_stt(text, confidence)
+                self._log_classification(
+                    "BARGE_IN" if is_barge_in else "SUPPRESS_NON_ACTIONABLE_BACKCHANNEL",
+                    reason=self._last_classification_reason,
+                    source="interim",
+                    transcript=text,
+                    confidence=confidence,
+                    prefix="Barge-in" if is_barge_in else "TurnClassifier",
                 )
+            if is_barge_in:
                 await self._cancel_inflight_llm_response()
+                self._reset_speech_candidate()
                 return
 
             # Barge-in did not apply this call — safe to consider firing a
@@ -821,14 +901,20 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 return
 
             if self._is_tts_playing:
-                if self._should_barge_in_on_stt(text, confidence):
-                    logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
+                _should_barge = self._should_barge_in_on_stt(text, confidence)
+                self._log_classification(
+                    "BARGE_IN" if _should_barge else "SUPPRESS_NON_ACTIONABLE_BACKCHANNEL",
+                    reason=self._last_classification_reason,
+                    source="final",
+                    transcript=text,
+                    confidence=confidence,
+                    prefix="Barge-in" if _should_barge else "TurnClassifier",
+                )
+                if _should_barge:
                     await self._cancel_inflight_llm_response()
+                    self._reset_speech_candidate()
                 else:
-                    logger.info(
-                        "[LiveKitBrowserCall] suppressing backchannel final while TTS is playing: %r",
-                        text[:40],
-                    )
+                    self._reset_speech_candidate()
                     return
 
             if hasattr(self, "_voice_metrics") and self._voice_metrics:
@@ -1091,6 +1177,18 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         provider fragment size never introduces mid-utterance silence
         padding — only the final remainder gets padded.
         """
+        # Telemetry: mark_tts_first_audio/mark_first_playback are idempotent
+        # per turn (guarded internally in VoiceTurnMetrics, reset by
+        # start_generation()) — safe to call at the actual frame-transmission
+        # point below without extra bookkeeping here. Mirrors the Twilio
+        # path's authoritative marking inside TtsStreamMixin's send_frame().
+        _vm = getattr(self, "_voice_metrics", None)
+
+        def _mark_first_frame_sent() -> None:
+            if _vm:
+                _vm.mark_tts_first_audio()
+                _vm.mark_first_playback()
+
         byte_buf = bytearray()
         async for chunk_bytes in audio_iter:
             if cancel.is_set():
@@ -1102,6 +1200,7 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 frame = bytes(byte_buf[:MULAW_FRAME_BYTES])
                 del byte_buf[:MULAW_FRAME_BYTES]
                 await publisher.publish_mulaw(frame, cancel=cancel)
+                _mark_first_frame_sent()
                 if cancel.is_set():
                     return
 
@@ -1113,6 +1212,7 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             if pad != MULAW_FRAME_BYTES:
                 byte_buf.extend(bytes([0xFF]) * pad)
             await publisher.publish_mulaw(bytes(byte_buf), cancel=cancel)
+            _mark_first_frame_sent()
 
     async def _stream_tts_chunk(
         self,

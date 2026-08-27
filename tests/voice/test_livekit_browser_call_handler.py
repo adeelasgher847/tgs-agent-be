@@ -450,6 +450,116 @@ class TestTtsSynthesisAndPlayback:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# TTS telemetry — LiveKit-path equivalent of the Twilio/TtsStreamMixin
+# authoritative-marking coverage in
+# tests/voice/test_barge_in_vad_and_telemetry.py::
+#   test_relayed_style_chunk_populates_tts_first_audio_and_first_playback
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestPublishMulawStreamTelemetry:
+    """
+    LiveKitBrowserCallHandler mixes in only CallControlMixin (see the class
+    definition) -- it does NOT mix in TtsStreamMixin, and maintains its own
+    `_is_tts_playing` flag plus its own `_publish_mulaw_stream`/
+    `_stream_tts_chunk` implementations that mirror (but do not share code
+    with) TtsStreamMixin's Twilio-path streaming. `_publish_mulaw_stream`
+    now marks `VoiceTurnMetrics.tts_first_audio_mono`/`first_playback_mono`
+    at the real `publisher.publish_mulaw()` frame-write point, exactly like
+    `TtsStreamMixin._stream_tts_chunk`'s `send_frame()` closure does for the
+    Twilio path -- this exercises the real, unmodified method (via the real
+    `_stream_tts_chunk` streaming branch that calls it), not a
+    reimplementation.
+    """
+
+    @pytest.mark.asyncio
+    async def test_publish_mulaw_stream_marks_tts_first_audio_and_first_playback(self):
+        from app.utils.audio_utils import MULAW_FRAME_BYTES
+        from app.voice.metrics import VoiceTurnMetrics
+
+        h = _base_handler()
+        h._voice_metrics = VoiceTurnMetrics()
+        h._voice_metrics.start_generation()
+        assert h._voice_metrics.tts_first_audio_mono is None
+        assert h._voice_metrics.first_playback_mono is None
+
+        publisher = MagicMock()
+        publisher.connected = True
+        publish_calls: list[bytes] = []
+        playing_during_publish: list[bool] = []
+
+        async def _record_publish(data: bytes, cancel=None):
+            playing_during_publish.append(h._is_tts_playing)
+            publish_calls.append(bytes(data))
+
+        publisher.publish_mulaw = AsyncMock(side_effect=_record_publish)
+        h._agent_publisher = publisher
+
+        async def fake_provider_iter():
+            yield bytes([0xAB]) * MULAW_FRAME_BYTES
+            yield bytes([0xCD]) * MULAW_FRAME_BYTES
+
+        assert h._is_tts_playing is False
+
+        with patch(
+            "app.core.agent_runtime.resolve_tts_runtime", return_value=_fake_tts_runtime("rime")
+        ):
+            await h._stream_tts_chunk(
+                "hello there this streams incrementally",
+                is_final=True,
+                prefetched_bytes=fake_provider_iter(),
+            )
+
+        # "cycles correctly": True for every frame actually published, then
+        # reset back to False once the chunk (and the whole method) finishes
+        # -- the same lifecycle TtsStreamMixin's send_frame()/finally provides
+        # on the Twilio path, and the flag LiveKit's own barge-in gate
+        # (_maybe_process_interim / _on_speech_started_candidate) reads.
+        assert len(playing_during_publish) >= 2
+        assert all(playing_during_publish)
+        assert h._is_tts_playing is False
+
+        assert h._voice_metrics.tts_first_audio_mono is not None
+        assert h._voice_metrics.first_playback_mono is not None
+        # Both marks derive from the same frame-transmission event (two
+        # sequential time.perf_counter() calls microseconds apart), not a
+        # genuine gate-wait delta.
+        assert (
+            abs(
+                h._voice_metrics.first_playback_mono
+                - h._voice_metrics.tts_first_audio_mono
+            )
+            < 0.001
+        )
+
+    @pytest.mark.asyncio
+    async def test_publish_mulaw_stream_direct_call_marks_telemetry_on_final_padded_frame(self):
+        """
+        Calls `_publish_mulaw_stream` itself directly (not via
+        `_stream_tts_chunk`) with a sub-frame-sized final remainder, so the
+        only publish is the padded-remainder branch at the bottom of the
+        method -- confirms that branch also marks telemetry, not only the
+        full-frame loop branch.
+        """
+        from app.voice.metrics import VoiceTurnMetrics
+
+        h = _base_handler()
+        h._voice_metrics = VoiceTurnMetrics()
+        h._voice_metrics.start_generation()
+
+        publisher = MagicMock()
+        publisher.publish_mulaw = AsyncMock()
+
+        async def small_iter():
+            yield b"\xAB" * 10  # smaller than MULAW_FRAME_BYTES -- only the padded tail publishes
+
+        await h._publish_mulaw_stream(publisher, small_iter(), h._tts_cancel)
+
+        publisher.publish_mulaw.assert_awaited_once()
+        assert h._voice_metrics.tts_first_audio_mono is not None
+        assert h._voice_metrics.first_playback_mono is not None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Transcript persistence
 # ─────────────────────────────────────────────────────────────────────────────
 

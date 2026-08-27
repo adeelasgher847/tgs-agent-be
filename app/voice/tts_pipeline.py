@@ -923,11 +923,18 @@ class TtsPipeline:
                         synth_elapsed,
                     )
 
-            if audio_bytes is not None:
-                _vm = getattr(self._handler, "_voice_metrics", None)
-                if _vm:
-                    _vm.mark_tts_first_audio()
-
+            # NOTE: tts_first_audio/first_playback are intentionally NOT marked
+            # here. Synthesis completing (this point) is not the same event as
+            # a frame actually reaching the caller — marking here also skipped
+            # the ElevenLabs WS "relayed" early-return path entirely (non-owner
+            # chunks never reached this line), producing tts_first_audio=None /
+            # first_playback=None despite audio clearly playing. The single
+            # authoritative source for both marks is now the real
+            # frame-transmission point: TtsStreamMixin._stream_tts_chunk's
+            # send_frame() closure for Twilio, and
+            # LiveKitBrowserCallHandler._publish_mulaw_stream for the browser
+            # path — both fire on every code path (including "relayed") since
+            # they sit at the actual audio-out boundary, not at synthesis.
             if isinstance(audio_bytes, bytes):
                 self._put_cached(cache_key, audio_bytes)
 
@@ -993,9 +1000,10 @@ class TtsPipeline:
             # turn's audio is exhausted — exactly the semantics a single
             # is_final=True HTTP chunk would already have.
             effective_is_final = True if task.get("_ws_owner") else is_final
-            _vm = getattr(self._handler, "_voice_metrics", None)
-            if _vm:
-                _vm.mark_first_playback()
+            # tts_first_audio/first_playback are marked inside the handler's
+            # own frame-transmission code (send_frame() for Twilio,
+            # _publish_mulaw_stream() for LiveKit) — see note above Phase 1's
+            # synthesis-complete point for why marking here was wrong.
             await self._handler._stream_tts_chunk(  # type: ignore[attr-defined]
                 text,
                 use_ssml=use_ssml,

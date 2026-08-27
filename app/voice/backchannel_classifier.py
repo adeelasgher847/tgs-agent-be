@@ -125,6 +125,45 @@ EXPLICIT_COMMAND_KEYWORDS = frozenset(
     }
 )
 
+# ── Shape heuristics for the unclassified fallback branch ──────────────────
+# Small, auditable set of interrogative openers and imperative/action verbs.
+# Used ONLY as a *supporting* signal in classify_turn's final fallback branch
+# (alongside speech-candidate/VAD evidence) -- never as a standalone classifier.
+INTERROGATIVE_OPENERS = frozenset(
+    {
+        "who",
+        "what",
+        "when",
+        "where",
+        "why",
+        "how",
+        "is",
+        "are",
+        "can",
+        "could",
+        "do",
+        "does",
+    }
+)
+
+IMPERATIVE_ACTION_VERBS = frozenset(
+    {
+        "call",
+        "book",
+        "cancel",
+        "schedule",
+        "tell",
+        "help",
+        "need",
+        "want",
+        "show",
+        "give",
+        "send",
+        "transfer",
+        "repeat",
+    }
+)
+
 # Explicit multi-word command phrases
 EXPLICIT_COMMAND_PHRASES = frozenset(
     {
@@ -204,6 +243,28 @@ def has_explicit_interruption_intent(text: str) -> bool:
     return any(t in EXPLICIT_COMMAND_KEYWORDS for t in tokens)
 
 
+def has_actionable_shape(text: str) -> bool:
+    """
+    Lightweight, auditable shape heuristic for the unclassified fallback branch:
+    True when the utterance opens with an interrogative word ("who/what/.../does")
+    or contains a common imperative/action verb ("call/book/cancel/...").
+
+    This is NOT a standalone classifier -- it is one of two supporting signals
+    (the other being speech-candidate/VAD evidence) required alongside word
+    count + confidence before classify_turn's final fallback branch commits to
+    BARGE_IN. Never called directly for a final classification decision.
+    """
+    norm = normalize_transcript(text)
+    if not norm:
+        return False
+    tokens = norm.split()
+    if not tokens:
+        return False
+    if tokens[0] in INTERROGATIVE_OPENERS:
+        return True
+    return any(t in IMPERATIVE_ACTION_VERBS for t in tokens)
+
+
 def classify_turn(
     transcript: str,
     confidence: float,
@@ -212,24 +273,60 @@ def classify_turn(
     min_confidence: float = 0.26,
     min_words: int = 2,
     min_confidence_1w: float = 0.36,
+    speech_candidate_age_ms: float | None = None,
 ) -> TurnClassification:
     """
     Classify an STT event into one of three states:
     1. BARGE_IN: Should interrupt active TTS playback.
     2. SUPPRESS_NON_ACTIONABLE_BACKCHANNEL: Should be suppressed while TTS is playing (no interruption, no LLM).
     3. NORMAL_USER_TURN: Genuine user turn that should be processed by the conversation pipeline.
+
+    `speech_candidate_age_ms` is the age (in ms) of the most recent Deepgram
+    SpeechStarted/VAD event recorded while TTS was playing (None if no such
+    event is currently active/unexpired). It is a *supporting* signal for the
+    unclassified fallback branch below -- corroborating evidence that fresh
+    acoustic speech, not stale STT noise, produced this transcript.
+    """
+    classification, _reason = classify_turn_detailed(
+        transcript,
+        confidence,
+        is_tts_playing=is_tts_playing,
+        min_confidence=min_confidence,
+        min_words=min_words,
+        min_confidence_1w=min_confidence_1w,
+        speech_candidate_age_ms=speech_candidate_age_ms,
+    )
+    return classification
+
+
+def classify_turn_detailed(
+    transcript: str,
+    confidence: float,
+    *,
+    is_tts_playing: bool,
+    min_confidence: float = 0.26,
+    min_words: int = 2,
+    min_confidence_1w: float = 0.36,
+    speech_candidate_age_ms: float | None = None,
+) -> tuple[TurnClassification, str]:
+    """
+    Same classification as classify_turn(), plus a `reason` string naming the
+    exact branch that fired (explicit_interruption / known_backchannel /
+    unknown_actionable_shape / unknown_actionable_candidate /
+    unknown_actionable_high_confidence / weak_evidence_suppressed / etc.) so
+    callers can log the real decision path instead of re-deriving it.
     """
     norm = normalize_transcript(transcript)
     if not norm:
-        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL, "empty_transcript"
 
     # Pure acoustic fillers are always suppressed regardless of TTS state
     if is_pure_acoustic_filler(norm):
-        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL, "acoustic_filler"
 
     # When TTS is NOT active, everything non-filler is a normal user turn
     if not is_tts_playing:
-        return TurnClassification.NORMAL_USER_TURN
+        return TurnClassification.NORMAL_USER_TURN, "tts_not_playing"
 
     # ── Active TTS is playing ──
 
@@ -237,25 +334,74 @@ def classify_turn(
     if has_explicit_interruption_intent(norm):
         req_conf = min_confidence_1w if len(norm.split()) == 1 else min_confidence
         if confidence >= req_conf:
-            return TurnClassification.BARGE_IN
-        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+            return TurnClassification.BARGE_IN, "explicit_interruption"
+        return (
+            TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL,
+            "explicit_interruption_low_confidence",
+        )
 
     # 2. Known conversational backchannels & greetings are suppressed while TTS is active
     if is_known_non_actionable_backchannel(norm):
-        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL, "known_backchannel"
 
-    # 3. Legitimate user requests & unknown phrases spoken over TTS
-    # If confidence meets threshold and word count is sufficient, treat as barge-in to capture the request
+    # 3. Legitimate user requests & unknown phrases spoken over TTS.
+    #
+    # Word count and confidence alone are NO LONGER sufficient to decide this
+    # branch (they were the primary signal previously -- brittle, not
+    # semantic; see backchannel_classifier module history). They remain
+    # necessary inputs, but the branch now also requires at least one
+    # supporting signal: recent speech-candidate/VAD evidence (corroborating
+    # that fresh acoustic speech occurred), or a lightweight shape match
+    # (interrogative opener / imperative action verb). When neither
+    # supporting signal is present we still never SILENTLY drop the
+    # utterance for merely lacking a whitelist match -- a materially higher
+    # confidence bar acts as the fallback safety net so obviously-confident
+    # unknown speech is still captured, while low/marginal-confidence STT
+    # noise (the actual production false-positive pattern) is suppressed.
     tokens = norm.split()
     word_count = len(tokens)
+    has_candidate_evidence = speech_candidate_age_ms is not None
+    has_shape_evidence = has_actionable_shape(norm)
+    has_support = has_candidate_evidence or has_shape_evidence
 
-    if word_count >= min_words:
-        if confidence >= min_confidence:
-            return TurnClassification.BARGE_IN
-        return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    if word_count >= min_words and confidence >= min_confidence:
+        if has_support:
+            reason = (
+                "unknown_actionable_candidate"
+                if has_candidate_evidence
+                else "unknown_actionable_shape"
+            )
+            return TurnClassification.BARGE_IN, reason
+        high_conf_bar = max(min_confidence, 0.55)
+        if confidence >= high_conf_bar:
+            return TurnClassification.BARGE_IN, "unknown_actionable_high_confidence"
+        return (
+            TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL,
+            "weak_evidence_suppressed",
+        )
 
-    # Single-word non-command, non-backchannel spoken over TTS (e.g. single unknown word below min_words)
-    if min_words == 1 and confidence >= min_confidence_1w:
-        return TurnClassification.BARGE_IN
+    # Single-word non-command, non-backchannel spoken over TTS (e.g. single unknown word below min_words).
+    # Gated on the CALLER-CONFIGURED min_words (not on word_count == 1) so this
+    # branch is only reachable when the caller has actually configured
+    # min_words=1 -- matching the pre-existing/conservative gating. At the
+    # production default (min_words=2) a 1-word unclassified utterance must
+    # fall through to the below_word_count_threshold suppression below,
+    # exactly as before this fix, regardless of confidence/shape evidence.
+    if min_words == 1:
+        if confidence >= min_confidence_1w:
+            if has_support:
+                reason = (
+                    "unknown_actionable_candidate_1w"
+                    if has_candidate_evidence
+                    else "unknown_actionable_shape_1w"
+                )
+                return TurnClassification.BARGE_IN, reason
+            high_conf_bar_1w = max(min_confidence_1w, 0.65)
+            if confidence >= high_conf_bar_1w:
+                return TurnClassification.BARGE_IN, "unknown_actionable_high_confidence_1w"
+        return (
+            TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL,
+            "weak_evidence_suppressed_1w",
+        )
 
-    return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL, "below_word_count_threshold"

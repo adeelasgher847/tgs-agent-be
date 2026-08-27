@@ -42,7 +42,20 @@ class SttErrorEvent:
     recoverable: bool = True
 
 
-SttEvent = SttInterimEvent | SttFinalEvent | SttErrorEvent
+@dataclass(frozen=True)
+class SttSpeechStartedEvent:
+    """
+    Acoustic/VAD onset signal — Deepgram's SpeechStarted message (vad_events=true).
+    Fires as soon as the provider detects new speech energy, well before any
+    interim/final transcript text is available. Consumers (e.g. the barge-in
+    classifier) use this ONLY as corroborating evidence for a candidate
+    interruption — never to cancel TTS or the LLM by itself.
+    """
+    type: Literal["speech_started"] = field(default="speech_started", init=False)
+    timestamp_mono: float = 0.0
+
+
+SttEvent = SttInterimEvent | SttFinalEvent | SttErrorEvent | SttSpeechStartedEvent
 
 SttEventCallback = Callable[[SttEvent], Awaitable[None]]
 
