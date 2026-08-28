@@ -426,11 +426,11 @@ class BidirectionalStreamHandler(
         )
         self._stt_soft_min_words = max(1, min(6, self._stt_soft_min_words))
         self._barge_in_min_conf: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.70) or 0.70
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO", 0.70) or 0.70
         )
         self._barge_in_min_conf = max(0.20, min(0.95, self._barge_in_min_conf))
         self._barge_in_min_conf_1w: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.75) or 0.75
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO", 0.75) or 0.75
         )
         self._barge_in_min_conf_1w = max(0.40, min(0.95, self._barge_in_min_conf_1w))
         self._barge_in_min_words: int = int(

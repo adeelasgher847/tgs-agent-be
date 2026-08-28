@@ -18,6 +18,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.core.config import settings
 from app.routers.bidirectional_stream import BidirectionalStreamHandler
 from app.voice.backchannel_classifier import (
     TurnClassification,
@@ -282,3 +283,204 @@ async def test_twilio_and_livekit_handler_parity():
         assert twilio_res == expected_barge, f"Twilio mismatch for '{phrase}'"
         assert livekit_res == expected_barge, f"LiveKit mismatch for '{phrase}'"
         assert twilio_res == livekit_res, f"Parity mismatch for '{phrase}'"
+
+
+# ── Focus 7: Twilio-specific barge-in confidence config resolution ───────────
+# Regression coverage for the bug where BidirectionalStreamHandler.__init__
+# read the *shared* VOICE_BARGE_IN_MIN_CONFIDENCE / _1W settings (default
+# 0.26 / 0.36) via getattr(), which always resolved because Settings already
+# declared those fields -- silently discarding the intended 0.70 / 0.75
+# literal fallback. The fix introduces Twilio-specific settings keys
+# (VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO / _1W_TWILIO) that the Twilio handler
+# now reads instead, while the browser/LiveKit handler keeps reading the
+# original shared keys unchanged.
+
+
+def _raw_twilio_handler() -> BidirectionalStreamHandler:
+    """Construct a BidirectionalStreamHandler without post-init attribute
+    overrides, so __init__'s settings resolution can be observed directly."""
+    return BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+
+
+def _raw_livekit_handler() -> LiveKitBrowserCallHandler:
+    """Construct a LiveKitBrowserCallHandler without post-init attribute
+    overrides, so __init__'s settings resolution can be observed directly."""
+    mock_session = MagicMock()
+    mock_session.id = uuid.uuid4()
+    mock_agent = MagicMock()
+    mock_agent.id = uuid.uuid4()
+    return LiveKitBrowserCallHandler(
+        db=None,
+        call_session=mock_session,
+        agent=mock_agent,
+    )
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_barge_in_confidence_defaults_to_070_and_075():
+    """Twilio handler must resolve barge-in confidence thresholds to the
+    intended 0.70 / 0.75 defaults, not the shared browser-path 0.26 / 0.36
+    defaults that previously shadowed them via getattr()."""
+    handler = _raw_twilio_handler()
+
+    assert handler._barge_in_min_conf == pytest.approx(0.70)
+    assert handler._barge_in_min_conf_1w == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_barge_in_confidence_reads_dedicated_settings_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Overriding VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO / _1W_TWILIO must
+    actually change the resolved handler thresholds -- proves the settings
+    knob is live, not dead code."""
+    monkeypatch.setattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO", 0.55)
+    monkeypatch.setattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO", 0.60)
+
+    handler = _raw_twilio_handler()
+
+    assert handler._barge_in_min_conf == pytest.approx(0.55)
+    assert handler._barge_in_min_conf_1w == pytest.approx(0.60)
+
+    # Overriding the Twilio-specific keys must NOT perturb the shared keys
+    # that the browser/LiveKit handler reads.
+    assert settings.VOICE_BARGE_IN_MIN_CONFIDENCE == pytest.approx(0.26)
+    assert settings.VOICE_BARGE_IN_MIN_CONFIDENCE_1W == pytest.approx(0.36)
+
+
+def test_livekit_browser_handler_barge_in_confidence_unchanged():
+    """The browser/LiveKit path must still resolve its barge-in confidence
+    thresholds from the original SHARED settings keys (default 0.26 / 0.36)
+    -- confirms the Twilio-specific fix did not accidentally change
+    browser-path behavior, which intentionally stays more sensitive since
+    WebRTC has native echo cancellation."""
+    handler = _raw_livekit_handler()
+
+    assert handler._barge_in_min_conf == pytest.approx(0.26)
+    assert handler._barge_in_min_conf_1w == pytest.approx(0.36)
+
+
+# ── Focus 8: STT final-confidence config resolution ───────────────────────────
+# Regression coverage for a sibling dead-code bug: BidirectionalStreamHandler
+# .__init__ read VOICE_STT_MIN_FINAL_CONFIDENCE / VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE
+# via getattr(settings, key, <literal default>) or <literal default>. Because
+# Settings previously declared these fields with different literal defaults
+# (0.15 / 0.12), getattr() always found the declared field and the intended
+# 0.26 / 0.16 fallback literals baked into the getattr(...) calls were dead
+# code -- silently overridden. The fix aligns Settings' declared defaults
+# (0.26 / 0.16) with the code's intended literals. Unlike the barge-in
+# confidence bug, this doesn't touch LiveKitBrowserCallHandler at all --
+# grep confirms the browser handler never references either settings key.
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_stt_final_confidence_defaults_to_026_and_016():
+    """BidirectionalStreamHandler must resolve STT final-confidence
+    thresholds to the intended 0.26 / 0.16 defaults, not the previously
+    mis-declared Settings defaults (0.15 / 0.12) that shadowed them via
+    getattr()."""
+    handler = _raw_twilio_handler()
+
+    assert handler._stt_min_final_confidence == pytest.approx(0.26)
+    assert handler._stt_soft_min_final_confidence == pytest.approx(0.16)
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_stt_final_confidence_reads_live_settings_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Overriding VOICE_STT_MIN_FINAL_CONFIDENCE / VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE
+    must actually change the resolved handler thresholds -- proves the
+    settings knob is live, not dead code. Values are chosen within the
+    clamp ranges enforced by __init__ (0.15-0.45 / 0.10-0.35)."""
+    monkeypatch.setattr(settings, "VOICE_STT_MIN_FINAL_CONFIDENCE", 0.30)
+    monkeypatch.setattr(settings, "VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE", 0.20)
+
+    handler = _raw_twilio_handler()
+
+    assert handler._stt_min_final_confidence == pytest.approx(0.30)
+    assert handler._stt_soft_min_final_confidence == pytest.approx(0.20)
+
+
+# ── Focus 9: Pickup-RMS / interim-gate config resolution ──────────────────────
+# Regression coverage for a sibling dead-code bug: Settings previously declared
+# VOICE_MIN_AUDIO_RMS_FOR_PICKUP=20, VOICE_MIN_INTERIM_WORDS=2, and
+# VOICE_MIN_INTERIM_CONFIDENCE=0.14, which shadowed the intended 70 / 4 / 0.52
+# literal fallbacks baked into both handlers' getattr(settings, key, <literal>)
+# calls via getattr() always finding the declared field. With the old default
+# of 20, VOICE_MIN_AUDIO_RMS_FOR_PICKUP was silently clamped to the handler's
+# own floor of 20 -- risking false "user picked up" triggers on line noise for
+# every live call on both transports. The interim-gate defaults (2 / 0.14) only
+# mattered once VOICE_ENABLE_INTERIM_LLM is turned on (default off), so that
+# part of the bug was dormant but still a landmine. The fix aligns Settings'
+# declared defaults (70 / 4 / 0.52) with the code's intended literals.
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_pickup_rms_threshold_defaults_to_70():
+    """BidirectionalStreamHandler must resolve the pickup-detection RMS
+    threshold to the intended 70 default, not the previously mis-declared
+    Settings default (20) that silently clamped every call to the handler's
+    own floor via getattr()."""
+    handler = _raw_twilio_handler()
+
+    assert handler._min_audio_level_threshold == 70
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_pickup_rms_threshold_reads_live_settings_key(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Overriding VOICE_MIN_AUDIO_RMS_FOR_PICKUP must actually change the
+    resolved handler threshold -- proves the settings knob is live, not dead
+    code. Value chosen within the clamp range enforced by __init__ (20-250)."""
+    monkeypatch.setattr(settings, "VOICE_MIN_AUDIO_RMS_FOR_PICKUP", 100)
+
+    handler = _raw_twilio_handler()
+
+    assert handler._min_audio_level_threshold == 100
+
+
+def test_livekit_browser_handler_pickup_rms_threshold_also_defaults_to_70():
+    """The browser/LiveKit path must resolve the SAME pickup-detection RMS
+    threshold default (70) as the Twilio path -- unlike the barge-in
+    confidence keys, this particular knob is intentionally NOT decoupled
+    between transports; both want parity here."""
+    handler = _raw_livekit_handler()
+
+    assert handler._min_audio_level_threshold == 70
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_interim_gate_defaults_to_4_words_052_confidence():
+    """BidirectionalStreamHandler must resolve the interim-LLM gate
+    (VOICE_MIN_INTERIM_WORDS / VOICE_MIN_INTERIM_CONFIDENCE) to the intended
+    4 / 0.52 defaults, not the previously mis-declared Settings defaults
+    (2 / 0.14) that shadowed them via getattr(). These gates only activate
+    when VOICE_ENABLE_INTERIM_LLM=True (default off), so the bug was dormant
+    but still a landmine for whenever that feature is enabled."""
+    handler = _raw_twilio_handler()
+
+    assert handler._min_interim_words == 4
+    assert handler._min_interim_confidence == pytest.approx(0.52)
+
+
+@pytest.mark.asyncio
+async def test_twilio_handler_interim_gate_reads_live_settings_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Overriding VOICE_MIN_INTERIM_WORDS / VOICE_MIN_INTERIM_CONFIDENCE must
+    actually change the resolved handler gate -- proves the settings knobs
+    are live, not dead code."""
+    monkeypatch.setattr(settings, "VOICE_MIN_INTERIM_WORDS", 3)
+    monkeypatch.setattr(settings, "VOICE_MIN_INTERIM_CONFIDENCE", 0.35)
+
+    handler = _raw_twilio_handler()
+
+    assert handler._min_interim_words == 3
+    assert handler._min_interim_confidence == pytest.approx(0.35)
