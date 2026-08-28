@@ -1279,18 +1279,6 @@ class BidirectionalStreamHandler(
                 # Update booking memory from user turn
                 self._update_booking_memory_from_user_turn(transcript)
 
-                user_turn_norm = self._normalize_turn_text(transcript)
-                if self._has_recent_duplicate_reply_for(user_turn_norm):
-                    logger.info(
-                        "TurnCoordinator: suppressing duplicate generate for user turn=%r (within %ss)",
-                        transcript,
-                        self._DUP_USER_TURN_WINDOW_SEC,
-                    )
-                    self._turn_response_started = False
-                    self._turn_response_seed_text = ""
-                    self._last_interim_text = ""
-                    return
-
             # Speculative TTS prefetch: synthesise the predicted opener phrase during
             # LLM TTFT so chunk-0 is a cache hit when the real first flush arrives.
             # Fire-and-forget — cancelled on barge-in alongside the LLM task.
