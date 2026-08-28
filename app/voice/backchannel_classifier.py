@@ -158,6 +158,36 @@ EXPLICIT_COMMAND_PHRASES = frozenset(
 )
 
 
+# Trimmed, backchannel-specific token vocabulary (pure fillers, salutations, affirmations)
+TRIMMED_BACKCHANNEL_VOCABULARY = frozenset(
+    ACOUSTIC_FILLERS
+    | {
+        # Salutations
+        "hey",
+        "hi",
+        "hello",
+        "good",
+        "morning",
+        "afternoon",
+        "evening",
+        # Acknowledgments & affirmations
+        "yeah",
+        "yes",
+        "yep",
+        "yup",
+        "okay",
+        "ok",
+        "right",
+        "alright",
+        "sure",
+        "understood",
+        "thank",
+        "thanks",
+        "oh",
+    }
+)
+
+
 def normalize_transcript(text: str) -> str:
     """Lowercase and strip non-alphanumeric characters, returning single-space separated words."""
     if not text:
@@ -176,10 +206,19 @@ def is_pure_acoustic_filler(text: str) -> bool:
     return bool(tokens) and all(t in ACOUSTIC_FILLERS for t in tokens)
 
 
+def is_token_set_backchannel(text: str) -> bool:
+    """Check if all tokens in the utterance belong to the trimmed backchannel vocabulary."""
+    norm = normalize_transcript(text)
+    if not norm:
+        return True
+    tokens = norm.split()
+    return bool(tokens) and all(t in TRIMMED_BACKCHANNEL_VOCABULARY for t in tokens)
+
+
 def is_known_non_actionable_backchannel(text: str) -> bool:
     """
-    Conservative classifier: returns True ONLY if the utterance confidently matches
-    a known non-actionable conversational backchannel/greeting.
+    Conservative classifier: returns True if the utterance matches a known fixed
+    backchannel phrase OR if all of its tokens belong to the trimmed backchannel vocabulary.
 
     Unknown or ambiguous phrases return False so they are NEVER silently lost.
     """
@@ -189,6 +228,8 @@ def is_known_non_actionable_backchannel(text: str) -> bool:
     if is_pure_acoustic_filler(text):
         return True
     if norm in KNOWN_BACKCHANNEL_PHRASES:
+        return True
+    if is_token_set_backchannel(text):
         return True
     return False
 

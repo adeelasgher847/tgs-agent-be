@@ -44,6 +44,11 @@ def test_is_known_non_actionable_backchannel():
     assert is_known_non_actionable_backchannel("Okay. And") is True
     assert is_known_non_actionable_backchannel("Uh huh") is True
 
+    # Token-set backchannel combinations
+    assert is_known_non_actionable_backchannel("hey um") is True
+    assert is_known_non_actionable_backchannel("yeah okay") is True
+    assert is_known_non_actionable_backchannel("mm okay") is True
+
     # Legitimate short requests (MUST NOT be classified as backchannel!)
     assert is_known_non_actionable_backchannel("Tell me") is False
     assert is_known_non_actionable_backchannel("Help me") is False
@@ -56,6 +61,9 @@ def test_is_known_non_actionable_backchannel():
     assert is_known_non_actionable_backchannel("Where exactly") is False
     assert is_known_non_actionable_backchannel("How much") is False
     assert is_known_non_actionable_backchannel("Tell me more") is False
+    assert is_known_non_actionable_backchannel("hi how are you") is False
+    assert is_known_non_actionable_backchannel("oh hi there sorry") is False
+    assert is_known_non_actionable_backchannel("yeah no I'm here") is False
     assert is_known_non_actionable_backchannel("Random unseen phrase") is False
 
 
