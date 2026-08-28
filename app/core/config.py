@@ -743,7 +743,7 @@ class Settings(BaseSettings):
     # Min STT confidence when word count >= VOICE_BARGE_IN_MIN_WORDS.
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
     # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.36
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float =0.54
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
