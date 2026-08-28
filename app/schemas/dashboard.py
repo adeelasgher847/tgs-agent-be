@@ -41,7 +41,7 @@ class DashboardSummary(BaseModel):
 
     monthly_spent: int
     monthly_calls: int
-    success_rate_percent: float | None
+    success_rate_percent: int | None
     credits: float
     recent_call_flows: List[CallFlowListItem]
     recent_knowledge_bases: List[DashboardKbItem]

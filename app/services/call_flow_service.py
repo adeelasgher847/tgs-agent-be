@@ -421,8 +421,12 @@ class CallFlowService:
             "page": page,
             "pageSize": limit,
             "analytics": {
-                "totalCalls": metrics.total_calls,
-                "successRatePercent": metrics.success_rate_percent,
+                "totalCalls": int(metrics.total_calls or 0),
+                "successRatePercent": (
+                    int(round(float(metrics.success_rate_percent)))
+                    if metrics.success_rate_percent is not None
+                    else None
+                ),
                 "averageDurationSeconds": metrics.avg_duration_seconds,
             },
         }

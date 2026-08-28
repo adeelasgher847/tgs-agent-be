@@ -14528,7 +14528,7 @@ components:
           type: integer
           title: Monthly Calls
         success_rate_percent:
-          type: number
+          type: integer
           nullable: true
         credits:
           type: number
