@@ -148,7 +148,6 @@ class TtsStreamMixin:
         except Exception:
             return 1.0
 
-
     async def _stream_tts_chunk(
         self,
         text: str,
@@ -184,7 +183,6 @@ class TtsStreamMixin:
             use_ssml: Whether text contains SSML markup
         """
         try:
-
             if not text or not text.strip():
                 return
 
@@ -206,6 +204,10 @@ class TtsStreamMixin:
 
             async with self._tts_lock:
                 self.is_speaking = True
+                clean = text.strip()
+                self._current_speaking_agent_text = (
+                    getattr(self, "_current_speaking_agent_text", "") + " " + clean
+                ).strip()
                 try:
                     lang = (
                         self.agent.language
@@ -217,7 +219,6 @@ class TtsStreamMixin:
                         if self.agent and self.agent.voice_type
                         else "female"
                     )
-                    clean = text.strip()
                     tts_runtime = resolve_tts_runtime(
                         self.agent, db=getattr(self, "db", None)
                     )
@@ -926,9 +927,7 @@ class TtsStreamMixin:
             tts_runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
             tts_provider_slug = tts_runtime.adapter_slug
 
-            streaming_text = prepare_tts_text_for_provider(
-                clean, tts_provider_slug
-            )
+            streaming_text = prepare_tts_text_for_provider(clean, tts_provider_slug)
             if not streaming_text or not streaming_text.strip():
                 return None
 
@@ -1075,7 +1074,6 @@ class TtsStreamMixin:
         Enhanced with sentence-aware chunking for natural pauses.
         """
         try:
-
             if not text or not text.strip():
                 return
             async with self._tts_lock:

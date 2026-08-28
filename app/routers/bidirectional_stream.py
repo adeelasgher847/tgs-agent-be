@@ -359,6 +359,7 @@ class BidirectionalStreamHandler(
         # This prevents false-positive barge-in cancellation during the LLM→TTS
         # synthesis phase — the root cause of "2-3 words then silence".
         self._is_tts_playing: bool = False
+        self._current_speaking_agent_text: str = ""
         self._tts_cancel = asyncio.Event()  # barge-in cancel signal
         self._tts_lock = asyncio.Lock()  # serialize TTS streams
         self._tts_worker_task = None  # Backwards-compatible handle to pipeline worker
@@ -662,8 +663,9 @@ class BidirectionalStreamHandler(
                     runtime = resolve_tts_runtime(self.agent, db=self.db)
                     # SSML is only supported for non-streaming Google Cloud TTS
                     self._use_ssml = (
-                        (runtime.adapter_slug or "").lower() == "google"
-                        and not getattr(settings, "VOICE_TTS_STREAMING_ENABLED", True)
+                        runtime.adapter_slug or ""
+                    ).lower() == "google" and not getattr(
+                        settings, "VOICE_TTS_STREAMING_ENABLED", True
                     )
 
             if self.call_session and self.call_session.call_flow_id:
@@ -856,6 +858,7 @@ class BidirectionalStreamHandler(
         t = self._llm_response_task
         self._llm_response_task = None
         self._interim_task_response_produced = False
+        self._current_speaking_agent_text = ""
         if t and not t.done():
             t.cancel()
             try:
@@ -965,7 +968,10 @@ class BidirectionalStreamHandler(
                     self._llm_last_answered_ts = _now_m
                 elif interim_task.done():
                     interim_res = None
-                    if not interim_task.cancelled() and interim_task.exception() is None:
+                    if (
+                        not interim_task.cancelled()
+                        and interim_task.exception() is None
+                    ):
                         try:
                             interim_res = interim_task.result()
                         except Exception:
@@ -996,10 +1002,18 @@ class BidirectionalStreamHandler(
             interim_res = None
             if not _wait_for_interim_task.done():
                 try:
-                    interim_res = await asyncio.wait_for(asyncio.shield(_wait_for_interim_task), timeout=12.0)
+                    interim_res = await asyncio.wait_for(
+                        asyncio.shield(_wait_for_interim_task), timeout=12.0
+                    )
                 except (asyncio.CancelledError, asyncio.TimeoutError, Exception) as exc:
-                    logger.debug("[LLM] In-flight interim task failed/timed out/cancelled: %s", exc)
-            elif not _wait_for_interim_task.cancelled() and _wait_for_interim_task.exception() is None:
+                    logger.debug(
+                        "[LLM] In-flight interim task failed/timed out/cancelled: %s",
+                        exc,
+                    )
+            elif (
+                not _wait_for_interim_task.cancelled()
+                and _wait_for_interim_task.exception() is None
+            ):
                 try:
                     interim_res = _wait_for_interim_task.result()
                 except Exception:
@@ -1129,35 +1143,54 @@ class BidirectionalStreamHandler(
     ):
         """Process a transcript (final result)"""
         try:
-            # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
-            if self._is_tts_playing:
-                if self._should_barge_in_on_stt(transcript, confidence):
-                    self._metric_barge_in_ts = time.perf_counter()
-                    logger.info(
-                        "[Barge-in/final] TTS cut by final STT: %r",
-                        (transcript or "")[:40],
-                    )
-                    await self._cancel_inflight_llm_response()
-                    self._metric_audio_cut_ts = time.perf_counter()
-                    _cut_ms = (self._metric_audio_cut_ts - self._metric_barge_in_ts) * 1000
-                    logger.info(
-                        "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
-                        _cut_ms,
-                    )
-                    self._is_tts_playing = False
-                    self._turn_response_started = False
-                    self._turn_response_seed_text = ""
-                    self._last_interim_text = ""
-                    # Fall through — still process transcript and generate new response.
-                else:
-                    # Final STT arrived while TTS was playing and was classified as a
-                    # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
-                    # Suppress LLM response so active playback completes undisturbed.
-                    logger.info(
-                        "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
-                        (transcript or "")[:40],
-                    )
+            tstrip = (transcript or "").strip()
+
+            # Barge-in on FINAL events: ONLY cut if TTS is actively playing audio to Twilio AND
+            # this is a genuine new user interruption (NOT self-echo and NOT the seed text of the current turn).
+            if self._is_tts_playing and tstrip:
+                if self._is_agent_self_echo(tstrip):
+                    logger.info("STT: suppressing agent self-echo (final): %r", tstrip)
                     return
+
+                is_current_turn_seed = (
+                    self._turn_response_started
+                    and bool(self._turn_response_seed_text)
+                    and (
+                        tstrip.startswith(self._turn_response_seed_text)
+                        or self._turn_response_seed_text.startswith(tstrip)
+                    )
+                )
+
+                if not is_current_turn_seed:
+                    if self._should_barge_in_on_stt(transcript, confidence):
+                        self._metric_barge_in_ts = time.perf_counter()
+                        logger.info(
+                            "[Barge-in/final] TTS cut by new final STT: %r",
+                            tstrip[:40],
+                        )
+                        await self._cancel_inflight_llm_response()
+                        self._metric_audio_cut_ts = time.perf_counter()
+                        _cut_ms = (
+                            self._metric_audio_cut_ts - self._metric_barge_in_ts
+                        ) * 1000
+                        logger.info(
+                            "[Metrics] interruption_detection_to_audio_cut=%.0f ms (final)",
+                            _cut_ms,
+                        )
+                        self._is_tts_playing = False
+                        self._turn_response_started = False
+                        self._turn_response_seed_text = ""
+                        self._last_interim_text = ""
+                        # Fall through — still process transcript and generate new response.
+                    elif is_known_non_actionable_backchannel(tstrip):
+                        # Final STT arrived while TTS was playing and was classified as a
+                        # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
+                        # Suppress LLM response so active playback completes undisturbed.
+                        logger.info(
+                            "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
+                            tstrip[:40],
+                        )
+                        return
 
             async with self._voice_transcript_lock:
                 self._cancel_silence_watchdog()
@@ -1301,15 +1334,13 @@ class BidirectionalStreamHandler(
                         self._log_barge_in_suppressed(
                             transcript, confidence, "tts_dead_zone"
                         )
+                elif self._is_agent_self_echo(transcript):
+                    self._log_barge_in_suppressed(transcript, confidence, "self_echo")
                 elif self._should_barge_in_on_stt(transcript, confidence):
                     is_barge_in = True
                 elif (transcript or "").strip():
                     if is_pure_acoustic_filler(transcript):
                         self._log_barge_in_suppressed(transcript, confidence, "filler")
-                    elif is_known_non_actionable_backchannel(transcript):
-                        self._log_barge_in_suppressed(
-                            transcript, confidence, "backchannel"
-                        )
                     elif word_count < self._barge_in_min_words:
                         self._log_barge_in_suppressed(
                             transcript, confidence, "min_words"
@@ -1735,10 +1766,12 @@ class BidirectionalStreamHandler(
                         try:
                             return await _loop.run_in_executor(
                                 None,
-                                lambda: agent_service.build_inbound_kb_documents_context_block(
-                                    db=self.db,
-                                    inbound_agent_id=agent_uuid,
-                                    tenant_id=tenant_uuid,
+                                lambda: (
+                                    agent_service.build_inbound_kb_documents_context_block(
+                                        db=self.db,
+                                        inbound_agent_id=agent_uuid,
+                                        tenant_id=tenant_uuid,
+                                    )
                                 ),
                             )
                         except Exception as exc:
@@ -2136,6 +2169,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # build_turn_context() call below (confidence-gated mood buckets).
             self._current_turn_user_text = user_text
             self._current_turn_stt_confidence = confidence
+            self._current_speaking_agent_text = ""
 
             # Refresh call session from database to capture any dynamic metadata updates (e.g. payment_url injection)
             if self.call_session and self.db:
