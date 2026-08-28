@@ -1051,16 +1051,20 @@ class BidirectionalStreamHandler(
             return
 
         try:
+            _turn_timeout = float(
+                getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 60.0) or 60.0
+            )
             await asyncio.wait_for(
                 self.generate_and_stream_response(
                     transcript, confidence, is_greeting=False
                 ),
-                timeout=12.0,
+                timeout=_turn_timeout,
             )
             self._arm_silence_watchdog()
         except asyncio.TimeoutError:
             logger.error(
-                "[LLM] generate_and_stream_response timed out (12s) — aborting turn"
+                "[LLM] generate_and_stream_response timed out (%.0fs) — aborting turn",
+                _turn_timeout,
             )
             self._arm_silence_watchdog()
         except asyncio.CancelledError:
