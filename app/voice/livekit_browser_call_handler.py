@@ -680,6 +680,24 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
+    @property
+    def _is_agent_speaking_or_generating(self) -> bool:
+        """
+        True if the agent is actively streaming audio to LiveKit, synthesizing TTS chunks,
+        or generating an LLM response (including pre-playback startup & greetings).
+        """
+        if getattr(self, "_is_tts_playing", False):
+            return True
+        if getattr(self, "is_speaking", False):
+            return True
+        tts_pipe = getattr(self, "_tts_pipeline", None)
+        if tts_pipe is not None and getattr(tts_pipe, "is_speaking", False):
+            return True
+        llm_task = getattr(self, "_llm_response_task", None)
+        if llm_task is not None and not llm_task.done():
+            return True
+        return False
+
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         classification = classify_turn(
             transcript,
@@ -698,7 +716,7 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 return
             word_count = len(text.split())
 
-            is_barge_in = self._is_tts_playing and self._should_barge_in_on_stt(text, confidence)
+            is_barge_in = self._is_agent_speaking_or_generating and self._should_barge_in_on_stt(text, confidence)
             if is_barge_in:
                 logger.info(
                     "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
@@ -820,13 +838,13 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             if not text:
                 return
 
-            if self._is_tts_playing:
+            if self._is_agent_speaking_or_generating:
                 if self._should_barge_in_on_stt(text, confidence):
                     logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
                     await self._cancel_inflight_llm_response()
                 else:
                     logger.info(
-                        "[LiveKitBrowserCall] suppressing backchannel final while TTS is playing: %r",
+                        "[LiveKitBrowserCall] suppressing backchannel final while agent is active: %r",
                         text[:40],
                     )
                     return

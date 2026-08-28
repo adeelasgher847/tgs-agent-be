@@ -1121,6 +1121,24 @@ class BidirectionalStreamHandler(
             (transcript or "")[:40],
         )
 
+    @property
+    def _is_agent_speaking_or_generating(self) -> bool:
+        """
+        True if the agent is actively streaming audio to Twilio, synthesizing TTS chunks,
+        or generating an LLM response (including pre-playback startup & greetings).
+        """
+        if getattr(self, "_is_tts_playing", False):
+            return True
+        if getattr(self, "is_speaking", False):
+            return True
+        tts_pipe = getattr(self, "_tts_pipeline", None)
+        if tts_pipe is not None and getattr(tts_pipe, "is_speaking", False):
+            return True
+        llm_task = getattr(self, "_llm_response_task", None)
+        if llm_task is not None and not llm_task.done():
+            return True
+        return False
+
     async def _process_transcript(
         self,
         transcript: str,
@@ -1129,12 +1147,12 @@ class BidirectionalStreamHandler(
     ):
         """Process a transcript (final result)"""
         try:
-            # Barge-in on FINAL events: cut playing TTS before DB work when STT passes gates.
-            if self._is_tts_playing:
+            # Barge-in on FINAL events: cut playing/generating turn before DB work when STT passes gates.
+            if self._is_agent_speaking_or_generating:
                 if self._should_barge_in_on_stt(transcript, confidence):
                     self._metric_barge_in_ts = time.perf_counter()
                     logger.info(
-                        "[Barge-in/final] TTS cut by final STT: %r",
+                        "[Barge-in/final] Turn cancelled by final STT: %r",
                         (transcript or "")[:40],
                     )
                     await self._cancel_inflight_llm_response()
@@ -1150,11 +1168,11 @@ class BidirectionalStreamHandler(
                     self._last_interim_text = ""
                     # Fall through — still process transcript and generate new response.
                 else:
-                    # Final STT arrived while TTS was playing and was classified as a
+                    # Final STT arrived while agent was generating/synthesizing/playing and was classified as a
                     # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
                     # Suppress LLM response so active playback completes undisturbed.
                     logger.info(
-                        "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
+                        "STT: suppressing non-actionable backchannel final while agent is active: %r",
                         (transcript or "")[:40],
                     )
                     return
@@ -1288,11 +1306,12 @@ class BidirectionalStreamHandler(
             word_count = len(transcript.split())
 
             # ── Barge-in gate ────────────────────────────────────────────────────
-            # Cut when audio is actively playing AND STT looks like real speech/command.
+            # Cut when agent is active (generating, synthesizing, or playing) AND STT looks like real interruption/command.
             is_barge_in = False
-            if self._is_tts_playing:
+            if self._is_agent_speaking_or_generating:
                 _in_dead_zone = (
-                    self._tts_play_start_ts > 0
+                    self._is_tts_playing
+                    and self._tts_play_start_ts > 0
                     and (time.perf_counter() - self._tts_play_start_ts) * 1000
                     < self._barge_in_dead_zone_ms
                 )
