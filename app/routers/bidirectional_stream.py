@@ -2650,25 +2650,39 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
-                    chunk_counter += 1
                     if (
                         final_text
                         and self._tts_pipeline
                         and not self._tts_cancel.is_set()
                     ):
-                        safe_tts_text = self._prepare_tts_text(final_text)
-                        if safe_tts_text:
+                        sentences = [
+                            s.strip()
+                            for s in re.split(r"(?<=[.!?])\s+", final_text)
+                            if s.strip()
+                        ]
+                        if not sentences:
+                            sentences = [final_text.strip()]
+
+                        for idx, sentence in enumerate(sentences):
+                            if self._tts_cancel.is_set():
+                                break
+                            safe_tts_text = self._prepare_tts_text(sentence)
+                            if not safe_tts_text:
+                                continue
+                            chunk_counter += 1
+                            is_last_chunk = idx == len(sentences) - 1
                             await self._tts_pipeline.queue_tts(
                                 {
                                     "text": safe_tts_text,
                                     "chunk_id": chunk_counter,
                                     "use_ssml": self._use_ssml,
-                                    "is_final": True,
+                                    "is_final": is_last_chunk,
                                 }
                             )
-                    _vm = getattr(self, "_voice_metrics", None)
-                    if _vm:
-                        _vm.mark_first_tts_queued()
+                            _vm = getattr(self, "_voice_metrics", None)
+                            if _vm and idx == 0:
+                                _vm.mark_first_tts_queued()
+
                     asyncio.create_task(
                         self._deferred_conversation_memory_update(
                             turn_context, user_text
