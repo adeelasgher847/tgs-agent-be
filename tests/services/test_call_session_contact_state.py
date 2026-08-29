@@ -137,10 +137,12 @@ def test_phone_hard_retry_ceiling_accepts_best_effort():
             preceding_agent_text="What's your phone number?",
         )
     intake = get_contact_intake(cs)
-    # Ceiling reached: stop re-asking, accept best-effort rather than loop forever.
+    # Ceiling reached: stop re-asking, but do NOT promote the garbled text
+    # that already failed extraction 3x into a fake "real" phone number.
     assert intake["phone_collection_failures"] == MAX_FIELD_COLLECTION_FAILURES
     assert intake["phone_confirmed"] is True
-    assert intake["phone"]
+    assert intake["phone"] == "__unresolved__"
+    assert "mumble garble" not in (intake["phone"] or "")
 
 
 def test_phone_retry_ceiling_reached_even_when_agent_rephrases_each_retry():
@@ -221,7 +223,39 @@ def test_address_hard_retry_ceiling_accepts_best_effort():
     intake = get_contact_intake(cs)
     assert intake["address_collection_failures"] == MAX_FIELD_COLLECTION_FAILURES
     assert intake["address_confirmed"] is True
-    assert intake["address"]
+    # Same reasoning as phone above: don't promote failed/garbled text as a
+    # real address.
+    assert intake["address"] == "__unresolved__"
+    assert "not sure honestly" not in (intake["address"] or "")
+
+
+def test_prompt_block_shows_skipped_not_fabricated_value_for_ceiling_fields():
+    intake = default_contact_intake()
+    intake["phone"] = "__unresolved__"
+    intake["phone_confirmed"] = True
+    intake["address"] = "__unresolved__"
+    intake["address_confirmed"] = True
+
+    block = build_contact_intake_prompt_block(intake)
+
+    assert "Phone: SKIPPED" in block
+    assert "Address: SKIPPED" in block
+    assert "__unresolved__" not in block
+    assert "do not ask again" in block.lower()
+
+
+def test_ask_address_agent_does_not_match_email_address_phrasing():
+    # Regression: bare "address" matched "What is your email address?",
+    # routing the caller's spoken email into address_context and storing it
+    # as an address instead of an email.
+    cs = _FakeCallSession()
+    db = _db()
+    apply_transcript_turn(
+        db, cs, role="agent", message="What is your email address?",
+        preceding_agent_text=None,
+    )
+    intake = get_contact_intake(cs)
+    assert intake["awaiting_spell_field"] != "address"
 
 
 # ---- Prompt injection block -------------------------------------------------
