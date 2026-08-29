@@ -1876,6 +1876,24 @@ class BidirectionalStreamHandler(
 
         booking_memory_block = self._build_booking_memory_block()
 
+        # Backend-owned contact intake ("already collected, do not re-ask")
+        # block — deterministic complement to the "NO CONFIRMATION LOOPS"
+        # grounding rule above. Empty string when nothing is confirmed yet,
+        # so calls that never trigger contact intake see no prompt change.
+        contact_intake_block = ""
+        if self.call_session:
+            try:
+                from app.services.call_session_contact_state import (
+                    build_contact_intake_prompt_block,
+                    get_contact_intake,
+                )
+
+                contact_intake_block = build_contact_intake_prompt_block(
+                    get_contact_intake(self.call_session)
+                )
+            except Exception as exc:
+                logger.debug("Contact intake prompt block build failed: %s", exc)
+
         # Build system prompt with agent personality + history
         agent_name = (
             self.agent.name if self.agent and self.agent.name else "AI Assistant"
@@ -1991,11 +2009,12 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
 3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
 4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -2033,6 +2052,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
 5. SELF-INTRODUCTION: If the caller asks who you are, what you do, or to tell about yourself, warmly introduce yourself as the voice assistant for this company and state what you can help with (e.g. services, appointments, or general questions). Never apologize or refuse to answer who you are.
+6. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 {_bk_block}
 
@@ -2050,11 +2070,12 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
 3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
@@ -2078,6 +2099,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
 5. SELF-INTRODUCTION: If the caller asks who you are, what you do, or to tell about yourself, warmly introduce yourself as the voice assistant for this company and state what you can help with. Never apologize or refuse to answer who you are.
+6. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 {_bk_block}
 
@@ -2094,10 +2116,11 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
 3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
