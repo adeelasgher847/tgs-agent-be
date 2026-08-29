@@ -924,8 +924,9 @@ class TestSendCallSummary:
 
     @pytest.mark.anyio
     async def test_send_call_summary_waits_for_background_arq_completion(self):
-        """When llm_call_analysis is not yet present on first check, polling loop
-        calls db.refresh() until background ARQ worker commits the full summary."""
+        """When llm_call_analysis is not yet present on first check, the polling
+        loop re-queries (on its own dedicated session) until the background ARQ
+        worker commits the full summary."""
         db = MagicMock()
         call_flow = _call_flow(enabled=True)
         call_session = _call_session(
@@ -936,13 +937,15 @@ class TestSendCallSummary:
         self._setup_db(db, call_session=call_session, call_flow=call_flow)
         integration = _integration(default_channel_id="C1")
 
-        refresh_count = 0
+        poll_db = MagicMock()
+        poll_count = 0
 
-        def _fake_refresh(cs):
-            nonlocal refresh_count
-            refresh_count += 1
-            if refresh_count >= 2:
-                cs.call_metadata = {
+        def _fake_poll_row(*_args, **_kwargs):
+            nonlocal poll_count
+            poll_count += 1
+            row = MagicMock()
+            if poll_count >= 2:
+                row.call_metadata = {
                     "llm_call_analysis": {
                         "analysis": {
                             "summary": "Full LLM summary committed by ARQ worker.",
@@ -950,8 +953,11 @@ class TestSendCallSummary:
                         }
                     }
                 }
+            else:
+                row.call_metadata = {}
+            return row
 
-        db.refresh.side_effect = _fake_refresh
+        poll_db.execute.return_value.scalar_one_or_none.side_effect = _fake_poll_row
 
         with (
             patch(
@@ -960,6 +966,9 @@ class TestSendCallSummary:
             patch(
                 "app.services.slack_service.decrypt_slack_token",
                 return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service.SessionLocal", return_value=poll_db
             ),
             patch(
                 "app.services.voice_analysis_service.ensure_call_summary_locked"
@@ -975,9 +984,10 @@ class TestSendCallSummary:
                 max_wait_seconds=0.1,
             )
 
-        # ARQ worker finished on 2nd refresh; fallback locked analysis should NOT be called
+        # ARQ worker finished on 2nd poll; fallback locked analysis should NOT be called
         mock_ensure.assert_not_called()
-        assert refresh_count >= 2
+        assert poll_count >= 2
+        poll_db.close.assert_called_once()
         mock_post.assert_awaited_once()
         text_blocks = mock_post.call_args[0][3]
         summary_block = next(
@@ -1029,6 +1039,48 @@ class TestSendCallSummary:
         assert "The call began with the agent greeting..." not in str(summary_block)
 
     @pytest.mark.anyio
+    async def test_uses_transcript_summary_when_llm_analysis_summary_is_empty(self):
+        """llm_call_analysis is present but its analysis.summary is None/empty —
+        must fall through to call_session.transcript_summary rather than
+        rendering an empty summary block."""
+        db = MagicMock()
+        call_flow = _call_flow(enabled=True)
+        call_session = _call_session(
+            call_flow_id=call_flow,
+            transcript_summary="Interim partial snippet from the live call.",
+            metadata={
+                "llm_call_analysis": {
+                    "analysis": {
+                        "summary": None,
+                        "sentiment": "neutral",
+                    }
+                }
+            },
+        )
+        self._setup_db(db, call_session=call_session, call_flow=call_flow)
+        integration = _integration(default_channel_id="C1")
+
+        with (
+            patch(
+                "app.services.slack_service.get_integration", return_value=integration
+            ),
+            patch(
+                "app.services.slack_service.decrypt_slack_token",
+                return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service._post_message", new=AsyncMock()
+            ) as mock_post,
+        ):
+            await slack_service._send_call_summary_async(db, _SESSION_ID)
+
+        text_blocks = mock_post.call_args[0][3]
+        summary_block = next(
+            b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
+        )
+        assert "Interim partial snippet from the live call." in str(summary_block)
+
+    @pytest.mark.anyio
     async def test_lazily_computes_analysis_when_not_cached_and_timeout_expires(self):
         """When ARQ worker does not populate llm_call_analysis within timeout,
         ensure_call_summary_locked is invoked synchronously."""
@@ -1045,6 +1097,9 @@ class TestSendCallSummary:
                 }
             }
 
+        poll_db = MagicMock()
+        poll_db.execute.return_value.scalar_one_or_none.return_value = None
+
         with (
             patch(
                 "app.services.slack_service.get_integration", return_value=integration
@@ -1052,6 +1107,9 @@ class TestSendCallSummary:
             patch(
                 "app.services.slack_service.decrypt_slack_token",
                 return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service.SessionLocal", return_value=poll_db
             ),
             patch(
                 "app.services.voice_analysis_service.ensure_call_summary_locked",
@@ -1085,6 +1143,9 @@ class TestSendCallSummary:
         self._setup_db(db, call_session=call_session, call_flow=call_flow)
         integration = _integration(default_channel_id="C1")
 
+        poll_db = MagicMock()
+        poll_db.execute.return_value.scalar_one_or_none.return_value = None
+
         with (
             patch(
                 "app.services.slack_service.get_integration", return_value=integration
@@ -1092,6 +1153,9 @@ class TestSendCallSummary:
             patch(
                 "app.services.slack_service.decrypt_slack_token",
                 return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service.SessionLocal", return_value=poll_db
             ),
             patch(
                 "app.services.voice_analysis_service.ensure_call_summary_locked",

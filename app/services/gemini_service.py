@@ -9,6 +9,34 @@ from typing import List, Dict, Any
 import time
 import json
 
+# Models known to support the `thinking_config` API. Uses an explicit
+# allowlist rather than a fragile substring check, since not all "2.5"
+# models (e.g. lite/image variants) support thinking, and future
+# thinking-capable models may not include "2.5" in their name at all.
+_THINKING_SUPPORTED_MODELS = (
+    "gemini-2.5-pro",
+    "gemini-2.5-flash",
+    "gemini-2.5-pro-preview",
+)
+
+
+def _model_supports_thinking(model_name: str) -> bool:
+    """
+    True when model_name is an exact allowlist entry, or that entry plus a
+    numeric version/build suffix ("-001", "-20250115"). Deliberately NOT a
+    plain startswith() match: "gemini-2.5-flash-lite" must stay excluded
+    even though it starts with the allowlisted "gemini-2.5-flash" — it's a
+    distinct variant, not a versioned build of it.
+    """
+    name = str(model_name)
+    for base in _THINKING_SUPPORTED_MODELS:
+        if name == base:
+            return True
+        suffix = name[len(base):]
+        if name.startswith(base) and suffix.startswith("-") and suffix[1:2].isdigit():
+            return True
+    return False
+
 class GeminiService:
     """Service class for handling Gemini operations"""
     
@@ -84,7 +112,7 @@ class GeminiService:
                 "temperature": float(temperature),
                 "max_output_tokens": max(int(max_tokens), 1000),
             }
-            if "2.5" in str(model_name) or "thinking" in str(model_name).lower():
+            if _model_supports_thinking(model_name):
                 config_dict["thinking_config"] = {"thinking_budget": 0}
 
             # Generate content using google-genai Client

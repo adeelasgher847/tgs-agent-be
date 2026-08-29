@@ -170,7 +170,7 @@ class TtsSettings(BaseModel):
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
     )
     enable_audio_tags: bool = Field(
-        default=True, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
+        default=False, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
     )
     cloud_endpoint: str = Field(default="", validation_alias="CLOUD_TTS_ENDPOINT")
     google_voice_name: str = Field(default="", validation_alias="GOOGLE_TTS_VOICE_NAME")
@@ -508,8 +508,11 @@ class Settings(BaseSettings):
     # Symmetric encryption key for OIDC client secrets (Fernet).
     SSO_ENCRYPTION_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
-    # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
-    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
+    # ([breathes], [pause], [excited], [sad], …). Defaults to False because
+    # ElevenLabs Flash/Turbo/Multilingual conversational models do not parse
+    # bracket audio tags and read them aloud as literal words; set True to
+    # opt back in for a model/voice combination that does support them.
+    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = False
 
     # HubSpot CRM OAuth (app/services/hubspot_service.py).
     # client_id/client_secret kept here as local-dev fallbacks only — in

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 
+from app.core.config import settings
 from app.utils.ssml_utils import strip_ssml_tags
 
 
@@ -145,10 +146,12 @@ def prepare_tts_text_for_provider(text: str, provider_slug: str | None) -> str:
 
 def supports_elevenlabs_audio_tags(provider_slug: str | None) -> bool:
     """
-    ElevenLabs Flash/Turbo/Multilingual conversational models do not parse
-    bracket audio tags and read them aloud as literal words. Disabled.
+    Return True when the agent's TTS is ElevenLabs and tag guidance is enabled in settings.
+    All tag-related LLM text and fallbacks should be gated on this.
     """
-    return False
+    if (provider_slug or "").lower() != "elevenlabs":
+        return False
+    return bool(getattr(settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", False))
 
 
 def get_elevenlabs_voice_prompt_rule_lines() -> tuple[str, str, str]:

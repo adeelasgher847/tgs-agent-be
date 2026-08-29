@@ -62,6 +62,63 @@ def _make_db():
     return db
 
 
+class TestAnalysisMaxTokenBudgets:
+    """
+    Regression: max_tokens for the 4 post-call analysis calls were briefly
+    uniformly bumped to 1000 (an 8x cost increase with no stated benefit)
+    before being reverted to individually-tuned budgets. Assert the actual
+    budgets passed to generate_analysis_text for each call, so a future
+    re-introduction of the uniform bump fails a test instead of shipping
+    silently.
+    """
+
+    def test_summary_sentiment_outcome_recommendations_use_tuned_budgets(self):
+        from app.services import voice_analysis_service as vas_module
+        from app.services.voice_analysis_service import VoiceAnalysisService
+
+        session = _make_call_session()
+        db = _make_db()
+
+        msg = MagicMock()
+        msg.role = "client"
+        msg.message = "I'd like to book an appointment for next Tuesday."
+
+        mock_model = MagicMock()
+        mock_model.model_name = "gpt-4o-mini"
+        mock_model.provider.name = "openai"
+        mock_model.api_key = None
+
+        calls: list[dict] = []
+
+        def _fake_generate_analysis_text(current_model, current_api_key, prompt, max_tokens=200):
+            calls.append({"prompt": prompt, "max_tokens": max_tokens})
+            return {"content": "Summary line.\nsentiment: neutral\noutcome: resolved"}
+
+        with (
+            patch.object(
+                vas_module.transcript_service, "get_messages_by_session", return_value=[msg]
+            ),
+            patch.object(
+                vas_module.ModelService, "get_model_by_name", return_value=mock_model
+            ),
+            patch.object(
+                vas_module, "generate_analysis_text", side_effect=_fake_generate_analysis_text
+            ),
+        ):
+            VoiceAnalysisService().analyze_call_transcript(
+                db=db, call_session=session, user_id=USER_ID
+            )
+
+        # First 3 calls are always made: summary, sentiment, outcome (in that
+        # order per the fallback-model loop). Recommendations only fires
+        # when an agent_prompt is available — not exercised by this minimal
+        # session, so only assert the 3 guaranteed budgets here.
+        assert len(calls) >= 3
+        assert calls[0]["max_tokens"] == 400  # summary
+        assert calls[1]["max_tokens"] == 100  # sentiment
+        assert calls[2]["max_tokens"] == 150  # outcome
+
+
 class TestTranscriptSummaryPersistence:
     def test_summary_persisted_to_transcript_summary_column(self):
         from app.services import voice_analysis_service as vas_module

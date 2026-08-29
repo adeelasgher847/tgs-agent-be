@@ -242,3 +242,24 @@ def test_classify_turn_when_tts_silent():
         classify_turn("um", 1.00, is_tts_playing=False)
         == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
     )
+
+
+def test_low_confidence_hang_up_never_silently_suppressed():
+    # Regression: "hang up" is an irreversible caller intent. Below the
+    # single-word confidence floor it must still reach the LLM/call-ending
+    # logic as a normal turn, not be silently dropped as a backchannel.
+    assert (
+        classify_turn("hang up", 0.10, is_tts_playing=True)
+        == TurnClassification.NORMAL_USER_TURN
+    )
+    # High confidence still barges in as before (unaffected by the carve-out).
+    assert (
+        classify_turn("hang up", 0.90, is_tts_playing=True)
+        == TurnClassification.BARGE_IN
+    )
+    # Other single-word explicit commands are NOT affected by the carve-out —
+    # they still get suppressed below their confidence floor as before.
+    assert (
+        classify_turn("stop", 0.10, is_tts_playing=True)
+        == TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
+    )

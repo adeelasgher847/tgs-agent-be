@@ -321,10 +321,10 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                 )
 
                 summary_result = generate_analysis_text(
-                    current_model, current_api_key, summary_prompt, max_tokens=1000
+                    current_model, current_api_key, summary_prompt, max_tokens=400
                 )
                 sentiment_result = generate_analysis_text(
-                    current_model, current_api_key, sentiment_prompt, max_tokens=1000
+                    current_model, current_api_key, sentiment_prompt, max_tokens=100
                 )
 
                 try:
@@ -332,7 +332,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                         current_model,
                         current_api_key,
                         outcome_prompt,
-                        max_tokens=1000,
+                        max_tokens=150,
                     )
                 except Exception as oe:  # pragma: no cover - defensive
                     logger.warning(
@@ -348,7 +348,7 @@ Keep it concise - similar to summary format. Maximum 1 sentence per recommendati
                             current_model,
                             current_api_key,
                             recommendations_prompt,
-                            max_tokens=1000,
+                            max_tokens=500,
                         )
                         logger.debug("✅ Recommendations generated")
                     except Exception as e:  # pragma: no cover - defensive

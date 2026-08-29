@@ -22,9 +22,17 @@ def strip_ssml_tags(text: str) -> str:
     text = re.sub(r"<[^>]+>", " ", text)
     # Remove unclosed tag at end of string (<tag... without closing >)
     text = re.sub(r"<[^>]*$", " ", text)
-    # Remove trailing unclosed tag fragment at start of string (e.g. rate="90%">)
+    # Remove trailing unclosed tag fragment at start of string. A streaming
+    # chunk boundary can split an SSML tag anywhere inside it, so the leaked
+    # remainder isn't always a full `key="value">` — it can just as easily be
+    # `"value">`, bare punctuation like `%">`, or a lone `>`/`/>`. All of
+    # these share one trait a legitimate sentence doesn't: no whitespace
+    # between the start of the string and the `>`. "items > 5 in stock" has
+    # a space before its `>` and is correctly left untouched; a real leaked
+    # fragment never does. Bounded to 20 chars so a long space-free token
+    # can't be mistaken for one.
     if "<" not in text and ">" in text:
-        text = re.sub(r"^[^<]*>", " ", text)
+        text = re.sub(r"^\s*[^<>\s]{0,20}/?>", " ", text)
     # Remove any remaining unclosed opening tags
     text = re.sub(r"<[^>]*", " ", text)
     # Clean up extra whitespace

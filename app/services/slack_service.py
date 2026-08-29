@@ -29,6 +29,7 @@ from urllib.parse import urlencode
 
 import httpx
 from jose import JWTError, jwt
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -457,6 +458,15 @@ def _safe_error_msg(exc: Exception) -> str:
     return msg[:_MAX_ERROR_LEN]
 
 
+def _fetch_call_session(db: Session, call_session_id: uuid.UUID) -> CallSession | None:
+    """Sync helper for the post-call-summary poll loop — run via asyncio.to_thread
+    on a dedicated session so it never blocks the event loop or shares a session
+    with concurrently-running coroutines."""
+    return db.execute(
+        select(CallSession).where(CallSession.id == call_session_id)
+    ).scalar_one_or_none()
+
+
 async def _send_call_summary_async(
     db: Session,
     call_session_id: uuid.UUID,
@@ -500,25 +510,36 @@ async def _send_call_summary_async(
         return
 
     # Wait for the concurrent ARQ generate_call_summary background worker to finish
-    # and commit the complete LLM analysis. Polls with db.refresh() so the session
-    # sees the committed changes without racing or duplicating the paid LLM call.
+    # and commit the complete LLM analysis. Polls on a dedicated session (not the
+    # caller's `db`, which isn't safe for interleaved use across awaited iterations)
+    # and off the event loop via asyncio.to_thread, since the underlying query is a
+    # blocking sync DB round-trip and this loop can run for up to ~24 iterations.
     deadline = time.monotonic() + max_wait_seconds
-    while not (
+    if not (
         call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata
     ):
-        if time.monotonic() >= deadline:
-            break
-        await asyncio.sleep(poll_interval_seconds)
+        poll_db = SessionLocal()
         try:
-            db.refresh(call_session)
-        except Exception:
-            refreshed = (
-                db.query(CallSession).filter(CallSession.id == call_session_id).first()
-            )
-            if refreshed:
-                call_session = refreshed
-            else:
-                break
+            while not (
+                call_session.call_metadata
+                and "llm_call_analysis" in call_session.call_metadata
+            ):
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(poll_interval_seconds)
+                try:
+                    refreshed = await asyncio.to_thread(
+                        _fetch_call_session, poll_db, call_session_id
+                    )
+                except Exception as exc:
+                    logger.debug("Slack summary: poll query failed: %s", exc)
+                    refreshed = None
+                if refreshed is not None:
+                    call_session.call_metadata = refreshed.call_metadata
+                else:
+                    break
+        finally:
+            poll_db.close()
 
     # If timeout expired and llm_call_analysis is still missing (e.g. ARQ worker was
     # inactive/delayed), lazily compute it synchronously under advisory lock.
@@ -531,8 +552,8 @@ async def _send_call_summary_async(
             ensure_call_summary_locked(db, call_session, raise_on_no_transcript=False)
             try:
                 db.refresh(call_session)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Slack summary: post-ensure refresh failed: %s", exc)
         except Exception:
             logger.warning(
                 "Slack summary: analysis generation failed (non-critical) session=%s",

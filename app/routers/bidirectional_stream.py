@@ -1003,7 +1003,7 @@ class BidirectionalStreamHandler(
             if not _wait_for_interim_task.done():
                 try:
                     interim_res = await asyncio.wait_for(
-                        asyncio.shield(_wait_for_interim_task), timeout=12.0
+                        asyncio.shield(_wait_for_interim_task), timeout=2.5
                     )
                 except (asyncio.CancelledError, asyncio.TimeoutError, Exception) as exc:
                     logger.debug(

@@ -238,6 +238,11 @@ def classify_turn(
         req_conf = min_confidence_1w if len(norm.split()) == 1 else min_confidence
         if confidence >= req_conf:
             return TurnClassification.BARGE_IN
+        # "hang up" is an irreversible caller intent — never silently suppress
+        # it, even below the confidence floor. Let it reach the LLM / call-
+        # ending logic as a normal turn instead of dropping it.
+        if norm == "hang up":
+            return TurnClassification.NORMAL_USER_TURN
         return TurnClassification.SUPPRESS_NON_ACTIONABLE_BACKCHANNEL
 
     # 2. Known conversational backchannels & greetings are suppressed while TTS is active
