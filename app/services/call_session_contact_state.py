@@ -31,6 +31,13 @@ BOOKING_INTENT_KEY = "booking_intent"
 # Kept as one constant so the four fields behave uniformly; the effective
 # threshold (3) is unchanged from the original name-only MAX_NAME_SPELL_FAILURES.
 MAX_FIELD_COLLECTION_FAILURES = 3
+
+# Ceiling sentinel for phone/address: marks a field as "gave up asking" WITHOUT
+# promoting whatever garbled text last failed extraction into something that
+# looks like a real, usable value. build_contact_intake_prompt_block()
+# special-cases this to tell the model to stop asking without repeating
+# fabricated-looking data back to the caller or writing it to a CRM lead.
+_CEILING_UNRESOLVED = "__unresolved__"
 # Backward-compatible alias — some call sites/tests may still reference the
 # original name.
 MAX_NAME_SPELL_FAILURES = MAX_FIELD_COLLECTION_FAILURES
@@ -53,7 +60,8 @@ _ASK_PHONE_AGENT = re.compile(
     flags=re.IGNORECASE,
 )
 _ASK_ADDRESS_AGENT = re.compile(
-    r"\b(?:address|where\s+are\s+you\s+located|service\s+address|street\s+address)\b",
+    r"\b(?:service\s+address|street\s+address|mailing\s+address|"
+    r"your\s+address|where\s+are\s+you\s+located)\b",
     flags=re.IGNORECASE,
 )
 
@@ -399,10 +407,13 @@ def apply_transcript_turn(
                 not intake["phone_confirmed"]
                 and intake["phone_collection_failures"] >= MAX_FIELD_COLLECTION_FAILURES
             ):
-                # Hard retry ceiling: stop re-asking and accept best-effort
-                # (whatever was last heard) rather than looping forever on
-                # unrecognizable audio.
-                intake["phone"] = text[:40] if text else "unavailable"
+                # Hard retry ceiling: stop re-asking rather than looping
+                # forever on unrecognizable audio. Do NOT promote the
+                # garbled/failed text as a real phone number (it already
+                # failed extraction 3 times) — mark unresolved instead so
+                # the prompt block tells the model to move on without
+                # repeating fabricated-looking data back to the caller.
+                intake["phone"] = _CEILING_UNRESOLVED
                 intake["phone_confirmed"] = True
             # Only clear the awaiting-field marker once phone is settled
             # (confirmed or ceiling-accepted). Otherwise keep it set to
@@ -434,9 +445,10 @@ def apply_transcript_turn(
                 not intake["address_confirmed"]
                 and intake["address_collection_failures"] >= MAX_FIELD_COLLECTION_FAILURES
             ):
-                # Hard retry ceiling: accept best-effort text rather than
-                # looping forever.
-                intake["address"] = text[:80] if text else "unavailable"
+                # Hard retry ceiling: stop re-asking rather than looping
+                # forever. Same reasoning as phone above — don't promote
+                # failed/garbled text as a real address.
+                intake["address"] = _CEILING_UNRESOLVED
                 intake["address_confirmed"] = True
             # Same reasoning as phone above: only clear once settled, else
             # keep "address" set so the ceiling is reachable regardless of
@@ -617,9 +629,21 @@ def build_contact_intake_prompt_block(intake: dict[str, Any]) -> str:
     if intake.get("email_validated") and (intake.get("email") or "").strip():
         lines.append(f"- Email: CONFIRMED ({intake['email']})")
     if intake.get("phone_confirmed") and (intake.get("phone") or "").strip():
-        lines.append(f"- Phone: CONFIRMED ({intake['phone']})")
+        if intake["phone"] == _CEILING_UNRESOLVED:
+            lines.append(
+                "- Phone: SKIPPED (caller unable to provide after repeated "
+                "attempts — do not ask again)"
+            )
+        else:
+            lines.append(f"- Phone: CONFIRMED ({intake['phone']})")
     if intake.get("address_confirmed") and (intake.get("address") or "").strip():
-        lines.append(f"- Address: CONFIRMED ({intake['address']})")
+        if intake["address"] == _CEILING_UNRESOLVED:
+            lines.append(
+                "- Address: SKIPPED (caller unable to provide after repeated "
+                "attempts — do not ask again)"
+            )
+        else:
+            lines.append(f"- Address: CONFIRMED ({intake['address']})")
     if not lines:
         return ""
     return (

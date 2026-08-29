@@ -935,6 +935,8 @@ class BidirectionalStreamHandler(
         _should_generate = False
         _need_cancel = False
         _wait_for_interim_task = None
+        _baseline_answered_transcript: str | None = None
+        _baseline_answered_ts: float | None = None
 
         async with self._llm_turn_serial_lock:
             _now_m = time.monotonic()
@@ -988,6 +990,14 @@ class BidirectionalStreamHandler(
                         self._llm_last_answered_ts = _now_m
                 else:
                     _wait_for_interim_task = interim_task
+                    # Snapshot the dedup guard's current state so that, if we
+                    # later re-acquire the lock after waiting on the interim
+                    # task outside it, we can detect whether a concurrent
+                    # final-transcript handler (for a different/newer turn)
+                    # has since advanced these fields — see the CAS check
+                    # right before the re-acquired write below.
+                    _baseline_answered_transcript = self._llm_last_answered_transcript
+                    _baseline_answered_ts = self._llm_last_answered_ts
             else:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -1023,13 +1033,63 @@ class BidirectionalStreamHandler(
                 # THIS specific interim task completed and committed a valid response!
                 return
 
+            # DUPLICATE-AUDIO GUARD: asyncio.shield() above means the 2.5s
+            # timeout only gives up on WAITING for the interim task — it does
+            # NOT stop the interim task itself, which keeps running (and may
+            # already be mid-playback) in the background. If it has already
+            # committed/queued a response for THIS turn (tracked via
+            # _interim_task_response_produced — set whenever the LAST call to
+            # generate_and_stream_response, from ANY call site sharing this
+            # turn's state, reaches its final queue_tts + transcript commit;
+            # not exclusive to the interim task, but structurally can't leak
+            # across turns — see the reset points right before each new
+            # interim spawns and on cancellation), the caller has already
+            # started hearing that answer. Cancelling here
+            # and falling through to a fresh regeneration would re-synthesize
+            # and re-speak the same (or near-identical) content on top of/
+            # after what was already played — the "same audio plays again"
+            # duplicate-playback bug. In that case, trust the in-flight
+            # interim and do not regenerate.
+            if self._interim_task_response_produced:
+                logger.debug(
+                    "[LLM] In-flight interim already produced/queued a response "
+                    "for this turn — skipping duplicate regeneration on final."
+                )
+                return
+
             # Interim task did not produce a valid response (failed, cancelled, or empty) —
             # Fall back and generate for the authoritative final transcript!
             _should_generate = True
             _need_cancel = True
             async with self._llm_turn_serial_lock:
-                self._llm_last_answered_transcript = tstrip
-                self._llm_last_answered_ts = time.monotonic()
+                # TOCTOU guard: between releasing the lock above (to await the
+                # interim task) and re-acquiring it here, another final-
+                # transcript handler for a *different* (newer) turn may have
+                # already run its own Phase 1 and written a newer
+                # _llm_last_answered_transcript/_ts into the dedup guard.
+                # Blindly overwriting those now with this (older, stale)
+                # turn's values would corrupt the guard: a later duplicate
+                # final for the newer turn would no longer match
+                # _llm_last_answered_transcript and could trigger a second,
+                # duplicate LLM generation — or worse, silently clobber state
+                # a newer turn is relying on. Only write if nothing else
+                # touched the guard since our snapshot (simple CAS).
+                _guard_unchanged = (
+                    self._llm_last_answered_transcript == _baseline_answered_transcript
+                    and self._llm_last_answered_ts == _baseline_answered_ts
+                )
+                if _guard_unchanged:
+                    self._llm_last_answered_transcript = tstrip
+                    self._llm_last_answered_ts = time.monotonic()
+                else:
+                    logger.debug(
+                        "[LLMlock] skipping stale dedup-guard overwrite for %r — "
+                        "a newer turn already advanced _llm_last_answered_* "
+                        "(now=%r/%.3f) while we awaited the interim task",
+                        tstrip[:40],
+                        self._llm_last_answered_transcript[:40],
+                        self._llm_last_answered_ts,
+                    )
 
         if not _should_generate:
             return
@@ -1051,8 +1111,25 @@ class BidirectionalStreamHandler(
             return
 
         try:
+            # Timeout history: this was 12.0s originally, then bumped to 60.0s
+            # in the same commit that stopped the silence watchdog from
+            # cutting off in-progress generation (see
+            # CallControlMixin._silence_watchdog_loop's `_is_busy` check —
+            # it now skips reminder/hangup ticks while a turn is actively
+            # generating/speaking). That `_is_busy` check is what actually
+            # fixed "watchdog interrupts a legitimately-slow answer" — it is
+            # independent of this wait_for and still applies regardless of
+            # the value below. This timeout instead bounds a *hung*
+            # generate_and_stream_response call (stuck LLM/TTS provider) so
+            # it can't silently stall the WS handler; RAG retrieval here is
+            # already tightly time-boxed (RAG_RETRIEVAL_TIMEOUT_SEC=0.45s),
+            # so 60s of headroom was never needed for that path, and
+            # worst-case observed voice-turn LLM+TTS latency is rarely
+            # >20s. Lowered to 30.0s: enough margin over realistic worst
+            # case, while capping a truly-stuck call at half the previous
+            # (arbitrary) ceiling instead of leaving it at a full minute.
             _turn_timeout = float(
-                getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 60.0) or 60.0
+                getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 30.0) or 30.0
             )
             await asyncio.wait_for(
                 self.generate_and_stream_response(
@@ -1451,7 +1528,7 @@ class BidirectionalStreamHandler(
                 except asyncio.CancelledError:
                     raise
                 except Exception as exc:
-                    logger.error(f"Error processing interim: {exc}")
+                    logger.error("Error processing interim: %s", exc, exc_info=True)
                     return None
 
             if self._llm_response_task and not self._llm_response_task.done():
@@ -1465,7 +1542,7 @@ class BidirectionalStreamHandler(
             # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
-            logger.error(f"Error processing interim: {e}")
+            logger.error("Error processing interim: %s", e, exc_info=True)
 
     async def _send_quick_acknowledgement(self, user_text: str):
         """
