@@ -101,6 +101,7 @@ def _call_row(
     started_at=None,
     ended_at=None,
     ab_variant=None,
+    cost=0.05,
 ):
     return SimpleNamespace(
         call_id=call_id or uuid.uuid4(),
@@ -114,6 +115,7 @@ def _call_row(
         started_at=started_at or datetime(2026, 6, 1, 10, 0, tzinfo=timezone.utc),
         ended_at=ended_at or datetime(2026, 6, 1, 10, 1, tzinfo=timezone.utc),
         ab_variant=ab_variant,
+        cost=cost,
     )
 
 
@@ -298,6 +300,18 @@ def test_list_default_sort():
     assert result.total == 0
     assert result.items == []
     assert result.pages == 0
+
+
+# ── 11b. get_list returns per-call cost ───────────────────────────────────────
+
+def test_list_items_include_cost():
+    rows = [_call_row(cost=1.2345), _call_row(cost=0.0), _call_row(cost=None)]
+    db = _mock_db_scalar_and_all(scalar_value=3, rows=rows)
+    svc = _svc()
+
+    result = svc.get_list(db, _tenant())
+
+    assert [item.cost for item in result.items] == [1.2345, 0.0, None]
 
 
 # ── 12. CSV header contains all required columns ──────────────────────────────
