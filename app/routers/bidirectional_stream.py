@@ -1023,6 +1023,30 @@ class BidirectionalStreamHandler(
                 # THIS specific interim task completed and committed a valid response!
                 return
 
+            # DUPLICATE-AUDIO GUARD: asyncio.shield() above means the 2.5s
+            # timeout only gives up on WAITING for the interim task — it does
+            # NOT stop the interim task itself, which keeps running (and may
+            # already be mid-playback) in the background. If it has already
+            # committed/queued a response for THIS turn (tracked via
+            # _interim_task_response_produced — set whenever the LAST call to
+            # generate_and_stream_response, from ANY call site sharing this
+            # turn's state, reaches its final queue_tts + transcript commit;
+            # not exclusive to the interim task, but structurally can't leak
+            # across turns — see the reset points right before each new
+            # interim spawns and on cancellation), the caller has already
+            # started hearing that answer. Cancelling here
+            # and falling through to a fresh regeneration would re-synthesize
+            # and re-speak the same (or near-identical) content on top of/
+            # after what was already played — the "same audio plays again"
+            # duplicate-playback bug. In that case, trust the in-flight
+            # interim and do not regenerate.
+            if self._interim_task_response_produced:
+                logger.debug(
+                    "[LLM] In-flight interim already produced/queued a response "
+                    "for this turn — skipping duplicate regeneration on final."
+                )
+                return
+
             # Interim task did not produce a valid response (failed, cancelled, or empty) —
             # Fall back and generate for the authoritative final transcript!
             _should_generate = True

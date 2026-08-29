@@ -468,6 +468,75 @@ async def test_case_j_legitimate_short_and_unknown_requests_not_dropped():
     assert handler._cancel_inflight_llm_response.call_count == 1
 
 
+@pytest.mark.asyncio
+async def test_case_f_slow_but_valid_interim_not_duplicated_under_latency():
+    """
+    Case F (duplicate-audio-under-latency regression):
+
+    Interim seed text == final transcript (no regeneration needed per
+    _should_regenerate_on_final) -> handler waits on the in-flight interim
+    task via asyncio.wait_for(asyncio.shield(...), timeout=2.5). If the
+    interim is simply SLOW (e.g. under latency) but not actually stuck --
+    it has already queued/committed its TTS response for this turn -- the
+    2.5s wait timing out must NOT cause a duplicate cancel+regenerate+re-
+    speak of the same content. asyncio.shield() means the interim keeps
+    running (and may already be mid-playback) even after the wait_for
+    gives up, so falling through to a fresh generation on timeout alone
+    re-synthesizes and re-plays the same answer -- the "same audio plays
+    again, slightly pitch-shifted" symptom reported from live calls.
+    """
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler._enable_interim_llm = True
+
+    calls = []
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        calls.append(user_text)
+        # Simulate slow-but-successful LLM+TTS under latency: the real
+        # generate_and_stream_response queues TTS + commits the transcript
+        # (setting _interim_task_response_produced=True) well before it
+        # actually *returns* -- reproduce that ordering here, with the
+        # overall generation taking longer than the 2.5s fallback timeout.
+        await asyncio.sleep(1.0)
+        handler._interim_task_response_produced = True
+        await asyncio.sleep(2.0)
+        return "Sure, I can help with that."
+
+    handler.generate_and_stream_response = mock_generate
+    handler._add_to_transcript = AsyncMock()
+    handler._prefetch_rag_context = AsyncMock()
+    handler._run_speculative_tts_prefetch = AsyncMock()
+    handler._should_accept_final_transcript = MagicMock(return_value=True)
+
+    utterance = "I want to schedule an interview"
+
+    # Interim arrives with the FULL utterance already (common for short
+    # utterances that finish right as Deepgram emits its first interim).
+    await handler._maybe_process_interim(utterance, 0.90)
+    assert handler._turn_response_started is True
+
+    # Final arrives with the SAME transcript almost immediately --
+    # _should_regenerate_on_final sees final_norm == seed_norm (not a
+    # booking context) -> returns False -> handler must just wait for/trust
+    # the in-flight interim, not start a second generation.
+    await handler._complete_llm_turn_after_stt_final(utterance, 0.95)
+
+    assert len(calls) == 1, (
+        f"expected exactly ONE generation for identical interim/final text "
+        f"even when the interim is slower than the 2.5s fallback timeout, "
+        f"got {len(calls)} calls: {calls} (duplicate-audio-under-latency regression)"
+    )
+
+
 
 
 
