@@ -498,6 +498,15 @@ class BidirectionalStreamHandler(
         self._recording_started = False
         self._lk_caller_publisher = None
         self._lk_agent_publisher = None
+        # Keep-alive task/state for the LiveKit recording-mirror agent track — see
+        # TtsStreamMixin._start_agent_mirror_keepalive/_stop_agent_mirror_keepalive.
+        # Fixes a production bug: the agent's mirrored AudioSource only received
+        # real frames during bursty TTS-playback windows, which room-composite
+        # egress does not reliably keep mixed into the recording across
+        # multi-second silence gaps between turns (caller mirror never has this
+        # problem since it's fed continuously from Twilio's own 20ms cadence).
+        self._lk_agent_keepalive_task: asyncio.Task | None = None
+        self._agent_mirror_last_real_frame_ts: float = 0.0
         self._screening_decline_handled = False
         self._last_agent_speech_time: float = 0.0
 
@@ -3307,8 +3316,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 "LiveKit agent recording publisher ready: session=%s",
                 self.call_session.id,
             )
+            # Outbound calls have no continuously-fed caller track in this room
+            # (that only exists for inbound, see _start_livekit_recording below) —
+            # the agent's own bursty TTS-mirror pattern needs the same keep-alive
+            # fix, if anything more so here since nothing else keeps the room's
+            # media clock alive between turns.
+            self._start_agent_mirror_keepalive()
 
     async def _disconnect_livekit_recording_publishers(self) -> None:
+        await self._stop_agent_mirror_keepalive()
         for attr in ("_lk_caller_publisher", "_lk_agent_publisher"):
             pub = getattr(self, attr, None)
             if pub:
@@ -3373,6 +3389,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self.call_session.call_metadata = meta
                 self.db.commit()
                 self._recording_started = True
+                self._start_agent_mirror_keepalive()
                 logger.info(
                     "LiveKit recording started: session=%s egress_id=%s",
                     self.call_session.id,

@@ -6,6 +6,7 @@ Handles background audio, TTS chunk streaming, prefetch, and audio delivery to T
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Dict
 
@@ -33,15 +34,110 @@ if TYPE_CHECKING:
     from app.voice.humanization_engine import PacingHint
 
 
+# LiveKit recording-mirror agent-track keep-alive tuning.
+#
+# WebRTC AudioSource/RTP tracks (see LiveKitTwilioPublisher._source in
+# livekit_twilio_bridge.py) are built around continuous, steady frame
+# delivery to maintain the track's media clock. The agent's mirror track is
+# only fed real frames during the narrow, bursty windows when TTS is
+# actively streaming to Twilio (paced at 20ms by stream_mulaw_bytes_over_twilio)
+# — between turns (silence, LLM thinking time, caller talking) it previously
+# went silent for multi-second stretches. Confirmed via real S3 recording
+# analysis (ffprobe/ffmpeg) that LiveKit's room-composite egress does not
+# reliably keep such a gappy track mixed into the final recording, unlike the
+# caller's mirror track which Twilio feeds continuously every ~20ms for the
+# entire call. This keep-alive loop fills every gap with a silent μ-law frame
+# so the agent's AudioSource never goes quiet for more than one tick.
+_AGENT_MIRROR_KEEPALIVE_INTERVAL_S = 0.02  # 20ms, matches Twilio's own frame cadence
+_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S = 0.025  # 25ms — small margin over one tick
+
+
 class TtsStreamMixin:
     """TTS streaming and audio delivery methods for BidirectionalStreamHandler."""
 
     def _livekit_recording_mirror(self):
-        """Return agent TTS mirror callback when LiveKit egress recording is active."""
+        """Return agent TTS mirror callback when LiveKit egress recording is active.
+
+        The returned callback wraps the publisher's real `publish_mulaw` so every
+        REAL frame push stamps `self._agent_mirror_last_real_frame_ts` — read by
+        `_agent_mirror_keepalive_loop` to decide when to fill silence gaps.
+        """
         pub = getattr(self, "_lk_agent_publisher", None)
-        if pub and getattr(pub, "connected", False):
-            return pub.publish_mulaw
-        return None
+        if not (pub and getattr(pub, "connected", False)):
+            return None
+
+        async def _mirror_and_stamp(mulaw_bytes: bytes) -> None:
+            self._agent_mirror_last_real_frame_ts = time.monotonic()
+            await pub.publish_mulaw(mulaw_bytes)
+
+        return _mirror_and_stamp
+
+    async def _agent_mirror_keepalive_loop(self) -> None:
+        """
+        Background task: keep the agent recording-mirror track fed with a
+        continuous, steady cadence for the entire call, so its underlying
+        WebRTC AudioSource/RTP track never goes quiet for more than one tick
+        (see module-level comment above for the full diagnosis).
+
+        Wakes up every ~20ms and pushes one silent μ-law frame via the agent
+        publisher UNLESS a real TTS frame was pushed within the last
+        `_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S` — i.e. it is a no-op during
+        active speech (the real streaming loop already paces itself at 20ms)
+        and only fills in the gaps between turns.
+        """
+        silence_frame = bytes([0xFF]) * MULAW_FRAME_BYTES
+        try:
+            while True:
+                await asyncio.sleep(_AGENT_MIRROR_KEEPALIVE_INTERVAL_S)
+
+                pub = getattr(self, "_lk_agent_publisher", None)
+                if not (pub and getattr(pub, "connected", False)):
+                    # Publisher torn down / not yet connected — stay alive but idle
+                    # so the task doesn't need to be recreated on reconnect races;
+                    # it is explicitly cancelled at call teardown regardless.
+                    continue
+
+                last_real = getattr(self, "_agent_mirror_last_real_frame_ts", 0.0)
+                elapsed = time.monotonic() - last_real
+                if elapsed < _AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S:
+                    # A real frame was just pushed this tick window — don't double up.
+                    continue
+
+                try:
+                    await pub.publish_mulaw(silence_frame)
+                except Exception as exc:
+                    logger.debug(
+                        "[LiveKitBridge] agent mirror keep-alive frame failed: %s", exc
+                    )
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.debug("[LiveKitBridge] agent mirror keep-alive loop exited: %s", exc)
+
+    def _start_agent_mirror_keepalive(self) -> None:
+        """Start the keep-alive task once the agent recording-mirror publisher is up."""
+        existing = getattr(self, "_lk_agent_keepalive_task", None)
+        if existing and not existing.done():
+            return
+        self._agent_mirror_last_real_frame_ts = 0.0
+        self._lk_agent_keepalive_task = asyncio.create_task(
+            self._agent_mirror_keepalive_loop()
+        )
+
+    async def _stop_agent_mirror_keepalive(self) -> None:
+        """Cancel the keep-alive task cleanly (call teardown / recording stop)."""
+        task = getattr(self, "_lk_agent_keepalive_task", None)
+        self._lk_agent_keepalive_task = None
+        if task and not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                logger.debug(
+                    "[LiveKitBridge] agent mirror keep-alive task cleanup: %s", exc
+                )
 
     async def _send_twilio_clear_event(self) -> None:
         """
