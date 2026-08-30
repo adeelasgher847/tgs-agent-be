@@ -1759,19 +1759,21 @@ class BidirectionalStreamHandler(
             )
         except asyncio.TimeoutError:
             logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+            fallback_trace = {"status": "timeout", "timeout": True}
         except Exception as exc:
             logger.debug("[RAG prefetch] failed: %s", exc)
-        # Fallback: empty context (LLM still runs, just without RAG)
-        tenant_uuid = self.call_session.tenant_id if self.call_session else None
-        agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = (
-            None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
-        )
-        return build_rag_context_block_with_trace(
-            user_text="",
-            tenant_id=tenant_uuid,
-            agent_id=rag_agent_scope,
-        )
+            fallback_trace = {"status": "failure", "error": str(exc)}
+        # Fallback: genuinely empty context (LLM still runs, just without
+        # RAG) -- NOT a call to build_rag_context_block_with_trace(user_text
+        # ="", ...), which routes into that function's empty-input branch
+        # and returns a block that explicitly instructs the LLM to refuse
+        # ("respond that this information is not available instead of
+        # guessing") purely because retrieval was too slow/technically
+        # failed, even when the KB genuinely has the answer. Match the
+        # browser/LiveKit path's equivalent timeout behavior
+        # (kb_retrieval_service.py): omit the block entirely rather than
+        # actively telling the LLM to deny knowledge it may actually have.
+        return "", fallback_trace
 
     async def build_system_prompt(self, user_text: str, confidence: float) -> str:
         """Public string-returning entry point — see _build_system_prompt_full
@@ -1926,24 +1928,33 @@ class BidirectionalStreamHandler(
                         ),
                     )
             except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
+                # Technical failure (retrieval didn't finish in the latency
+                # budget), NOT a semantic "no KB entries match this query"
+                # result. Previously this called build_rag_context_block_
+                # with_trace(user_text="", ...), which routes into that
+                # function's empty-input branch and returns a block that
+                # explicitly instructs the LLM: "respond that this
+                # information is not available instead of guessing" — i.e.
+                # a hard refusal directive, injected purely because
+                # retrieval was too slow, even when the KB genuinely
+                # contains the answer. The browser/LiveKit path's equivalent
+                # timeout (kb_retrieval_service.py) just proceeds with no KB
+                # context block and no explicit instruction either way —
+                # match that behavior here: omit the block entirely and let
+                # the LLM answer from conversation history/general
+                # knowledge, rather than actively telling it to refuse.
+                rag_context_block = ""
+                rag_trace = {"status": "timeout", "timeout": True}
             except Exception as e:
                 logger.error(
                     "RAG context build failed unexpectedly: %s", e, exc_info=True
                 )
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
+                # Same reasoning as the timeout branch above: a technical
+                # retrieval failure is not evidence the KB lacks the answer,
+                # so don't inject the "respond that this information is not
+                # available" refusal directive for it.
+                rag_context_block = ""
+                rag_trace = {"status": "failure", "error": str(e)}
 
         # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
         # These are agent/tenant-level and don't change during the call, so serving
