@@ -695,7 +695,23 @@ class Settings(BaseSettings):
     #   normal     → DEEPGRAM_STT_ENDPOINTING_MS
     #   extended   → max(base, DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED)
     #   aggressive → faster finals (lower ms, clamped) for snappier turns
-    VOICE_STT_ENDPOINTING_MODE: str = "aggressive"
+    #
+    # Default is "normal" (350ms), not "aggressive". "aggressive" applies
+    # voice_orchestrator.py::_resolve_initial_endpointing_ms's
+    # max(80, int(base*0.55)) formula, which against this file's own
+    # DEEPGRAM_STT_ENDPOINTING_MS=350 works out to ~192ms -- confirmed via
+    # real production call logs (three separate calls) to be short enough
+    # that Deepgram routinely marks speech_final mid-sentence on an
+    # ordinary conversational pause between clauses/words (e.g. a caller's
+    # single continuous thought split into 3 separate "final" transcripts
+    # within ~2 seconds). Each premature final is handed to the LLM as a
+    # complete turn, so the agent starts responding before the caller
+    # actually finished -- heard as the agent interrupting, worse on
+    # longer sentences (more chances to hit a >192ms gap somewhere in the
+    # middle). 350ms is this file's own originally-documented deliberate
+    # value for DEEPGRAM_STT_ENDPOINTING_MS (see its comment above) -- this
+    # just stops "aggressive" from silently overriding it by default.
+    VOICE_STT_ENDPOINTING_MODE: str = "normal"
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = (
