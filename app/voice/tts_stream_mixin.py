@@ -50,6 +50,13 @@ if TYPE_CHECKING:
 # so the agent's AudioSource never goes quiet for more than one tick.
 _AGENT_MIRROR_KEEPALIVE_INTERVAL_S = 0.02  # 20ms, matches Twilio's own frame cadence
 _AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S = 0.025  # 25ms — small margin over one tick
+# Bounded queue depth for real frames awaiting the mirror writer (see
+# _agent_mirror_keepalive_loop): ~5s of audio at one 20ms frame per slot.
+# Generous enough to absorb any realistic synthesis burst/stall without
+# growing unbounded; if ever exceeded, the OLDEST queued frame is dropped
+# to make room — a lost recording frame is inconsequential, growing memory
+# or blocking the enqueuer is not (see _mirror_enqueue).
+_AGENT_MIRROR_QUEUE_MAXSIZE = 250
 
 
 class TtsStreamMixin:
@@ -58,32 +65,79 @@ class TtsStreamMixin:
     def _livekit_recording_mirror(self):
         """Return agent TTS mirror callback when LiveKit egress recording is active.
 
-        The returned callback wraps the publisher's real `publish_mulaw` so every
-        REAL frame push stamps `self._agent_mirror_last_real_frame_ts` — read by
-        `_agent_mirror_keepalive_loop` to decide when to fill silence gaps.
+        The returned callback is a fast, non-blocking ENQUEUE onto
+        `self._agent_mirror_queue` — it never itself calls the publisher or
+        awaits any network/pacing operation. The actual `pub.publish_mulaw()`
+        call (which wraps LiveKit's rate-limited `AudioSource.capture_frame`)
+        happens exclusively inside `_agent_mirror_keepalive_loop`, the single
+        dedicated background writer for this call.
+
+        This split exists because `capture_frame()` is a self-pacing API: it
+        can legitimately take longer than one 20ms tick to maintain its own
+        real-time delivery to the recording track. Previously this callback
+        awaited `publish_mulaw()` directly, INLINE, before the caller-facing
+        Twilio send in both `stream_mulaw_bytes_over_twilio` and
+        `_stream_tts_chunk`'s `send_frame` — coupling the live call's audio
+        pacing to the recording mirror's independent pacing clock. Confirmed
+        via real-recording frame-level analysis: ~5.5% of frames showed a
+        brief volume dip during continuous speech, consistent with this
+        coupling occasionally delaying a live frame's send. Enqueueing here
+        instead means the Twilio-facing call sites' `await mirror_mulaw(...)`
+        now awaits a synchronous, in-memory queue operation (microseconds,
+        no I/O) — it can never block, delay, or otherwise affect the audio
+        sent to the caller, regardless of how the LiveKit publish is paced.
         """
         pub = getattr(self, "_lk_agent_publisher", None)
         if not (pub and getattr(pub, "connected", False)):
             return None
 
-        async def _mirror_and_stamp(mulaw_bytes: bytes) -> None:
-            self._agent_mirror_last_real_frame_ts = time.monotonic()
-            await pub.publish_mulaw(mulaw_bytes)
+        async def _mirror_enqueue(mulaw_bytes: bytes) -> None:
+            queue: asyncio.Queue | None = getattr(self, "_agent_mirror_queue", None)
+            if queue is None:
+                return
+            try:
+                queue.put_nowait(mulaw_bytes)
+            except asyncio.QueueFull:
+                # Drop the oldest queued frame to make room rather than
+                # growing unbounded or blocking the caller — see
+                # _AGENT_MIRROR_QUEUE_MAXSIZE.
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(mulaw_bytes)
+                except asyncio.QueueFull:
+                    pass
 
-        return _mirror_and_stamp
+        return _mirror_enqueue
 
     async def _agent_mirror_keepalive_loop(self) -> None:
         """
-        Background task: keep the agent recording-mirror track fed with a
-        continuous, steady cadence for the entire call, so its underlying
-        WebRTC AudioSource/RTP track never goes quiet for more than one tick
-        (see module-level comment above for the full diagnosis).
+        Background task: the SOLE writer to the agent recording-mirror
+        publisher for this call — both real TTS frames (drained from
+        `self._agent_mirror_queue`, enqueued by `_livekit_recording_mirror`'s
+        callback) and silence keep-alive frames are published from here,
+        never from the Twilio-facing send path directly. This guarantees:
 
-        Wakes up every ~20ms and pushes one silent μ-law frame via the agent
-        publisher UNLESS a real TTS frame was pushed within the last
-        `_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S` — i.e. it is a no-op during
-        active speech (the real streaming loop already paces itself at 20ms)
-        and only fills in the gaps between turns.
+        1. The caller-facing Twilio audio path never awaits anything that
+           touches the LiveKit publisher — the recording mirror truly cannot
+           block or delay live playback (see _livekit_recording_mirror's
+           docstring for the frame-drop evidence that motivated this).
+        2. Exactly one coroutine ever calls `pub.publish_mulaw()` — removing
+           any possibility of this loop's own keep-alive silence frame
+           racing/interleaving with a real frame pushed concurrently by a
+           second producer (both now flow through this single loop, in
+           order).
+
+        Wakes up every ~20ms; if a real frame is queued, publishes the
+        OLDEST one (FIFO — never drops queued content to "catch up", since
+        `publish_mulaw`'s own pacing already absorbs momentary bursts via
+        the queue acting as a buffer, exactly like `stream_mulaw_bytes_over_
+        twilio`'s own pace_state does for the Twilio-facing send). Otherwise,
+        publishes a silent frame UNLESS a real frame was published within
+        the last `_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S` — i.e. it is a
+        no-op during active speech and only fills the gaps between turns.
         """
         silence_frame = bytes([0xFF]) * MULAW_FRAME_BYTES
         try:
@@ -95,6 +149,25 @@ class TtsStreamMixin:
                     # Publisher torn down / not yet connected — stay alive but idle
                     # so the task doesn't need to be recreated on reconnect races;
                     # it is explicitly cancelled at call teardown regardless.
+                    continue
+
+                queue: asyncio.Queue | None = getattr(self, "_agent_mirror_queue", None)
+                real_frame: bytes | None = None
+                if queue is not None and not queue.empty():
+                    try:
+                        real_frame = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        real_frame = None
+
+                if real_frame is not None:
+                    self._agent_mirror_last_real_frame_ts = time.monotonic()
+                    try:
+                        await pub.publish_mulaw(real_frame)
+                    except Exception as exc:
+                        logger.debug(
+                            "[LiveKitBridge] agent mirror real frame publish failed: %s",
+                            exc,
+                        )
                     continue
 
                 last_real = getattr(self, "_agent_mirror_last_real_frame_ts", 0.0)
@@ -115,19 +188,21 @@ class TtsStreamMixin:
             logger.debug("[LiveKitBridge] agent mirror keep-alive loop exited: %s", exc)
 
     def _start_agent_mirror_keepalive(self) -> None:
-        """Start the keep-alive task once the agent recording-mirror publisher is up."""
+        """Start the keep-alive/writer task once the agent recording-mirror publisher is up."""
         existing = getattr(self, "_lk_agent_keepalive_task", None)
         if existing and not existing.done():
             return
         self._agent_mirror_last_real_frame_ts = 0.0
+        self._agent_mirror_queue = asyncio.Queue(maxsize=_AGENT_MIRROR_QUEUE_MAXSIZE)
         self._lk_agent_keepalive_task = asyncio.create_task(
             self._agent_mirror_keepalive_loop()
         )
 
     async def _stop_agent_mirror_keepalive(self) -> None:
-        """Cancel the keep-alive task cleanly (call teardown / recording stop)."""
+        """Cancel the keep-alive/writer task cleanly (call teardown / recording stop)."""
         task = getattr(self, "_lk_agent_keepalive_task", None)
         self._lk_agent_keepalive_task = None
+        self._agent_mirror_queue = None
         if task and not task.done():
             task.cancel()
             try:
