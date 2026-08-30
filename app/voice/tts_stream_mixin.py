@@ -356,6 +356,25 @@ class TtsStreamMixin:
                                 apply_micro_fade_out,
                             )
 
+                            # LiveKit recording mirror: this incremental
+                            # (async_stream_synthesize) streaming branch sends
+                            # frames directly to Twilio via send_frame below,
+                            # unlike the bulk-buffer path (generate_mulaw_tts +
+                            # stream_mulaw_bytes_over_twilio, further down in
+                            # this same function) which already mirrors every
+                            # frame it sends. This branch is the DOMINANT path
+                            # for any response of 2+ words (VOICE_TTS_STREAM_
+                            # MIN_WORDS), so without this it silently never
+                            # mirrors the majority of real agent speech into
+                            # the LiveKit recording egress -- confirmed via a
+                            # real S3 recording where several agent turns were
+                            # completely silent (ffprobe/volumedetect showed
+                            # near-noise-floor levels, -40 to -70dB, at exactly
+                            # those turns' timestamps) while short/simple
+                            # responses (which take the bulk path) had normal
+                            # speech levels.
+                            _recording_mirror = self._livekit_recording_mirror()
+
                             async def send_frame(
                                 frame: bytes, pace: bool = True, state: dict = None
                             ):
@@ -365,6 +384,11 @@ class TtsStreamMixin:
                                     return
                                 if self._is_background_audio_enabled():
                                     frame = self._background_audio.mix_tts_frame(frame)
+                                if _recording_mirror:
+                                    try:
+                                        await _recording_mirror(frame)
+                                    except Exception:  # noqa: S110 - best-effort recording mirror; must not disrupt playback
+                                        pass
                                 payload = base64.b64encode(frame).decode("utf-8")
                                 try:
                                     await self.websocket.send_json(
