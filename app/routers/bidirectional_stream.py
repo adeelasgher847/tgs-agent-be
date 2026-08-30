@@ -976,15 +976,47 @@ class BidirectionalStreamHandler(
             # Duplicate-transcript gate: near-simultaneous STT finals for the
             # same utterance (Deepgram re-endpoints) all queue here.  Once the
             # first sets _llm_last_answered_transcript, the rest bail instantly.
+            _last_answered = self._llm_last_answered_transcript
+            _since_answered = _now_m - self._llm_last_answered_ts
+            _is_exact_dup = (
+                tstrip and tstrip == _last_answered and _since_answered < 10.0
+            )
+            # Re-endpointing dup: Deepgram sometimes emits a SECOND final for
+            # the same spoken turn a few hundred ms after the first, where one
+            # transcript is a strict prefix/suffix/substring of the other
+            # (e.g. first final 'Hello there. Could I Hey. Hi. How are you
+            # today?' -- garbled/merged with stale text -- followed ~400ms
+            # later by the corrected 'Hey. Hi. How are you today?'). The exact-
+            # match check above never catches this since the strings differ,
+            # so both fired a full LLM+TTS turn and the caller heard the agent
+            # answer twice. Narrowly scoped to avoid dropping a genuine fast
+            # follow-up utterance: a short window (STT re-endpoint corrections
+            # land within ~1s; a caller speaking again takes longer) and a
+            # minimum word count on the shorter string (so a stray short word
+            # incidentally contained in an unrelated longer sentence doesn't
+            # false-positive).
+            _is_reendpoint_dup = False
             if (
-                tstrip
-                and tstrip == self._llm_last_answered_transcript
-                and (_now_m - self._llm_last_answered_ts) < 10.0
+                not _is_exact_dup
+                and tstrip
+                and _last_answered
+                and _since_answered < 1.5
             ):
+                _shorter, _longer = (
+                    (tstrip, _last_answered)
+                    if len(tstrip) <= len(_last_answered)
+                    else (_last_answered, tstrip)
+                )
+                if len(_shorter.split()) >= 3 and _shorter in _longer:
+                    _is_reendpoint_dup = True
+
+            if _is_exact_dup or _is_reendpoint_dup:
                 logger.info(
-                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
+                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago, "
+                    "%s)",
                     tstrip[:40],
-                    _now_m - self._llm_last_answered_ts,
+                    _since_answered,
+                    "exact" if _is_exact_dup else "re-endpoint containment",
                 )
                 return
 
