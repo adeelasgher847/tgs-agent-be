@@ -117,6 +117,13 @@ def _empty_handler() -> Handler:
     h.call_session = None
     h._screening_decline_handled = False
     h._jd_recruitment_screening_active = lambda: False  # type: ignore[method-assign, assignment]
+    # Quick-ack turn-identity gate state: incremented by _maybe_process_interim
+    # (speculative interim) and by the final-transcript no-interim-in-flight
+    # branch (see BidirectionalStreamHandler._send_quick_acknowledgement).
+    h._turn_generation_id = 0
+    h._last_quick_ack_turn_id = -1
+    h._turns_since_last_ack = 0
+    h._last_quick_ack_phrase = ""
     return h
 
 
