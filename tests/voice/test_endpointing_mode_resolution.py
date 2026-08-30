@@ -33,6 +33,18 @@ def test_default_mode_is_normal_not_aggressive():
     assert settings.VOICE_STT_ENDPOINTING_MODE == "normal"
 
 
+def test_base_endpointing_raised_past_first_fix_after_further_reports():
+    """350ms (this session's first fix) still wasn't patient enough --
+    callers kept getting cut off on ordinary pauses between clauses of one
+    longer sentence. Locks in the follow-up increase to 450/700ms so a
+    future edit here is deliberate, not an accidental regression back
+    toward the too-aggressive end of the range."""
+    assert settings.DEEPGRAM_STT_ENDPOINTING_MS == 450
+    assert settings.DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED == 700
+    # EXTENDED must stay strictly more patient than normal conversation.
+    assert settings.DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED > settings.DEEPGRAM_STT_ENDPOINTING_MS
+
+
 def test_normal_mode_uses_base_endpointing_directly(monkeypatch):
     monkeypatch.setattr(settings, "VOICE_STT_ENDPOINTING_MODE", "normal", raising=False)
     monkeypatch.setattr(settings, "DEEPGRAM_STT_ENDPOINTING_MS", 350, raising=False)

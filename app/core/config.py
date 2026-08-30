@@ -677,11 +677,27 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = (
         "en"  # Deepgram listen param; override in .env if needed
     )
-    # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
-    # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 350
-    # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    # Silence (ms) before Deepgram marks speech_final.
+    #
+    # Raised 350 -> 450 after real-call feedback that 350ms was still not
+    # patient enough: quick-ack ("Got it"/"Okay") and full LLM responses
+    # both key off Deepgram's speech_final, so ANY silence-based endpointing
+    # value is this system's entire notion of "has the caller actually
+    # finished speaking" -- a value too short doesn't just cause the
+    # duplicate/premature-final bugs already fixed this session, it makes
+    # the agent audibly cut in with an acknowledgement mid-thought whenever
+    # the caller pauses between clauses of one longer sentence. 450ms sits
+    # comfortably inside the ~400-800ms range production voice platforms
+    # commonly use for natural conversational pacing, while staying below
+    # the EXTENDED tier below (which intentionally stays more patient than
+    # this, for spelling/email collection specifically).
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 450
+    # After the agent asks for email, bidirectional stream may reopen STT
+    # once with this value. Raised 500 -> 700 alongside the base value above
+    # so EXTENDED remains strictly more patient than normal conversation
+    # (spelling out an email/confirmation code has longer natural pauses
+    # between characters than ordinary speech).
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 700
     # Word-timing-based fallback for end-of-turn detection (Deepgram's UtteranceEnd event),
     # robust to phone-line noise that can prevent silence-based endpointing/speech_final
     # from firing. Deepgram requires >=1000ms; only takes effect if speech_final never
@@ -696,10 +712,11 @@ class Settings(BaseSettings):
     #   extended   → max(base, DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED)
     #   aggressive → faster finals (lower ms, clamped) for snappier turns
     #
-    # Default is "normal" (350ms), not "aggressive". "aggressive" applies
+    # Default is "normal" (uses DEEPGRAM_STT_ENDPOINTING_MS above directly,
+    # currently 450ms), not "aggressive". "aggressive" applies
     # voice_orchestrator.py::_resolve_initial_endpointing_ms's
-    # max(80, int(base*0.55)) formula, which against this file's own
-    # DEEPGRAM_STT_ENDPOINTING_MS=350 works out to ~192ms -- confirmed via
+    # max(80, int(base*0.55)) formula, which against this file's original
+    # DEEPGRAM_STT_ENDPOINTING_MS=350 worked out to ~192ms -- confirmed via
     # real production call logs (three separate calls) to be short enough
     # that Deepgram routinely marks speech_final mid-sentence on an
     # ordinary conversational pause between clauses/words (e.g. a caller's
@@ -707,10 +724,11 @@ class Settings(BaseSettings):
     # within ~2 seconds). Each premature final is handed to the LLM as a
     # complete turn, so the agent starts responding before the caller
     # actually finished -- heard as the agent interrupting, worse on
-    # longer sentences (more chances to hit a >192ms gap somewhere in the
-    # middle). 350ms is this file's own originally-documented deliberate
-    # value for DEEPGRAM_STT_ENDPOINTING_MS (see its comment above) -- this
-    # just stops "aggressive" from silently overriding it by default.
+    # longer sentences (more chances to hit a short gap somewhere in the
+    # middle). This just stops "aggressive" from silently overriding the
+    # base value by default; see DEEPGRAM_STT_ENDPOINTING_MS's own comment
+    # above for the subsequent 350->450ms increase that addressed the same
+    # complaint recurring even under "normal".
     VOICE_STT_ENDPOINTING_MODE: str = "normal"
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
