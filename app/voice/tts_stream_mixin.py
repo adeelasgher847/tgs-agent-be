@@ -252,6 +252,7 @@ class TtsStreamMixin:
         prefetched_bytes: Any = None,
         pacing: "PacingHint | None" = None,
         previous_text: str | None = None,
+        humanization_decision: Any = None,
     ):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -273,6 +274,19 @@ class TtsStreamMixin:
         return an async iterator (e.g. it errored/returned None). The common
         path never reaches this: `_prefetch_tts_audio` reads the same value
         directly from the task dict.
+
+        `humanization_decision` (optional): the SAME HumanizationDecision
+        already computed once by TtsPipeline._process_chunk (via
+        analyze_response()), passed through so the humanization voice-
+        settings overlay (e.g. ElevenLabs stability) can be applied in the
+        same rare fallback path noted above for `previous_text` -- when
+        `_prefetch_tts_audio` did not already hand back synthesized audio,
+        this function performs its own live synthesis and must apply the
+        identical overlay `_prefetch_tts_audio` would have, or that turn's
+        tone/stability silently diverges from every other chunk. Never
+        recomputed here — passing None (humanization disabled/failed
+        upstream) is a valid, safe input (build_voice_settings_overlay
+        already tolerates it).
 
         Args:
             text: Text or SSML to convert to speech
@@ -714,6 +728,31 @@ class TtsStreamMixin:
                                     # (mulaw/8kHz) in their own adapters, not read from provider_settings.
                                     provider_settings.setdefault(
                                         "output_format", "ulaw_8000"
+                                    )
+
+                                # Fold in any humanization overlay (e.g. ElevenLabs
+                                # stability hint), exactly like _prefetch_tts_audio
+                                # does -- this is the rare fallback path where THIS
+                                # function performs live synthesis itself rather
+                                # than reusing _prefetch_tts_audio's already-
+                                # synthesized bytes, so without this the chunk's
+                                # tone/stability would silently diverge from every
+                                # other chunk in the turn (root cause of a real
+                                # production report: agent tone reading
+                                # inconsistent/unnatural on some responses).
+                                # Isolated try/except: a humanization failure must
+                                # never prevent this chunk's TTS request from going
+                                # out with normal settings.
+                                try:
+                                    provider_settings.update(
+                                        build_voice_settings_overlay(
+                                            tts_provider_slug, humanization_decision
+                                        )
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "[TTS] humanization overlay skipped (streaming fallback): %s",
+                                        exc,
                                     )
 
                                 # Prefer async streaming for providers that support it (Rime, ElevenLabs).

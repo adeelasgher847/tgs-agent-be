@@ -95,15 +95,35 @@ def _respond_briefly(user_text: str, mood: UserMood, stt_confidence: float) -> b
     return False
 
 
+# ElevenLabs stability is a consistency/expressiveness dial, not a per-turn
+# mood switch: 0.30-0.50 = dynamic but occasionally unstable, 0.60-0.85 =
+# consistent but can read flat/monotonous (see ElevenLabs' own conversational
+# voice design guidance). Previously this returned one of FOUR distinct
+# values keyed off a coarse, regex-based mood classifier of the CALLER's last
+# utterance -- reapplied fresh every turn. Two problems: (1) the regexes
+# misfire easily (e.g. a calm "I'd like to cancel my old plan and get a
+# refund" hits both the FRUSTRATED and ANGRY keyword lists on a completely
+# neutral request), so the stability value could jump around turn-to-turn for
+# reasons unrelated to actual caller sentiment -- read by callers as
+# inconsistent/unnatural tone, not "sensible variation"; (2) ANGRY/FRUSTRATED/
+# URGENT previously mapped to the LOWEST (most dynamic/least stable) value,
+# which is backwards for de-escalation -- a stressed caller benefits from a
+# calmer, STEADIER agent voice, not a more variable one.
+#
+# Fixed to one deliberate baseline for the vast majority of turns (neutral/
+# happy/sad all share it -- per ElevenLabs guidance, pick one point on the
+# dial for your agent's personality and stay there), with a single,
+# genuinely-exceptional override for unmistakable caller distress: slightly
+# higher/steadier, not lower, since a calmer delivery is what actually helps
+# de-escalate rather than mirroring instability back at the caller.
+_TTS_STABILITY_DEFAULT = 0.50
+_TTS_STABILITY_CALMING = 0.58
+
+
 def _tts_stability_for_mood(mood: UserMood) -> float | None:
-    """Slightly lower = more variable prosody; higher = calmer. For future ElevenLabs mapping."""
     if mood in (UserMood.ANGRY, UserMood.FRUSTRATED, UserMood.URGENT):
-        return 0.42
-    if mood in (UserMood.SAD,):
-        return 0.55
-    if mood in (UserMood.HAPPY,):
-        return 0.50
-    return 0.48
+        return _TTS_STABILITY_CALMING
+    return _TTS_STABILITY_DEFAULT
 
 
 def build_turn_context(
