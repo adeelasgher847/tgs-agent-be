@@ -926,6 +926,21 @@ class TtsStreamMixin:
                                 self._prev_tts_tail = b""
                                 return
 
+                            # `prefetched_bytes` was an unconsumed/partially-
+                            # consumed async iterator (e.g. Hume's
+                            # async_stream_synthesize output) that streaming
+                            # just failed to fully drain -- it is NOT valid
+                            # batch audio and must never be reused as
+                            # `audio_bytes` below (that async_generator object
+                            # is truthy and has no len(), so the fade-in call
+                            # a few lines down would crash with "object of
+                            # type 'async_generator' has no len()" instead of
+                            # actually falling back). Force a real, fresh
+                            # non-streaming resynthesis via generate_mulaw_tts
+                            # instead of pretending the failed stream is bytes.
+                            if _is_prefetched_iter:
+                                _use_prefetched = False
+
                     # Generate TTS audio (Google TTS auto-detects SSML)
                     if self._tts_cancel.is_set() or not self.stream_sid:
                         self._prev_tts_tail = b""
