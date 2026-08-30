@@ -13357,6 +13357,9 @@ components:
         ab_variant:
           type: string
           nullable: true
+        cost:
+          type: number
+          nullable: true
       type: object
       required:
       - call_id

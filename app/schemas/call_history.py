@@ -39,6 +39,7 @@ class CallHistoryItem(BaseModel):
     started_at: datetime | None
     ended_at: datetime | None
     ab_variant: str | None = None
+    cost: float | None = None
 
 
 class CallHistoryList(BaseModel):

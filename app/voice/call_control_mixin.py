@@ -2,6 +2,7 @@
 Call Control Mixin for BidirectionalStreamHandler.
 Handles call termination (goodbye, voicemail), transfer routing, and transcript recording.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -16,7 +17,9 @@ from app.routers.general_websocket import broadcast_call_status_update
 from app.services.call_session_service import call_session_service
 from app.services.transcript_service import transcript_service
 from app.services.twilio_service import twilio_service
-from app.services.voice_screening_qualification_service import apply_resume_candidate_status_after_voice_screening
+from app.services.voice_screening_qualification_service import (
+    apply_resume_candidate_status_after_voice_screening,
+)
 from app.utils.ssml_utils import strip_ssml_tags
 from app.utils.voice_twilio_utils import (
     get_twilio_credentials_for_call,
@@ -55,7 +58,7 @@ class CallControlMixin:
         """
         Check if transcript contains goodbye words and end call if detected.
         Returns True if call was ended, False otherwise.
-        
+
         Goodbye keywords detected:
         - thanks for calling
         - thank you for calling
@@ -69,7 +72,7 @@ class CallControlMixin:
         """
         if self._call_ended:
             return False  # Already ended
-        
+
         # Goodbye keywords/phrases (case-insensitive)
         goodbye_keywords = [
             "bye",
@@ -83,19 +86,19 @@ class CallControlMixin:
             "thanks bye",
             "thank you bye",
             "we're done",
-            "we're finished"
+            "we're finished",
         ]
-        
+
         # Convert transcript to lowercase for case-insensitive matching
         transcript_lower = transcript.lower().strip()
-        
+
         # Check if any goodbye keyword/phrase is present in transcript
         for keyword in goodbye_keywords:
             if keyword in transcript_lower:
                 try:
                     # Mark as ended to prevent multiple calls
                     self._call_ended = True
-                    
+
                     # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
                         updated = call_session_service.update_call_session_status(
@@ -106,7 +109,7 @@ class CallControlMixin:
                         )
                         if updated:
                             self.call_session = updated
-                    
+
                     # End Twilio call with DB-derived credentials (no env fallback).
                     if self.call_sid and self.call_session:
                         try:
@@ -124,7 +127,7 @@ class CallControlMixin:
                                 self.call_session.id if self.call_session else None,
                                 end_err,
                             )
-                    
+
                     # Broadcast call ended event
                     if self.call_session:
                         try:
@@ -139,22 +142,24 @@ class CallControlMixin:
                                     "event": "goodbye_detected",
                                     "detected_phrase": keyword,
                                     "transcript": transcript,
-                                    "reason": "User said goodbye"
-                                }
+                                    "reason": "User said goodbye",
+                                },
                             )
                         except Exception as e:
-                            logger.debug(f"WebSocket broadcast failed after goodbye: {e}")
+                            logger.debug(
+                                f"WebSocket broadcast failed after goodbye: {e}"
+                            )
 
                     # Shut down STT + LLM + TTS and signal the main loop to exit
                     asyncio.create_task(self._full_shutdown())
                     return True
-                    
+
                 except Exception as e:
                     logger.error(f"Error ending call after goodbye: {e}", exc_info=True)
                     return False
-        
+
         return False
-    
+
     async def _end_call_after_agent_request(self):
         """End the call when agent response contained [END_CALL] (after TTS has played).
 
@@ -182,8 +187,12 @@ class CallControlMixin:
             if self.call_session:
                 if getattr(self, "_pending_resume_screening_qualify", False):
                     try:
-                        apply_resume_candidate_status_after_voice_screening(self.db, self.call_session)
-                    except Exception as qual_exc:  # pragma: no cover - non-blocking for hangup
+                        apply_resume_candidate_status_after_voice_screening(
+                            self.db, self.call_session
+                        )
+                    except (
+                        Exception
+                    ) as qual_exc:  # pragma: no cover - non-blocking for hangup
                         logger.warning(
                             "Voice screening qualify failed (session=%s): %s",
                             self.call_session.id,
@@ -253,7 +262,11 @@ class CallControlMixin:
 
             self._call_ended = True
             route = getattr(self.agent, "transfer_route", None) if self.agent else None
-            if not self.call_session or not route or getattr(route, "is_deleted", False):
+            if (
+                not self.call_session
+                or not route
+                or getattr(route, "is_deleted", False)
+            ):
                 logger.warning(
                     "[TRANSFER_CALL] skipped: missing call_session or transfer_route "
                     "(session=%s)",
@@ -395,7 +408,7 @@ class CallControlMixin:
             asyncio.create_task(self._full_shutdown())
         except Exception as e:
             logger.error("Error during human transfer: %s", e, exc_info=True)
-    
+
     def _resolve_flow(self) -> Any:
         """Resolve CallFlow with tenant-scoped filtering to prevent cross-tenant object access."""
         flow = getattr(self, "call_flow", None)
@@ -478,12 +491,17 @@ class CallControlMixin:
 
                     # If action is leave_message, play voicemail message if configured
                     if voicemail_action == "leave_message" and flow:
-                        voicemail_msg = (getattr(flow, "voicemail_message", None) or "").strip()
+                        voicemail_msg = (
+                            getattr(flow, "voicemail_message", None) or ""
+                        ).strip()
                         if voicemail_msg:
                             try:
                                 await self._play_tts_message(voicemail_msg)
                             except Exception as tts_err:
-                                logger.warning("Could not play voicemail message before hangup: %s", tts_err)
+                                logger.warning(
+                                    "Could not play voicemail message before hangup: %s",
+                                    tts_err,
+                                )
 
                     # Use shared status updater so CallLog + inbound CRM sync hooks run reliably.
                     if self.call_session:
@@ -532,16 +550,21 @@ class CallControlMixin:
                                 },
                             )
                         except Exception as e:
-                            logger.debug(f"WebSocket broadcast failed after voicemail detection: {e}")
+                            logger.debug(
+                                f"WebSocket broadcast failed after voicemail detection: {e}"
+                            )
 
                     # Shut down STT + LLM + TTS and signal the main loop to exit
                     asyncio.create_task(self._full_shutdown())
                     return True
 
                 except Exception as e:
-                    logger.error(f"Error ending call after voicemail detection: {e}", exc_info=True)
+                    logger.error(
+                        f"Error ending call after voicemail detection: {e}",
+                        exc_info=True,
+                    )
                     return False
-        
+
         return False
 
     async def _check_and_handle_call_screener(self, transcript: str) -> bool:
@@ -576,7 +599,9 @@ class CallControlMixin:
             if match:
                 # Check for negation immediately preceding the match (e.g. "not a screening service")
                 start_pos = match.start()
-                preceding_text = transcript_lower[max(0, start_pos - 30):start_pos].strip()
+                preceding_text = transcript_lower[
+                    max(0, start_pos - 30) : start_pos
+                ].strip()
                 if re.search(
                     r"\b(?:not|no|never|isn't|aren't|wasn't|don't|doesn't)(?:\s+(?:a|an|using\s+a|using))?\s*$",
                     preceding_text,
@@ -606,8 +631,10 @@ class CallControlMixin:
 
                         if getattr(self, "call_sid", None) and self.call_session:
                             try:
-                                account_sid, auth_token = get_twilio_credentials_for_call(
-                                    self.db, self.call_session
+                                account_sid, auth_token = (
+                                    get_twilio_credentials_for_call(
+                                        self.db, self.call_session
+                                    )
                                 )
                                 twilio_service.end_call_with_credentials(
                                     self.call_sid, account_sid, auth_token
@@ -629,7 +656,9 @@ class CallControlMixin:
                                     metadata={
                                         "call_sid": getattr(self, "call_sid", None),
                                         "stream_sid": getattr(self, "stream_sid", None),
-                                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                                        "timestamp": datetime.now(
+                                            timezone.utc
+                                        ).isoformat(),
                                         "message": "call_ended",
                                         "event": "call_screener_detected",
                                         "detected_phrase": keyword,
@@ -638,13 +667,20 @@ class CallControlMixin:
                                     },
                                 )
                             except Exception as e:
-                                logger.debug("WebSocket broadcast failed after call screening hang up: %s", e)
+                                logger.debug(
+                                    "WebSocket broadcast failed after call screening hang up: %s",
+                                    e,
+                                )
 
                         asyncio.create_task(self._full_shutdown())
                         return True
 
                     except Exception as e:
-                        logger.error("Error ending call after call screener detection: %s", e, exc_info=True)
+                        logger.error(
+                            "Error ending call after call screener detection: %s",
+                            e,
+                            exc_info=True,
+                        )
                         return False
                 else:
                     return False
@@ -886,9 +922,7 @@ class CallControlMixin:
                                     "Could not end Twilio call with DB credentials "
                                     "(call_sid=%s, session=%s): %s",
                                     self.call_sid,
-                                    self.call_session.id
-                                    if self.call_session
-                                    else None,
+                                    self.call_session.id if self.call_session else None,
                                     end_err,
                                 )
 
@@ -898,12 +932,8 @@ class CallControlMixin:
                                     call_session_id=str(self.call_session.id),
                                     status="completed",
                                     metadata={
-                                        "call_sid": getattr(
-                                            self, "call_sid", None
-                                        ),
-                                        "stream_sid": getattr(
-                                            self, "stream_sid", None
-                                        ),
+                                        "call_sid": getattr(self, "call_sid", None),
+                                        "stream_sid": getattr(self, "stream_sid", None),
                                         "timestamp": datetime.now(
                                             timezone.utc
                                         ).isoformat(),
@@ -933,9 +963,7 @@ class CallControlMixin:
 
         return False
 
-    async def _check_and_handle_compliance_monitoring(
-        self, transcript: str
-    ) -> None:
+    async def _check_and_handle_compliance_monitoring(self, transcript: str) -> None:
         """Monitor conversation against compliance policies and flag violations in metadata."""
         if not transcript or not transcript.strip():
             return
@@ -995,9 +1023,7 @@ class CallControlMixin:
                     flag_modified(self.call_session, "call_metadata")
                     self.db.commit()
                 except Exception as db_err:
-                    logger.debug(
-                        "Failed to persist compliance metadata: %s", db_err
-                    )
+                    logger.debug("Failed to persist compliance metadata: %s", db_err)
 
     async def handle_dtmf_message(self, message: dict) -> None:
         """Handle incoming WebSocket DTMF event with debounce buffering and limit enforcement."""
@@ -1073,10 +1099,8 @@ class CallControlMixin:
 
                     if self.call_sid and self.call_session:
                         try:
-                            account_sid, auth_token = (
-                                get_twilio_credentials_for_call(
-                                    self.db, self.call_session
-                                )
+                            account_sid, auth_token = get_twilio_credentials_for_call(
+                                self.db, self.call_session
                             )
                             twilio_service.end_call_with_credentials(
                                 self.call_sid, account_sid, auth_token
@@ -1094,9 +1118,7 @@ class CallControlMixin:
                                 metadata={
                                     "call_sid": self.call_sid,
                                     "stream_sid": self.stream_sid,
-                                    "timestamp": datetime.now(
-                                        timezone.utc
-                                    ).isoformat(),
+                                    "timestamp": datetime.now(timezone.utc).isoformat(),
                                     "message": "call_ended",
                                     "event": "dtmf_limit_exceeded",
                                     "reason": "DTMF input limit exceeded",
@@ -1155,9 +1177,7 @@ class CallControlMixin:
         task = getattr(self, "_silence_watchdog_task", None)
         if task and not task.done():
             task.cancel()
-        self._silence_watchdog_task = asyncio.create_task(
-            self._silence_watchdog_loop()
-        )
+        self._silence_watchdog_task = asyncio.create_task(self._silence_watchdog_loop())
 
     async def _silence_watchdog_loop(self) -> None:
         """Background loop that plays silence reminders and terminates after final timeout."""
@@ -1174,9 +1194,7 @@ class CallControlMixin:
             reminder_retries = (
                 reminder_retries_raw if reminder_retries_raw is not None else 1
             )
-            end_call_after_reminder_raw = getattr(
-                flow, "end_call_after_reminder", 10
-            )
+            end_call_after_reminder_raw = getattr(flow, "end_call_after_reminder", 10)
             end_call_after_reminder = (
                 end_call_after_reminder_raw
                 if end_call_after_reminder_raw is not None
@@ -1189,8 +1207,15 @@ class CallControlMixin:
                     await asyncio.sleep(float(silence_timeout))
                     if getattr(self, "_call_ended", False):
                         break
-                    # If TTS is currently playing, skip reminder this tick
-                    if getattr(self, "_is_tts_playing", False):
+                    # If agent is generating response or TTS is playing, skip reminder this tick
+                    _llm_task = getattr(self, "_llm_response_task", None)
+                    _is_busy = (
+                        getattr(self, "_is_tts_playing", False)
+                        or getattr(self, "_turn_response_started", False)
+                        or getattr(self, "is_speaking", False)
+                        or (_llm_task is not None and not _llm_task.done())
+                    )
+                    if _is_busy:
                         await asyncio.sleep(1)
                         continue
 
@@ -1222,7 +1247,14 @@ class CallControlMixin:
                     await asyncio.sleep(float(end_call_after_reminder))
                     if getattr(self, "_call_ended", False):
                         break
-                    if getattr(self, "_is_tts_playing", False):
+                    _llm_task = getattr(self, "_llm_response_task", None)
+                    _is_busy = (
+                        getattr(self, "_is_tts_playing", False)
+                        or getattr(self, "_turn_response_started", False)
+                        or getattr(self, "is_speaking", False)
+                        or (_llm_task is not None and not _llm_task.done())
+                    )
+                    if _is_busy:
                         await asyncio.sleep(1)
                         continue
 
@@ -1233,13 +1265,11 @@ class CallControlMixin:
                     try:
                         self._call_ended = True
                         if self.call_session:
-                            updated = (
-                                call_session_service.update_call_session_status(
-                                    self.db,
-                                    self.call_session.id,
-                                    "completed",
-                                    ended_reason="Silence timeout after reminders",
-                                )
+                            updated = call_session_service.update_call_session_status(
+                                self.db,
+                                self.call_session.id,
+                                "completed",
+                                ended_reason="Silence timeout after reminders",
                             )
                             if updated:
                                 self.call_session = updated
@@ -1291,9 +1321,7 @@ class CallControlMixin:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(
-                f"Unexpected error in silence watchdog: {e}", exc_info=True
-            )
+            logger.error(f"Unexpected error in silence watchdog: {e}", exc_info=True)
         finally:
             self._silence_retry_count = 0
 
@@ -1322,20 +1350,14 @@ class CallControlMixin:
             if getattr(self, "_call_ended", False):
                 return
 
-            logger.info(
-                "Max call duration (%ss) reached — ending call", max_seconds
-            )
+            logger.info("Max call duration (%ss) reached — ending call", max_seconds)
             flow = self._resolve_flow()
-            departure_msg = (
-                getattr(flow, "max_duration_message", None) or ""
-            ).strip()
+            departure_msg = (getattr(flow, "max_duration_message", None) or "").strip()
             if departure_msg:
                 try:
                     await self._play_tts_message(departure_msg)
                 except Exception as tts_err:
-                    logger.warning(
-                        "Error playing max duration message: %s", tts_err
-                    )
+                    logger.warning("Error playing max duration message: %s", tts_err)
 
             self._call_ended = True
             if self.call_session:
@@ -1388,7 +1410,7 @@ class CallControlMixin:
             logger.error(
                 f"Unexpected error in max duration watchdog: {e}", exc_info=True
             )
-    
+
     async def _add_to_transcript(
         self,
         role: str,
@@ -1402,7 +1424,7 @@ class CallControlMixin:
         try:
             if not self.call_session:
                 return
-            
+
             # Strip SSML tags before saving to transcript (keep only clean text)
             clean_message = strip_ssml_tags(message)
 
@@ -1413,7 +1435,9 @@ class CallControlMixin:
             if role == "agent" and message_type in {"agent_response", "greeting"}:
                 user_text_meta = None
                 if message_metadata:
-                    user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
+                    user_text_meta = message_metadata.get(
+                        "user_text"
+                    ) or message_metadata.get("query")
                 if self._is_duplicate_agent_line(user_text_meta, clean_message):
                     logger.info(
                         "TranscriptDedupe: skipping duplicate agent line (type=%s, msg=%r)",
@@ -1446,11 +1470,14 @@ class CallControlMixin:
             # Only speech turns (client/agent) are useful for live analysis — skip system
             # messages, greeting meta, etc.
             if role in ("client", "agent") and message_type in (
-                "speech", "agent_response", "greeting"
+                "speech",
+                "agent_response",
+                "greeting",
             ):
                 try:
                     import json as _json
                     from app.utils.redis_client import get_redis
+
                     _redis = get_redis()
                     if _redis is not None:
                         _key = f"call_transcript:room_{self.call_session.id}"
@@ -1465,14 +1492,20 @@ class CallControlMixin:
             if role == "agent" and message_type in {"agent_response", "greeting"}:
                 user_text_meta = None
                 if message_metadata:
-                    user_text_meta = message_metadata.get("user_text") or message_metadata.get("query")
+                    user_text_meta = message_metadata.get(
+                        "user_text"
+                    ) or message_metadata.get("query")
                 self._remember_agent_turn(user_text_meta, clean_message)
 
             # Keep in-memory history cache in sync so generate_and_stream_response
             # never needs to re-parse the call_transcript JSON.
-            if role in ("client", "agent") and message_type not in ("greeting", "system", "status"):
+            if role in ("client", "agent") and message_type not in (
+                "greeting",
+                "system",
+                "status",
+            ):
                 self._conversation_history_cache.append((role, clean_message))
-            
+
             if not defer_post_write:
                 # Legacy denormalized transcript payload used by older read paths.
                 conversation = transcript_service.get_conversation_array(
@@ -1481,7 +1514,9 @@ class CallControlMixin:
                 self.call_session.call_transcript = conversation
                 self.db.commit()
 
-            from app.services.call_session_contact_state import sync_contact_intake_after_message
+            from app.services.call_session_contact_state import (
+                sync_contact_intake_after_message,
+            )
 
             sync_contact_intake_after_message(
                 self.db,
@@ -1492,8 +1527,11 @@ class CallControlMixin:
             try:
                 self.db.refresh(self.call_session)
             except Exception as exc:
-                logger.debug("Failed to refresh call_session %s after transcript update: %s", self.call_session.id, exc)
+                logger.debug(
+                    "Failed to refresh call_session %s after transcript update: %s",
+                    self.call_session.id,
+                    exc,
+                )
 
         except Exception as e:
             logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)
-    

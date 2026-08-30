@@ -80,8 +80,8 @@ class TestTwilioBracketTagPromptConsistency:
         assert captured, "LLM must have been invoked"
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_base_prompt_google_no_contradiction(self):
         h = _base_handler()
@@ -98,19 +98,21 @@ class TestTwilioBracketTagPromptConsistency:
 
     def test_custom_system_prompt_elevenlabs_no_contradiction(self):
         h = _base_handler()
-        h.agent.system_prompt = "You help schedule appointments."
+        h.agent.system_prompt = "Custom instructions for this agent."
+        h.agent.model.system_prompt = None
         h.agent.tts_provider.slug = "elevenlabs"
         captured, spy = _capture_twilio_system_prompt(h)
         self._run(h, spy)
 
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_custom_system_prompt_google_no_contradiction(self):
         h = _base_handler()
-        h.agent.system_prompt = "You help schedule appointments."
+        h.agent.system_prompt = "Custom instructions for this agent."
+        h.agent.model.system_prompt = None
         h.agent.tts_provider.slug = "google"
         captured, spy = _capture_twilio_system_prompt(h)
         self._run(h, spy)
@@ -123,15 +125,15 @@ class TestTwilioBracketTagPromptConsistency:
     def test_model_system_prompt_elevenlabs_no_contradiction(self):
         h = _base_handler()
         h.agent.system_prompt = None
-        h.agent.model.system_prompt = "Follow the recruiting script."
+        h.agent.model.system_prompt = "Model instructions for this agent."
         h.agent.tts_provider.slug = "elevenlabs"
         captured, spy = _capture_twilio_system_prompt(h)
         self._run(h, spy)
 
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_model_system_prompt_google_no_contradiction(self):
         h = _base_handler()
@@ -239,8 +241,8 @@ class TestLiveKitBracketTagPromptConsistency:
         assert captured
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_base_prompt_google_no_generic_tag_line_needed(self, monkeypatch):
         """LiveKit's base path has no generic 'NO BRACKET TAGS' line at all
@@ -267,8 +269,8 @@ class TestLiveKitBracketTagPromptConsistency:
 
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_custom_system_prompt_google_no_contradiction(self, monkeypatch):
         h = _fake_livekit_handler(
@@ -293,8 +295,8 @@ class TestLiveKitBracketTagPromptConsistency:
 
         sp = captured[0]
         _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER in sp
-        assert GENERIC_NO_TAG_MARKER not in sp
+        assert ELEVEN_TAG_MARKER not in sp
+        assert GENERIC_NO_TAG_MARKER in sp
 
     def test_model_system_prompt_google_no_contradiction(self, monkeypatch):
         h = _fake_livekit_handler(

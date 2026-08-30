@@ -90,6 +90,10 @@ class VoiceTurnMetrics:
         self.generation_start_mono = now
         self.generation_anchor_mono = now
         self.prompt_start_mono = now
+        self.rag_start_mono = None
+        self.rag_end_mono = None
+        self.prompt_ready_mono = None
+        self.llm_request_mono = None
         self.turn_llm_first_token_mono = None
         self.turn_first_tts_queued_mono = None
         self.tts_first_audio_mono = None

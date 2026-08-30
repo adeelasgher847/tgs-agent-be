@@ -27,7 +27,7 @@ ENTRY_NODE_TYPE = "greeting"
 DEFAULT_HANDLE = "default"
 
 
-def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+def validate_graph(flow_data: Dict[str, Any] | str | None) -> List[Dict[str, Any]]:
     """Validate a flow graph. Returns a list of error dicts (empty if valid).
 
     Checks: exactly one ``greeting`` node, a valid ``entry_node_id`` pointing
@@ -36,13 +36,63 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     node has at least one outgoing edge.
     """
     errors: List[Dict[str, Any]] = []
-    nodes = flow_data.get("nodes") or []
-    edges = flow_data.get("edges") or []
+
+    if flow_data is None:
+        errors.append(
+            {
+                "code": "empty_graph",
+                "message": "Flow must contain at least one node",
+                "node_id": None,
+            }
+        )
+        return errors
+
+    if isinstance(flow_data, str):
+        try:
+            import json
+
+            flow_data = json.loads(flow_data)
+        except Exception:
+            errors.append(
+                {
+                    "code": "invalid_flow_data",
+                    "message": "Flow data is not valid JSON",
+                    "node_id": None,
+                }
+            )
+            return errors
+
+    if not isinstance(flow_data, dict):
+        errors.append(
+            {
+                "code": "invalid_flow_data",
+                "message": "Flow data must be an object",
+                "node_id": None,
+            }
+        )
+        return errors
+
+    raw_nodes = flow_data.get("nodes")
+    if not isinstance(raw_nodes, list):
+        raw_nodes = []
+
+    raw_edges = flow_data.get("edges")
+    if not isinstance(raw_edges, list):
+        raw_edges = []
 
     node_by_id: Dict[str, Dict[str, Any]] = {}
-    for node in nodes:
+    for node in raw_nodes:
+        if not isinstance(node, dict):
+            errors.append(
+                {
+                    "code": "invalid_node",
+                    "message": "Node must be an object with 'id', 'type', and 'data'",
+                    "node_id": str(node) if node is not None else None,
+                }
+            )
+            continue
         node_id = node.get("id")
-        if node_id is None:
+        if node_id is None or not isinstance(node_id, str):
             errors.append(
                 {
                     "code": "invalid_node",
@@ -84,7 +134,11 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
         )
 
     entry_node_id = flow_data.get("entry_node_id")
-    entry_node = node_by_id.get(entry_node_id) if entry_node_id else None
+    entry_node = (
+        node_by_id.get(entry_node_id)
+        if (entry_node_id and isinstance(entry_node_id, str))
+        else None
+    )
     if not entry_node_id:
         errors.append(
             {
@@ -112,10 +166,24 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
 
     seen_handles: Dict[str, set] = {node_id: set() for node_id in node_by_id}
     adjacency: Dict[str, List[str]] = {node_id: [] for node_id in node_by_id}
-    for edge in edges:
+    for edge in raw_edges:
+        if not isinstance(edge, dict):
+            errors.append(
+                {
+                    "code": "invalid_edge",
+                    "message": "Edge must be an object with 'source' and 'target'",
+                    "node_id": None,
+                }
+            )
+            continue
         source = edge.get("source")
         target = edge.get("target")
-        if source not in node_by_id or target not in node_by_id:
+        if (
+            not source
+            or not target
+            or source not in node_by_id
+            or target not in node_by_id
+        ):
             errors.append(
                 {
                     "code": "invalid_edge",
@@ -125,6 +193,8 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
             )
             continue
         handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if not isinstance(handle, str):
+            handle = str(handle)
         if handle in seen_handles[source]:
             errors.append(
                 {
@@ -197,7 +267,7 @@ def validate_graph(flow_data: Dict[str, Any]) -> List[Dict[str, Any]]:
     return errors
 
 
-def compile_graph(flow_data: Dict[str, Any]) -> Dict[str, Any]:
+def compile_graph(flow_data: Dict[str, Any] | str | None) -> Dict[str, Any]:
     """Compile raw flow_data into the pre-compiled executor lookup.
 
     Returns ``{node_id: {"type": str, "data": dict, "next_nodes": {handle:
@@ -212,16 +282,46 @@ def compile_graph(flow_data: Dict[str, Any]) -> Dict[str, Any]:
     ``FlowExecutor.next_node_id``), matching the ticket's per-node-type
     executor logic table.
     """
-    nodes = flow_data.get("nodes") or []
-    edges = flow_data.get("edges") or []
+    if flow_data is None:
+        return {}
+    if isinstance(flow_data, str):
+        try:
+            import json
+
+            flow_data = json.loads(flow_data)
+        except Exception:
+            return {}
+    if not isinstance(flow_data, dict):
+        return {}
+
+    raw_nodes = flow_data.get("nodes")
+    nodes = (
+        [
+            n
+            for n in raw_nodes
+            if isinstance(n, dict)
+            and n.get("id")
+            and isinstance(n.get("id"), str)
+        ]
+        if isinstance(raw_nodes, list)
+        else []
+    )
+    raw_edges = flow_data.get("edges")
+    edges = (
+        [e for e in raw_edges if isinstance(e, dict)]
+        if isinstance(raw_edges, list)
+        else []
+    )
 
     next_nodes: Dict[str, Dict[str, str]] = {node["id"]: {} for node in nodes}
     for edge in edges:
         source = edge.get("source")
         target = edge.get("target")
-        if source not in next_nodes:
+        if not source or not target or source not in next_nodes:
             continue
         handle = edge.get("sourceHandle") or DEFAULT_HANDLE
+        if not isinstance(handle, str):
+            handle = str(handle)
         if handle in next_nodes[source]:
             logger.warning(
                 "Node '%s' has duplicate outgoing edges for handle '%s'; overwriting target '%s' with '%s'",
@@ -236,8 +336,12 @@ def compile_graph(flow_data: Dict[str, Any]) -> Dict[str, Any]:
     for node in nodes:
         node_id = node["id"]
         compiled[node_id] = {
-            "type": node.get("type", ""),
-            "data": node.get("data") or {},
+            "type": node.get("type", "")
+            if isinstance(node.get("type"), str)
+            else "",
+            "data": node.get("data")
+            if isinstance(node.get("data"), dict)
+            else {},
             "next_nodes": next_nodes.get(node_id, {}),
         }
     return compiled

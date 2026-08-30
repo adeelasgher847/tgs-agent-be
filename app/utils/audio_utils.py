@@ -276,7 +276,7 @@ def ulaw_to_linear_sample(ulaw_byte: int) -> int:
     sign = ulaw_byte & 0x80
     exponent = (ulaw_byte >> 4) & 0x07
     mantissa = ulaw_byte & 0x0F
-    sample = ((mantissa << 3) + ULAW_BIAS) << exponent
+    sample = (((mantissa << 3) + ULAW_BIAS) << exponent) - ULAW_BIAS
     return -sample if sign else sample
 
 

@@ -170,7 +170,7 @@ class TtsSettings(BaseModel):
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
     )
     enable_audio_tags: bool = Field(
-        default=True, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
+        default=False, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
     )
     cloud_endpoint: str = Field(default="", validation_alias="CLOUD_TTS_ENDPOINT")
     google_voice_name: str = Field(default="", validation_alias="GOOGLE_TTS_VOICE_NAME")
@@ -508,8 +508,11 @@ class Settings(BaseSettings):
     # Symmetric encryption key for OIDC client secrets (Fernet).
     SSO_ENCRYPTION_KEY: str = ""
     # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
-    # ([breathes], [pause], [excited], [sad], …). Set False if your TTS model reads brackets out loud.
-    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = True
+    # ([breathes], [pause], [excited], [sad], …). Defaults to False because
+    # ElevenLabs Flash/Turbo/Multilingual conversational models do not parse
+    # bracket audio tags and read them aloud as literal words; set True to
+    # opt back in for a model/voice combination that does support them.
+    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = False
 
     # HubSpot CRM OAuth (app/services/hubspot_service.py).
     # client_id/client_secret kept here as local-dev fallbacks only — in
@@ -721,29 +724,36 @@ class Settings(BaseSettings):
     # Deepgram fires many more partials than classic Google STT. Running LLM on every
     # interim → double replies + TTS "breaks." Default: final STT only (one reply per
     # utterance). Set True for lower first-token latency at the cost of stability.
-    VOICE_ENABLE_INTERIM_LLM: bool = True
+    VOICE_ENABLE_INTERIM_LLM: bool = False
     # When interim LLM is enabled, these gates reduce junk triggers ("I'm", "Do you", …)
-    VOICE_MIN_INTERIM_WORDS: int = 2
-    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.14
+    VOICE_MIN_INTERIM_WORDS: int = 4
+    VOICE_MIN_INTERIM_CONFIDENCE: float = 0.52
     # Inbound MULAW → linear RMS: frames above this count as "speech" for user-pickup detection.
     # Lower = softer voices register sooner (e.g. 60–70); higher = stricter, needs louder speech
     # (legacy default was 100). Too low picks up line noise.
-    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 20
+    VOICE_MIN_AUDIO_RMS_FOR_PICKUP: int = 70
     # Drop Deepgram final transcripts below this (0.0–1.0). Default slightly below 0.30 so
     # quiet/soft speech is not rejected as often; too low adds garbage.
-    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.15
+    VOICE_STT_MIN_FINAL_CONFIDENCE: float = 0.26
     # Optional adaptive fallback: accept lower-confidence finals when they still look like
     # real speech (multi-word, alpha content). Helps callers with soft volume mid-call.
     VOICE_STT_ENABLE_SOFT_FINAL_FALLBACK: bool = True
-    VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.12
+    VOICE_STT_SOFT_MIN_FINAL_CONFIDENCE: float = 0.16
     VOICE_STT_SOFT_MIN_WORDS: int = 2
     # Barge-in (user talks over agent): require at least this many STT words while TTS plays.
     # Default 2 filters phantom 1-word Deepgram hits ("uh", noise artefacts) on silence.
     VOICE_BARGE_IN_MIN_WORDS: int = 2
     # Min STT confidence when word count >= VOICE_BARGE_IN_MIN_WORDS.
+    # Shared default used by the browser/LiveKit path, which has native WebRTC
+    # echo cancellation and can safely stay sensitive to real barge-ins.
     VOICE_BARGE_IN_MIN_CONFIDENCE: float = 0.26
     # Only used when VOICE_BARGE_IN_MIN_WORDS == 1 (one-word interrupts like "stop").
-    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.52
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W: float = 0.36
+    # Twilio Media Streams has no transport-level echo cancellation, so leaked/echoed
+    # TTS audio can produce spurious high-confidence Deepgram transcripts. This path
+    # needs a materially higher floor than the browser/LiveKit path above.
+    VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO: float = 0.70
+    VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO: float = 0.75
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the

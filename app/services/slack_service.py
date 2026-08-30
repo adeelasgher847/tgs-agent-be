@@ -22,12 +22,14 @@ from __future__ import annotations
 
 import asyncio
 import threading
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlencode
 
 import httpx
 from jose import JWTError, jwt
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -70,6 +72,10 @@ _STATE_PURPOSE = "slack_oauth_state"
 _STATE_TTL_MINUTES = 10
 
 _MAX_ERROR_LEN = 500
+
+# Timing constants for synchronizing with background ARQ generate_call_summary job
+_SUMMARY_POLL_INTERVAL_SECONDS = 0.5
+_SUMMARY_MAX_WAIT_SECONDS = 12.0
 
 
 # ─── HTTP with backoff ────────────────────────────────────────────────────────
@@ -402,19 +408,20 @@ async def list_channels(db: Session, tenant_id: uuid.UUID) -> list[dict]:
 def _resolve_channel(
     call_flow: CallFlow, integration: WorkspaceIntegration
 ) -> str | None:
-    if call_flow.slack_channel_id:
-        return call_flow.slack_channel_id
+    if call_flow.slack_channel_id and str(call_flow.slack_channel_id).strip():
+        return str(call_flow.slack_channel_id).strip()
     metadata = integration.extra_metadata or {}
-    return metadata.get("default_channel_id")
+    default_ch = metadata.get("default_channel_id")
+    if default_ch and str(default_ch).strip():
+        return str(default_ch).strip()
+    return None
 
 
 def _sentiment_and_summary(call_session: CallSession) -> tuple[str, str | None]:
     """
-    Pull the summary/sentiment computed by voice_analysis_service.analyze_call_transcript
-    (cached on call_session.call_metadata["llm_call_analysis"]). Lazily computes it
-    (serialized against the automatic ARQ job via the same pg advisory lock) if it
-    isn't cached yet — mirrors post_call_email_service._build_email_content /
-    _send_post_call_email_summary_impl.
+    Pull the full summary and sentiment computed by voice_analysis_service.analyze_call_transcript
+    (cached on call_session.call_metadata["llm_call_analysis"]). Prioritizes the complete
+    LLM analysis summary over any premature in-call transcript snippets.
     """
     analysis_data: dict = {}
     if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
@@ -423,8 +430,8 @@ def _sentiment_and_summary(call_session: CallSession) -> tuple[str, str | None]:
         )
 
     summary = (
-        call_session.transcript_summary
-        or analysis_data.get("summary")
+        analysis_data.get("summary")
+        or call_session.transcript_summary
         or "No summary available."
     )
     sentiment = analysis_data.get("sentiment")
@@ -451,7 +458,21 @@ def _safe_error_msg(exc: Exception) -> str:
     return msg[:_MAX_ERROR_LEN]
 
 
-async def _send_call_summary_async(db: Session, call_session_id: uuid.UUID) -> None:
+def _fetch_call_session(db: Session, call_session_id: uuid.UUID) -> CallSession | None:
+    """Sync helper for the post-call-summary poll loop — run via asyncio.to_thread
+    on a dedicated session so it never blocks the event loop or shares a session
+    with concurrently-running coroutines."""
+    return db.execute(
+        select(CallSession).where(CallSession.id == call_session_id)
+    ).scalar_one_or_none()
+
+
+async def _send_call_summary_async(
+    db: Session,
+    call_session_id: uuid.UUID,
+    poll_interval_seconds: float = _SUMMARY_POLL_INTERVAL_SECONDS,
+    max_wait_seconds: float = _SUMMARY_MAX_WAIT_SECONDS,
+) -> None:
     call_session = (
         db.query(CallSession).filter(CallSession.id == call_session_id).first()
     )
@@ -488,9 +509,40 @@ async def _send_call_summary_async(db: Session, call_session_id: uuid.UUID) -> N
         )
         return
 
-    # Lazily compute the transcript summary/sentiment if the automatic
-    # generate_call_summary ARQ job hasn't finished yet — serializes on the
-    # same pg advisory lock so it never races/duplicates that (paid) LLM call.
+    # Wait for the concurrent ARQ generate_call_summary background worker to finish
+    # and commit the complete LLM analysis. Polls on a dedicated session (not the
+    # caller's `db`, which isn't safe for interleaved use across awaited iterations)
+    # and off the event loop via asyncio.to_thread, since the underlying query is a
+    # blocking sync DB round-trip and this loop can run for up to ~24 iterations.
+    deadline = time.monotonic() + max_wait_seconds
+    if not (
+        call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata
+    ):
+        poll_db = SessionLocal()
+        try:
+            while not (
+                call_session.call_metadata
+                and "llm_call_analysis" in call_session.call_metadata
+            ):
+                if time.monotonic() >= deadline:
+                    break
+                await asyncio.sleep(poll_interval_seconds)
+                try:
+                    refreshed = await asyncio.to_thread(
+                        _fetch_call_session, poll_db, call_session_id
+                    )
+                except Exception as exc:
+                    logger.debug("Slack summary: poll query failed: %s", exc)
+                    refreshed = None
+                if refreshed is not None:
+                    call_session.call_metadata = refreshed.call_metadata
+                else:
+                    break
+        finally:
+            poll_db.close()
+
+    # If timeout expired and llm_call_analysis is still missing (e.g. ARQ worker was
+    # inactive/delayed), lazily compute it synchronously under advisory lock.
     if not (
         call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata
     ):
@@ -498,6 +550,10 @@ async def _send_call_summary_async(db: Session, call_session_id: uuid.UUID) -> N
             from app.services.voice_analysis_service import ensure_call_summary_locked
 
             ensure_call_summary_locked(db, call_session, raise_on_no_transcript=False)
+            try:
+                db.refresh(call_session)
+            except Exception as exc:
+                logger.debug("Slack summary: post-ensure refresh failed: %s", exc)
         except Exception:
             logger.warning(
                 "Slack summary: analysis generation failed (non-critical) session=%s",
@@ -507,7 +563,7 @@ async def _send_call_summary_async(db: Session, call_session_id: uuid.UUID) -> N
 
     summary, sentiment = _sentiment_and_summary(call_session)
 
-    phone = call_session.customer_phone_number or "Unknown"
+    phone = (call_session.customer_phone_number or "").strip() or "Web Demo Link"
     duration = call_session.duration
     duration_text = f"{duration}s" if duration is not None else "Unknown"
 
