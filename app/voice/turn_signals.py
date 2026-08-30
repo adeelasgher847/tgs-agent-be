@@ -164,3 +164,54 @@ def build_user_signals_block(ctx: TurnContext) -> str:
         f"- When inferred_mood is sad: be warm, gentle, and patient; do not be overly enthusiastic.\n"
         f"- When respond_briefly is yes: prefer very short TTS-friendly sentences."
     )
+
+
+# Trailing words that reliably signal a sentence isn't done yet -- caller paused
+# mid-clause (breath, thinking pause) rather than actually finishing their turn.
+# Mirrors the "custom endpointing rules by message content pattern" approach
+# documented by production voice platforms (e.g. Vapi's customEndpointingRules):
+# apply a longer wait specifically when the trailing text looks incomplete,
+# instead of raising the blanket silence threshold for every utterance.
+_INCOMPLETE_TRAILING_WORDS = frozenset(
+    {
+        # conjunctions
+        "and", "but", "or", "so", "because", "if", "when", "while", "as",
+        "than", "that", "which", "who", "though", "although",
+        # prepositions
+        "to", "for", "with", "in", "on", "at", "of", "from", "about",
+        "like", "into", "over", "under", "between",
+        # articles / determiners
+        "a", "an", "the", "my", "your", "our", "their", "his", "her",
+        # fillers
+        "um", "uh", "umm", "uhh", "er", "ah",
+    }
+)
+
+_TRAILING_WORD_RE = re.compile(r"[A-Za-z']+$")
+
+
+def is_utterance_likely_incomplete(text: str) -> bool:
+    """
+    True when `text` (a Deepgram speech_final transcript) reads like the
+    caller was cut off mid-thought rather than having actually finished --
+    e.g. "I wanted to ask about the pricing and" or "Can you send that to".
+
+    Deliberately conservative (few, unambiguous trailing words) to avoid
+    false positives that would delay a genuinely finished, short reply
+    like "yes" or "no thanks".
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    # A transcript ending in terminal punctuation is a strong "done" signal
+    # even if the last word would otherwise look incomplete on its own
+    # (smart_format's punctuation reflects Deepgram's own confidence here).
+    if stripped[-1] in ".!?":
+        return False
+    if stripped.endswith(","):
+        return True
+    match = _TRAILING_WORD_RE.search(stripped)
+    if not match:
+        return False
+    last_word = match.group(0).lower()
+    return last_word in _INCOMPLETE_TRAILING_WORDS

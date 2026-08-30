@@ -703,6 +703,21 @@ class Settings(BaseSettings):
     # from firing. Deepgram requires >=1000ms; only takes effect if speech_final never
     # arrives for the current utterance -- never fires early, never double-finalizes.
     DEEPGRAM_STT_UTTERANCE_END_MS: int = 1000
+    # Content-aware grace window, applied ON TOP OF the silence-based
+    # endpointing above, Twilio calls only. A blanket silence threshold
+    # can't distinguish "caller finished" from "caller paused mid-clause"
+    # (e.g. "...and pricing for the" then a breath) -- raising it further
+    # for every utterance just adds latency to genuinely finished replies.
+    # Instead: when a speech_final transcript's trailing word looks
+    # unfinished (see turn_signals.is_utterance_likely_incomplete --
+    # conjunction/preposition/article/filler, or a trailing comma), give
+    # it this many extra ms to catch a continuation before treating it as
+    # a completed turn. Mirrors production voice platforms' documented
+    # "custom endpointing rules by message content pattern" approach
+    # (e.g. Vapi's customEndpointingRules) rather than a semantic ML model,
+    # keeping this dependency-free and low-latency for the common case
+    # (complete sentences are unaffected -- 0 added delay). 0 disables it.
+    VOICE_STT_INCOMPLETE_FINAL_GRACE_MS: int = 500
     # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
     # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.

@@ -391,6 +391,18 @@ class VoiceOrchestrator:
                     else _resolve_initial_endpointing_ms()
                 )
 
+                # Twilio-only: LiveKitBrowserCallHandler has no `websocket`
+                # attribute (Twilio Media Streams is the raw-WebSocket
+                # transport; LiveKit publishes/subscribes via room tracks
+                # instead). Keeps this scoped off the demo/Share-Demo-Link
+                # path, which already reported humanization as "working
+                # fine" and shouldn't have its turn-taking timing altered.
+                _incomplete_final_grace_ms = (
+                    int(settings.VOICE_STT_INCOMPLETE_FINAL_GRACE_MS or 0)
+                    if hasattr(h, "websocket")
+                    else 0
+                )
+
                 if self._resolved_stt is not None:
                     self._stt_pipeline = SttPipeline.from_runtime_config(
                         resolved=self._resolved_stt,
@@ -400,6 +412,7 @@ class VoiceOrchestrator:
                         agent_id=h.agent_id,
                         endpointing_ms=initial_endpointing,
                         event_bus=self._stt_event_bus,
+                        incomplete_final_grace_ms=_incomplete_final_grace_ms,
                     )
                     # Start LiveKit audio subscriber for Google STT path
                     if (
@@ -418,6 +431,7 @@ class VoiceOrchestrator:
                         agent_id=h.agent_id,
                         endpointing_ms=initial_endpointing,
                         event_bus=self._stt_event_bus,
+                        incomplete_final_grace_ms=_incomplete_final_grace_ms,
                     )
 
                 ps = getattr(h, "_pipeline_session", None)
