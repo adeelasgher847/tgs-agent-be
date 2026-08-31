@@ -12,6 +12,13 @@ S3 recording where several agent turns were completely silent
 (ffprobe/volumedetect near noise floor, -40 to -70dB) at exactly the
 timestamps of longer/streamed responses, while short responses (which
 happened to take the bulk path) had normal speech levels.
+
+Note: the mirror callback itself only ENQUEUES onto
+`self._agent_mirror_queue` (see tests/voice/test_agent_mirror_keepalive.py
+for why -- it must never call the publisher directly, so the Twilio send
+path awaiting it can never be blocked/delayed by LiveKit's own pacing).
+These tests therefore assert against the queue contents, not against
+`publisher.publish_mulaw` directly.
 """
 from __future__ import annotations
 
@@ -59,10 +66,15 @@ def _twilio_handler_with_recording():
     h.websocket = MagicMock()
     h.websocket.send_json = AsyncMock()
 
-    # LiveKit recording mirror publisher -- connected and ready.
+    # LiveKit recording mirror publisher -- connected and ready. The mirror
+    # callback only enqueues (see module docstring); nothing in these tests
+    # calls publish_mulaw directly except the (separately tested) keep-alive
+    # writer loop, so it's mocked here only so _livekit_recording_mirror()
+    # doesn't early-return None.
     h._lk_agent_publisher = MagicMock()
     h._lk_agent_publisher.connected = True
     h._lk_agent_publisher.publish_mulaw = AsyncMock()
+    h._agent_mirror_queue = asyncio.Queue(maxsize=250)
 
     return h
 
@@ -82,9 +94,15 @@ async def test_streaming_branch_mirrors_every_frame_into_recording():
 
     # 3 real audio frames sent to Twilio...
     assert h.websocket.send_json.await_count == 3
-    # ...and each one must also have been mirrored into the recording publisher.
-    assert h._lk_agent_publisher.publish_mulaw.await_count == 3
-    mirrored_frames = [c.args[0] for c in h._lk_agent_publisher.publish_mulaw.await_args_list]
+    # ...and each one must also have been enqueued for the recording mirror
+    # (the keep-alive writer loop is what actually publishes these -- see
+    # test_agent_mirror_keepalive.py -- so the Twilio send path itself never
+    # touches the publisher).
+    assert h._agent_mirror_queue.qsize() == 3
+    h._lk_agent_publisher.publish_mulaw.assert_not_awaited()
+    mirrored_frames = []
+    while not h._agent_mirror_queue.empty():
+        mirrored_frames.append(h._agent_mirror_queue.get_nowait())
     assert all(f == bytes([0x10]) * MULAW_FRAME_BYTES for f in mirrored_frames)
 
 
@@ -126,11 +144,13 @@ async def test_streaming_branch_is_noop_mirror_when_publisher_absent():
 
 
 @pytest.mark.asyncio
-async def test_streaming_branch_mirror_failure_does_not_break_playback():
-    """A raising mirror callback (e.g. LiveKit publish hiccup) must never
-    disrupt live Twilio playback -- best-effort only."""
+async def test_streaming_branch_mirror_survives_full_queue():
+    """A full recording-mirror queue (e.g. the keep-alive writer has fallen
+    behind) must never disrupt live Twilio playback -- the enqueue helper
+    drops the oldest queued frame to make room rather than raising."""
     h = _twilio_handler_with_recording()
-    h._lk_agent_publisher.publish_mulaw = AsyncMock(side_effect=RuntimeError("boom"))
+    h._agent_mirror_queue = asyncio.Queue(maxsize=1)
+    h._agent_mirror_queue.put_nowait(b"\x00" * MULAW_FRAME_BYTES)  # pre-fill to capacity
 
     with patch(
         "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
@@ -142,3 +162,39 @@ async def test_streaming_branch_mirror_failure_does_not_break_playback():
         )
 
     assert h.websocket.send_json.await_count == 2
+    # Queue stayed at its cap (oldest dropped each time), never blocked/raised.
+    assert h._agent_mirror_queue.qsize() == 1
+
+
+@pytest.mark.asyncio
+async def test_streaming_branch_mirror_enqueue_never_delays_playback():
+    """Direct guard: even if the recording publisher itself would be very
+    slow to drain, the Twilio send path (which only enqueues) must not be
+    held up at all -- proving this fix's core promise end-to-end through
+    _stream_tts_chunk, not just at the mirror callback in isolation."""
+    import time as _time
+
+    h = _twilio_handler_with_recording()
+
+    async def _slow_publish(_frame):
+        await asyncio.sleep(5.0)
+
+    h._lk_agent_publisher.publish_mulaw = AsyncMock(side_effect=_slow_publish)
+
+    with patch(
+        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+    ):
+        start = _time.monotonic()
+        await asyncio.wait_for(
+            h._stream_tts_chunk(
+                "A complete sentence with real content.",
+                is_final=False,
+                prefetched_bytes=_audio_iter(3),
+            ),
+            timeout=1.0,
+        )
+        elapsed = _time.monotonic() - start
+
+    assert elapsed < 0.5
+    assert h.websocket.send_json.await_count == 3
+    h._lk_agent_publisher.publish_mulaw.assert_not_awaited()

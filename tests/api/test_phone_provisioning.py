@@ -29,7 +29,7 @@ from app.models.phone_number import NumberConfiguration, PhoneNumber
 from app.models.tenant import Tenant
 from app.core.security import decrypt_api_key, is_api_key_encrypted
 from app.schemas.agent import AgentStatusEnum, agent_to_out
-from app.services.phone_number_service import PhoneNumberService
+from app.services.phone_number_service import PhoneNumberService, phone_number_service
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +516,204 @@ class TestBindUnbind:
         assert pn.assistant_id == phone_agent.id
         pn.assistant_id = None
         db.commit()
+        db.delete(pn)
+        db.commit()
+
+
+# ---------------------------------------------------------------------------
+# Agent-status side effect on the OTHER two paths that can assign/clear a
+# number's agent (create_phone_number, update_phone_number) -- previously
+# only bind_number()/unbind_number() (POST /telephony/bind|unbind) applied
+# the "agent.status = ready/pending" side effect. A real production bug: an
+# agent assigned via either of these paths stayed at whatever status it
+# already had (e.g. "pending") despite genuinely being bound to a working
+# number.
+# ---------------------------------------------------------------------------
+
+
+class TestUpdatePhoneNumberAgentStatus:
+    def _create_number(self, db, tenant_id, phone: str) -> PhoneNumber:
+        pn = PhoneNumber(
+            phone_number=phone, tenant_id=tenant_id, provider="twilio", status="active"
+        )
+        db.add(pn)
+        db.commit()
+        db.refresh(pn)
+        return pn
+
+    def test_assigning_agent_via_generic_update_sets_ready(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        from app.schemas.phone_number import PhoneNumberUpdate
+
+        pn = self._create_number(db, phone_tenant.id, "+61400000020")
+        assert phone_agent.status == "pending"
+
+        phone_number_service.update_phone_number(
+            db,
+            pn.id,
+            phone_tenant.id,
+            PhoneNumberUpdate(agent_id=phone_agent.id),
+        )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "ready"
+
+        db.delete(pn)
+        db.commit()
+
+    def test_clearing_agent_via_generic_update_sets_pending(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        from app.schemas.phone_number import PhoneNumberUpdate
+
+        pn = self._create_number(db, phone_tenant.id, "+61400000021")
+        pn.assistant_id = phone_agent.id
+        phone_agent.status = "ready"
+        db.commit()
+
+        phone_number_service.update_phone_number(
+            db, pn.id, phone_tenant.id, PhoneNumberUpdate(agent_id=None)
+        )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "pending"
+
+        db.delete(pn)
+        db.commit()
+
+    def test_clearing_agent_does_not_downgrade_if_still_bound_to_another_number(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        """Agent has TWO numbers; reassigning one away from it must not mark
+        the agent not-ready while the other number still points at it."""
+        from app.schemas.phone_number import PhoneNumberUpdate
+
+        pn1 = self._create_number(db, phone_tenant.id, "+61400000022")
+        pn2 = self._create_number(db, phone_tenant.id, "+61400000023")
+        pn1.assistant_id = phone_agent.id
+        pn2.assistant_id = phone_agent.id
+        phone_agent.status = "ready"
+        db.commit()
+
+        phone_number_service.update_phone_number(
+            db, pn1.id, phone_tenant.id, PhoneNumberUpdate(agent_id=None)
+        )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "ready"
+
+        db.delete(pn1)
+        db.delete(pn2)
+        db.commit()
+
+    def test_reassigning_to_a_different_agent_flips_both_statuses(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        from app.schemas.phone_number import PhoneNumberUpdate
+
+        other_agent = Agent(name="Other Agent", tenant_id=phone_tenant.id, status="pending")
+        db.add(other_agent)
+        db.commit()
+        db.refresh(other_agent)
+
+        pn = self._create_number(db, phone_tenant.id, "+61400000024")
+        pn.assistant_id = phone_agent.id
+        phone_agent.status = "ready"
+        db.commit()
+
+        phone_number_service.update_phone_number(
+            db, pn.id, phone_tenant.id, PhoneNumberUpdate(agent_id=other_agent.id)
+        )
+
+        db.refresh(phone_agent)
+        db.refresh(other_agent)
+        assert phone_agent.status == "pending"
+        assert other_agent.status == "ready"
+
+        db.delete(pn)
+        db.delete(other_agent)
+        db.commit()
+
+    def test_update_without_agent_id_does_not_touch_agent_status(
+        self, phone_tenant: Tenant, phone_agent: Agent, db
+    ):
+        """Editing an unrelated field (e.g. label) must not touch agent
+        status at all when agent_id isn't part of the request."""
+        from app.schemas.phone_number import PhoneNumberUpdate
+
+        pn = self._create_number(db, phone_tenant.id, "+61400000025")
+        pn.assistant_id = phone_agent.id
+        phone_agent.status = "ready"
+        db.commit()
+
+        phone_number_service.update_phone_number(
+            db, pn.id, phone_tenant.id, PhoneNumberUpdate(label="Front desk")
+        )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "ready"
+
+        db.delete(pn)
+        db.commit()
+
+
+class TestCreatePhoneNumberAgentStatus:
+    def test_creating_number_with_agent_assigned_sets_ready(
+        self, phone_tenant: Tenant, phone_agent: Agent, db, monkeypatch
+    ):
+        """create_phone_number's own subsequent Twilio-ownership check is
+        unrelated to this fix and will raise once Twilio creds are absent --
+        the agent.status flip happens before that check, so it must have
+        already taken effect by the time the (expected, pre-existing)
+        ValueError propagates."""
+        from app.core.config import settings
+        from app.schemas.phone_number import PhoneNumberCreate
+
+        monkeypatch.setattr(settings, "TWILIO_ACCOUNT_SID", "", raising=False)
+        monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", "", raising=False)
+        assert phone_agent.status == "pending"
+
+        number = "+61400000030"
+        with pytest.raises(ValueError, match="Twilio account credentials"):
+            phone_number_service.create_phone_number(
+                db,
+                PhoneNumberCreate(
+                    phone_number=number,
+                    tenant_id=phone_tenant.id,
+                    assistant_id=phone_agent.id,
+                ),
+            )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "ready"
+
+        pn = db.query(PhoneNumber).filter(PhoneNumber.phone_number == number).first()
+        assert pn is not None
+        db.delete(pn)
+        db.commit()
+
+    def test_creating_number_without_agent_does_not_touch_any_agent_status(
+        self, phone_tenant: Tenant, phone_agent: Agent, db, monkeypatch
+    ):
+        from app.core.config import settings
+        from app.schemas.phone_number import PhoneNumberCreate
+
+        monkeypatch.setattr(settings, "TWILIO_ACCOUNT_SID", "", raising=False)
+        monkeypatch.setattr(settings, "TWILIO_AUTH_TOKEN", "", raising=False)
+
+        number = "+61400000031"
+        with pytest.raises(ValueError, match="Twilio account credentials"):
+            phone_number_service.create_phone_number(
+                db,
+                PhoneNumberCreate(phone_number=number, tenant_id=phone_tenant.id),
+            )
+
+        db.refresh(phone_agent)
+        assert phone_agent.status == "pending"
+
+        pn = db.query(PhoneNumber).filter(PhoneNumber.phone_number == number).first()
+        assert pn is not None
         db.delete(pn)
         db.commit()
 

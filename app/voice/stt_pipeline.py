@@ -28,7 +28,14 @@ from typing import Awaitable, Callable, TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.voice.stt_events import SttEventBus, SttInterimEvent, SttFinalEvent, SttErrorEvent
+from app.voice.stt_events import (
+    SttEventBus,
+    SttInterimEvent,
+    SttFinalEvent,
+    SttErrorEvent,
+    SttSpeechStartedEvent,
+)
+from app.voice.turn_signals import is_utterance_likely_incomplete
 
 if TYPE_CHECKING:
     from app.core.agent_runtime import ResolvedSttRuntime
@@ -36,6 +43,7 @@ if TYPE_CHECKING:
 
 InterimCallback = Callable[[str, float], Awaitable[None]]
 FinalCallback = Callable[[str, float], Awaitable[None]]
+SpeechStartedCallback = Callable[[], Awaitable[None]]
 
 
 class SttPipeline:
@@ -71,10 +79,16 @@ class SttPipeline:
         api_config: dict | None = None,
         event_bus: SttEventBus | None = None,
         model_id: str | None = None,
+        incomplete_final_grace_ms: int = 0,
+        on_speech_started: SpeechStartedCallback | None = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
+        # Optional -- only Deepgram Nova-3 (StreamingSTTSession) ever emits
+        # this. None for every other provider/path; guarded with a plain
+        # `if self._on_speech_started:` check at the call site below.
+        self._on_speech_started = on_speech_started
         self._call_session_id = call_session_id
         self._agent_id = agent_id
         self._endpointing_ms: int | None = endpointing_ms
@@ -85,6 +99,17 @@ class SttPipeline:
         self._api_config = api_config or {}
         self._event_bus = event_bus or SttEventBus()
         self._model_id = model_id
+        # See is_utterance_likely_incomplete / _maybe_extend_incomplete_final.
+        # 0 (default) disables this entirely -- opt-in per caller, not global,
+        # so providers/transports with their own native turn detection
+        # (Speechmatics, ElevenLabs Scribe, xAI Grok, AssemblyAI, Flux) or
+        # the LiveKit browser path are unaffected unless wired in explicitly.
+        self._incomplete_final_grace_ms = max(0, int(incomplete_final_grace_ms or 0))
+        # Result pulled ahead during a grace wait that turned out to belong
+        # to the NEXT utterance rather than a continuation of the current
+        # one -- stashed here so _reader_loop's next iteration processes it
+        # instead of silently dropping it.
+        self._pending_result: dict | None = None
 
         self._stt_session = None
         self._reader_task: asyncio.Task | None = None
@@ -118,6 +143,8 @@ class SttPipeline:
         agent_id: str | None = None,
         endpointing_ms: int | None = None,
         event_bus: SttEventBus | None = None,
+        incomplete_final_grace_ms: int = 0,
+        on_speech_started: SpeechStartedCallback | None = None,
     ) -> "SttPipeline":
         """Factory: build SttPipeline from a ResolvedSttRuntime."""
         return cls(
@@ -134,6 +161,8 @@ class SttPipeline:
             api_config=resolved.api_config,
             event_bus=event_bus,
             model_id=resolved.model_id,
+            incomplete_final_grace_ms=incomplete_final_grace_ms,
+            on_speech_started=on_speech_started,
         )
 
     @property
@@ -156,6 +185,78 @@ class SttPipeline:
     def _is_silence(self) -> bool:
         elapsed_ms = (time.monotonic() - self._last_audio_mono) * 1000
         return elapsed_ms >= self._silence_threshold_ms
+
+    async def _maybe_extend_incomplete_final(
+        self, transcript: str, confidence: float
+    ) -> tuple[str, float]:
+        """
+        If `transcript` (a fresh speech_final) looks mid-sentence (see
+        `is_utterance_likely_incomplete`), wait up to
+        `self._incomplete_final_grace_ms` for a continuation before treating
+        it as the caller's finished turn.
+
+        Only STT-session results are consumed here (no audio feed involved),
+        via the same `get_result()` queue `_reader_loop` itself drains, so
+        nothing is lost while this waits -- Deepgram keeps transcribing
+        in the background and queues further results normally. A result
+        that turns out to belong to an unrelated NEXT utterance (not a
+        continuation of this one) is stashed on `self._pending_result` for
+        `_reader_loop`'s next iteration rather than dropped.
+
+        Bounded to at most 2 extra rounds so a string of short incomplete-
+        looking fragments can't stack up unbounded latency.
+        """
+        if not is_utterance_likely_incomplete(transcript):
+            return transcript, confidence
+
+        sess = self._stt_session
+        if sess is None:
+            return transcript, confidence
+
+        merged_transcript = transcript
+        merged_confidence = confidence
+        deadline = time.monotonic() + (self._incomplete_final_grace_ms / 1000.0)
+
+        for _ in range(2):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            try:
+                result = await asyncio.wait_for(sess.get_result(), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            except asyncio.CancelledError:
+                raise
+
+            if not result or result.get("done") or result.get("error"):
+                self._pending_result = result
+                break
+
+            next_transcript = (result.get("transcript") or "").strip()
+            if not next_transcript:
+                continue
+
+            if next_transcript.startswith(merged_transcript) or merged_transcript.startswith(
+                next_transcript
+            ):
+                # Genuine continuation of the same utterance -- adopt the
+                # longer/updated version and re-check completeness.
+                if len(next_transcript) >= len(merged_transcript):
+                    merged_transcript = next_transcript
+                    merged_confidence = float(result.get("confidence") or merged_confidence)
+                if bool(result.get("is_final")) and not is_utterance_likely_incomplete(
+                    merged_transcript
+                ):
+                    break
+                continue
+
+            # Unrelated result (new utterance, interim of a different
+            # sentence) -- not a continuation. Preserve it for the next
+            # _reader_loop iteration instead of dropping it.
+            self._pending_result = result
+            break
+
+        return merged_transcript, merged_confidence
 
     # ── Session creation ───────────────────────────────────────────────────
 
@@ -269,7 +370,11 @@ class SttPipeline:
             if sess is None:
                 break
             try:
-                result = await sess.get_result()
+                if self._pending_result is not None:
+                    result = self._pending_result
+                    self._pending_result = None
+                else:
+                    result = await sess.get_result()
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -283,6 +388,21 @@ class SttPipeline:
                 continue
             if result.get("done"):
                 break
+            if result.get("speech_started"):
+                # Pure VAD onset (Deepgram Nova-3 `vad_events`) -- no
+                # transcript/confidence, so this is deliberately NOT run
+                # through _maybe_extend_incomplete_final/dedup below. Errors
+                # in the optional callback must never take down the reader
+                # loop (mirrors the try/except around on_interim/on_final).
+                try:
+                    await self._event_bus.emit(SttSpeechStartedEvent())
+                    if self._on_speech_started:
+                        await self._on_speech_started()
+                except Exception as cb_err:
+                    logger.error(
+                        "[STT] speech_started callback error: %s", cb_err, exc_info=True
+                    )
+                continue
             if result.get("error"):
                 err_msg = result.get("error", "unknown")
                 recoverable = bool(result.get("recoverable", True))
@@ -305,6 +425,11 @@ class SttPipeline:
             confidence = float(result.get("confidence") or 0.0)
 
             try:
+                if is_final and self._incomplete_final_grace_ms > 0:
+                    transcript, confidence = await self._maybe_extend_incomplete_final(
+                        transcript, confidence
+                    )
+
                 if is_final:
                     norm_key = self._normalize_final_key(transcript)
                     now_mono = time.monotonic()

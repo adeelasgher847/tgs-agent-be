@@ -27,7 +27,15 @@ SESSION_ID = uuid.uuid4()
 USER_ID = uuid.uuid4()
 
 
-def _make_call_session(*, call_flow_id=FLOW_ID, call_metadata=None, transcript_summary=None):
+def _make_call_session(
+    *,
+    call_flow_id=FLOW_ID,
+    call_metadata=None,
+    transcript_summary=None,
+    call_type="inbound",
+    from_number=None,
+    to_number=None,
+):
     session = MagicMock()
     session.id = SESSION_ID
     session.tenant_id = WORKSPACE_ID
@@ -35,6 +43,11 @@ def _make_call_session(*, call_flow_id=FLOW_ID, call_metadata=None, transcript_s
     session.call_metadata = call_metadata
     session.transcript_summary = transcript_summary
     session.user_id = USER_ID
+    # Explicit (not MagicMock-default) so _resolve_caller_display's string
+    # comparisons/concatenation behave deterministically in tests.
+    session.call_type = call_type
+    session.from_number = from_number
+    session.to_number = to_number
     return session
 
 
@@ -800,3 +813,99 @@ class TestPostCallAnalysisEmailIntegration:
         _subject, html_body = _build_email_content(call_session, call_flow)
 
         assert "Service Type" in html_body
+
+
+# ── Caller display, Recommendations removal, HappyAssist sign-off ──────────
+
+
+class TestCallerDisplaySignOffAndRecommendationsRemoval:
+    def test_web_call_type_shows_demo_link_label(self):
+        from app.services.post_call_email_service import _resolve_caller_display
+
+        call_session = _make_call_session(call_type="web", from_number=None, to_number=None)
+        assert _resolve_caller_display(call_session) == "Demo Link Call"
+
+    def test_inbound_call_shows_from_number(self):
+        from app.services.post_call_email_service import _resolve_caller_display
+
+        call_session = _make_call_session(
+            call_type="inbound", from_number="+15551234567", to_number="+15557654321"
+        )
+        assert _resolve_caller_display(call_session) == "+15551234567"
+
+    def test_outbound_call_shows_to_number(self):
+        from app.services.post_call_email_service import _resolve_caller_display
+
+        call_session = _make_call_session(
+            call_type="outbound", from_number="+15557654321", to_number="+15551234567"
+        )
+        assert _resolve_caller_display(call_session) == "+15551234567"
+
+    def test_inbound_call_missing_number_falls_back_to_unknown(self):
+        from app.services.post_call_email_service import _resolve_caller_display
+
+        call_session = _make_call_session(call_type="inbound", from_number=None)
+        assert _resolve_caller_display(call_session) == "Unknown"
+
+    def test_build_email_content_shows_phone_number_for_phone_call(self):
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={"llm_call_analysis": {"analysis": {"caller_name": "Unknown"}}},
+            call_type="inbound",
+            from_number="+15551234567",
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "+15551234567" in html_body
+        assert "+15551234567" in subject
+        assert "<strong>Caller:</strong> Unknown</p>" not in html_body
+
+    def test_build_email_content_shows_demo_link_call_for_web_call(self):
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(call_type="web")
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "Demo Link Call" in html_body
+        assert "Demo Link Call" in subject
+
+    def test_recommendations_never_appear_in_email(self):
+        """Regression: the Recommendations section must be removed entirely,
+        even when the LLM analysis includes recommendations."""
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session(
+            call_metadata={
+                "llm_call_analysis": {
+                    "analysis": {
+                        "summary": "cached",
+                        "recommendations": [
+                            "Offer a callback.",
+                            "Confirm caller's issue is resolved.",
+                        ],
+                    }
+                }
+            }
+        )
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "Recommendations" not in html_body
+        assert "Offer a callback." not in html_body
+
+    def test_sign_off_is_happyassist_not_voice_agent_team(self):
+        from app.services.post_call_email_service import _build_email_content
+
+        call_session = _make_call_session()
+        call_flow = _make_call_flow(email_summary_enabled=True)
+
+        _subject, html_body = _build_email_content(call_session, call_flow)
+
+        assert "HappyAssist Team" in html_body
+        assert "The Voice Agent Team" not in html_body

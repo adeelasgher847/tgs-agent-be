@@ -462,6 +462,24 @@ class BidirectionalStreamHandler(
         self._barge_in_dead_zone_ms: float = float(
             getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 1000) or 1000
         )
+        # Soft barge-in: Deepgram vad_events/SpeechStarted (see
+        # VoiceOrchestrator._on_speech_started -> _on_stt_speech_started
+        # below) dips TTS output volume for a short window instead of
+        # cutting playback -- confidence-free VAD onset must never hard-
+        # cancel a turn (that stays gated on classify_turn() above).
+        # Monotonic deadline; _resolve_voice_volume() (TtsStreamMixin)
+        # applies the duck gain while time.monotonic() is under it.
+        self._soft_duck_until_mono: float = 0.0
+        self._soft_duck_enabled: bool = bool(
+            getattr(settings, "VOICE_SOFT_DUCK_ENABLED", True)
+        )
+        self._soft_duck_ms: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_MS", 400) or 400
+        )
+        self._soft_duck_gain: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_GAIN", 0.35) or 0.35
+        )
+        self._soft_duck_gain = max(0.0, min(1.0, self._soft_duck_gain))
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -1248,6 +1266,26 @@ class BidirectionalStreamHandler(
             return False
         return True
 
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- only takes a low-risk
+        "soft" action (temporary TTS volume duck), never a hard cancel. The
+        real barge-in decision stays entirely on _should_barge_in_on_stt's
+        classify_turn() gating (interim/final transcript path) so ambient
+        noise/breath triggering VAD onset can't cut the agent's turn.
+        No-op when TTS isn't currently playing -- ducking silence achieves
+        nothing and would just needlessly touch shared state.
+        """
+        if not self._soft_duck_enabled or not self._is_tts_playing:
+            return
+        self._soft_duck_until_mono = time.monotonic() + (self._soft_duck_ms / 1000.0)
+        logger.debug(
+            "[Barge-in/soft] SpeechStarted -> ducking TTS output for %.0fms (gain=%.2f)",
+            self._soft_duck_ms,
+            self._soft_duck_gain,
+        )
+
     def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
         return is_pure_acoustic_filler(transcript)
@@ -1404,17 +1442,15 @@ class BidirectionalStreamHandler(
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
-                # Persist redacted client speech for post-call analysis; LLM uses original below.
-                from app.core.pii_redactor import redact_pii
-
-                transcript_for_db = redact_pii(transcript)
+                # Persist client speech as spoken. `_add_to_transcript` resolves
+                # `hipaa_enabled` from `call_flow.hipaa_compliance` and routes through
+                # `transcript_service.add_and_broadcast_message()`, which applies PHI/PII
+                # redaction via `dlp_service.redact_phi_if_hipaa()` only when HIPAA
+                # compliance is enabled for this call flow. Do not redact unconditionally
+                # here — that bypassed the HIPAA gate and masked PII on every call.
                 await self._add_to_transcript(
                     "client",
-                    (
-                        transcript_for_db
-                        if isinstance(transcript_for_db, str)
-                        else str(transcript_for_db)
-                    ),
+                    transcript,
                     "speech",
                     confidence,
                     defer_post_write=True,
@@ -1759,19 +1795,21 @@ class BidirectionalStreamHandler(
             )
         except asyncio.TimeoutError:
             logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+            fallback_trace = {"status": "timeout", "timeout": True}
         except Exception as exc:
             logger.debug("[RAG prefetch] failed: %s", exc)
-        # Fallback: empty context (LLM still runs, just without RAG)
-        tenant_uuid = self.call_session.tenant_id if self.call_session else None
-        agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = (
-            None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
-        )
-        return build_rag_context_block_with_trace(
-            user_text="",
-            tenant_id=tenant_uuid,
-            agent_id=rag_agent_scope,
-        )
+            fallback_trace = {"status": "failure", "error": str(exc)}
+        # Fallback: genuinely empty context (LLM still runs, just without
+        # RAG) -- NOT a call to build_rag_context_block_with_trace(user_text
+        # ="", ...), which routes into that function's empty-input branch
+        # and returns a block that explicitly instructs the LLM to refuse
+        # ("respond that this information is not available instead of
+        # guessing") purely because retrieval was too slow/technically
+        # failed, even when the KB genuinely has the answer. Match the
+        # browser/LiveKit path's equivalent timeout behavior
+        # (kb_retrieval_service.py): omit the block entirely rather than
+        # actively telling the LLM to deny knowledge it may actually have.
+        return "", fallback_trace
 
     async def build_system_prompt(self, user_text: str, confidence: float) -> str:
         """Public string-returning entry point — see _build_system_prompt_full
@@ -1926,24 +1964,33 @@ class BidirectionalStreamHandler(
                         ),
                     )
             except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
+                # Technical failure (retrieval didn't finish in the latency
+                # budget), NOT a semantic "no KB entries match this query"
+                # result. Previously this called build_rag_context_block_
+                # with_trace(user_text="", ...), which routes into that
+                # function's empty-input branch and returns a block that
+                # explicitly instructs the LLM: "respond that this
+                # information is not available instead of guessing" — i.e.
+                # a hard refusal directive, injected purely because
+                # retrieval was too slow, even when the KB genuinely
+                # contains the answer. The browser/LiveKit path's equivalent
+                # timeout (kb_retrieval_service.py) just proceeds with no KB
+                # context block and no explicit instruction either way —
+                # match that behavior here: omit the block entirely and let
+                # the LLM answer from conversation history/general
+                # knowledge, rather than actively telling it to refuse.
+                rag_context_block = ""
+                rag_trace = {"status": "timeout", "timeout": True}
             except Exception as e:
                 logger.error(
                     "RAG context build failed unexpectedly: %s", e, exc_info=True
                 )
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
+                # Same reasoning as the timeout branch above: a technical
+                # retrieval failure is not evidence the KB lacks the answer,
+                # so don't inject the "respond that this information is not
+                # available" refusal directive for it.
+                rag_context_block = ""
+                rag_trace = {"status": "failure", "error": str(e)}
 
         # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
         # These are agent/tenant-level and don't change during the call, so serving
@@ -2203,6 +2250,8 @@ You are {agent_name}, having a real-time phone call with a human.
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -2266,6 +2315,8 @@ These rules override any conflicting custom instructions below. Never deviate fr
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
@@ -2313,6 +2364,8 @@ These rules override any conflicting model instructions below. Never deviate fro
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}{greeting_instruction_block}
 # CONVERSATION STATE

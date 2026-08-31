@@ -168,6 +168,19 @@ class PhoneNumberService:
             )
         db.refresh(phone_number)
 
+        # Unlike bind_number() (app/routers/telephony.py's dedicated /bind
+        # endpoint), this path lets an agent be assigned right at number
+        # creation -- must apply the same "agent.status = ready" side effect
+        # bind_number does, or the agent stays stuck at whatever status it
+        # already had (e.g. pending) despite genuinely being bound to a
+        # working number. Real production bug: a number created with
+        # assistant_id set here never flipped the agent to ready.
+        if phone_number.assistant_id is not None:
+            agent = db.get(Agent, phone_number.assistant_id)
+            if agent is not None:
+                agent.status = "ready"
+                db.commit()
+
         if not settings.TWILIO_ACCOUNT_SID or not settings.TWILIO_AUTH_TOKEN:
             raise ValueError("Twilio account credentials are required to configure inbound webhooks")
 
@@ -217,9 +230,45 @@ class PhoneNumberService:
         updates = update_data.model_dump(exclude_unset=True)
         if "agent_id" in updates:
             updates["assistant_id"] = updates.pop("agent_id")
+
+        # Same "agent.status" side effect bind_number()/unbind_number() apply
+        # (app/routers/telephony.py) -- this generic edit endpoint is a
+        # second, independent way to assign/clear a number's agent, and
+        # previously never touched agent.status at all, leaving a genuinely
+        # bound agent stuck at whatever status it already had (e.g. still
+        # "pending" despite the number correctly pointing at it). Captured
+        # before applying `updates` below so we still have the OLD value to
+        # compare against.
+        old_assistant_id = pn.assistant_id
+        reassigning_agent = "assistant_id" in updates and updates["assistant_id"] != old_assistant_id
+
         for field, value in updates.items():
             setattr(pn, field, value)
         pn.updated_at = datetime.utcnow()
+
+        if reassigning_agent:
+            new_assistant_id = updates["assistant_id"]
+            if new_assistant_id is not None:
+                new_agent = db.get(Agent, new_assistant_id)
+                if new_agent is not None:
+                    new_agent.status = "ready"
+            if old_assistant_id is not None and old_assistant_id != new_assistant_id:
+                # Only downgrade the previous agent if it isn't still bound
+                # to some OTHER active number -- never wrongly mark a still-
+                # working agent as not-ready just because ONE of its numbers
+                # was reassigned elsewhere.
+                still_bound_elsewhere = db.execute(
+                    select(PhoneNumber.id).where(
+                        PhoneNumber.assistant_id == old_assistant_id,
+                        PhoneNumber.id != pn.id,
+                        PhoneNumber.status == "active",
+                    ).limit(1)
+                ).first() is not None
+                if not still_bound_elsewhere:
+                    old_agent = db.get(Agent, old_assistant_id)
+                    if old_agent is not None:
+                        old_agent.status = "pending"
+
         db.commit()
         db.refresh(pn)
         return pn

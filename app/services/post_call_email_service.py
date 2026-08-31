@@ -69,6 +69,31 @@ def _resolve_owner_email(db: Session, tenant_id: uuid.UUID) -> str | None:
     return owner.email if owner and owner.email else None
 
 
+def _resolve_caller_display(call_session: CallSession) -> str:
+    """
+    What to show under "Caller" in the post-call summary email.
+
+    Previously this used the LLM-extracted `caller_name` from call analysis,
+    which defaults to the literal string "Unknown" whenever the LLM doesn't
+    catch a caller stating their name during the call — nearly always for a
+    short/transactional call. Uses the call session's own recorded phone
+    numbers instead, which are always populated for a real phone call and
+    far more useful than an LLM guess. Demo/browser calls (`call_type ==
+    "web"`) have no phone number at all, so they get a distinct label
+    instead of a blank/"Unknown" caller.
+    """
+    call_type = (call_session.call_type or "").lower()
+    if call_type == "web":
+        return "Demo Link Call"
+    # Outbound: the agent called the customer, so the customer's number is
+    # `to_number`. Inbound (and any other/legacy call_type value): the
+    # customer's number is `from_number`, matching the majority convention
+    # used elsewhere in this codebase for resolving "the caller's number".
+    if call_type == "outbound":
+        return call_session.to_number or "Unknown"
+    return call_session.from_number or "Unknown"
+
+
 def _build_email_content(
     call_session: CallSession, call_flow: CallFlow | None
 ) -> tuple[str, str]:
@@ -76,19 +101,13 @@ def _build_email_content(
     if call_session.call_metadata and "llm_call_analysis" in call_session.call_metadata:
         analysis_data = call_session.call_metadata["llm_call_analysis"].get("analysis") or {}
 
-    caller_name = analysis_data.get("caller_name") or "Unknown caller"
+    caller_display = _resolve_caller_display(call_session)
     flow_name = call_flow.name if call_flow else "Call Flow"
-    subject = f"Call Summary — {caller_name} — {flow_name}"
+    subject = f"Call Summary — {caller_display} — {flow_name}"
 
     summary_text = call_session.transcript_summary or analysis_data.get("summary") or "No summary available."
     sentiment = analysis_data.get("sentiment")
     success_evaluation = analysis_data.get("success_evaluation")
-    recommendations = analysis_data.get("recommendations") or []
-
-    recommendations_html = ""
-    if recommendations:
-        items = "".join(f"<li>{r}</li>" for r in recommendations)
-        recommendations_html = f"<p><strong>Recommendations:</strong></p><ul>{items}</ul>"
 
     extracted_variables: dict = {}
     if call_session.call_metadata and "post_call_analysis" in call_session.call_metadata:
@@ -112,13 +131,12 @@ def _build_email_content(
     <body>
         <h2>Call Summary</h2>
         <p><strong>Call Flow:</strong> {flow_name}</p>
-        <p><strong>Caller:</strong> {caller_name}</p>
+        <p><strong>Caller:</strong> {caller_display}</p>
         <p><strong>Summary:</strong> {summary_text}</p>
         {f"<p><strong>Sentiment:</strong> {sentiment}</p>" if sentiment else ""}
         {f"<p><strong>Outcome:</strong> {success_evaluation}</p>" if success_evaluation else ""}
-        {recommendations_html}
         {extracted_details_html}
-        <p>Best regards,<br>The Voice Agent Team</p>
+        <p>Best regards,<br>HappyAssist Team</p>
     </body>
     </html>
     """

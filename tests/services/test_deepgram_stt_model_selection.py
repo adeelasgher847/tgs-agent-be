@@ -7,6 +7,7 @@ import pytest
 
 from app.services.deepgram_stt_service import DeepgramSTTService
 from app.voice.stt_pipeline import SttPipeline
+from deepgram.listen.v2.types.listen_v2connected import ListenV2Connected
 from deepgram.listen.v2.types.listen_v2fatal_error import ListenV2FatalError
 from deepgram.listen.v2.types.listen_v2turn_info import ListenV2TurnInfo
 from deepgram.listen.v2.types.listen_v2turn_info_words_item import ListenV2TurnInfoWordsItem
@@ -192,6 +193,93 @@ def _extract_on_message(session):
     while not session._results_q.empty():
         session._results_q.get_nowait()
     return captured[EventType.MESSAGE]
+
+
+# ── Real SDK envelope type (regression) ───────────────────────────────────────
+#
+# Root cause: with deepgram-sdk==6.1.1, `client.listen.v2.connect()` delivers
+# EVERY v2/listen event -- TurnInfo, FatalError, everything -- as the single
+# concrete class `ListenV2Connected` (a discriminated-union envelope; the
+# actual kind lives in its `.type` string field), never as the specific
+# `ListenV2TurnInfo`/`ListenV2FatalError` classes imported above. Confirmed by
+# feeding a real recorded Twilio call's raw MULAW audio directly at a live
+# v2/listen connection: Flux produced perfect transcripts and turn events,
+# but `on_message`'s old `isinstance(message, ListenV2TurnInfo)` check was
+# False for every single one, so they were silently dropped -- no error, no
+# log, a Twilio call that just never got a single word transcribed. The tests
+# above never caught this because they hand-construct real `ListenV2TurnInfo`/
+# `ListenV2FatalError` instances directly, which trivially satisfy their own
+# isinstance check regardless of whether that check matches what the SDK
+# actually returns. These tests instead construct `ListenV2Connected` --
+# the SDK's real envelope class -- to catch a regression back to isinstance-
+# based dispatch.
+
+
+def test_flux_end_of_turn_dispatches_from_real_sdk_envelope_type():
+    session = _make_flux_session()
+    on_message = _extract_on_message(session)
+
+    real_envelope = ListenV2Connected(
+        type="TurnInfo",
+        request_id="req-1",
+        sequence_id=1,
+        event="EndOfTurn",
+        transcript="hello there",
+        words=[{"word": "hello", "confidence": 0.9}, {"word": "there", "confidence": 0.7}],
+    )
+    on_message(real_envelope)
+
+    result = session._results_q.get_nowait()
+    assert result["transcript"] == "hello there"
+    assert result["is_final"] is True
+
+
+def test_flux_update_dispatches_from_real_sdk_envelope_type():
+    session = _make_flux_session()
+    on_message = _extract_on_message(session)
+
+    real_envelope = ListenV2Connected(
+        type="TurnInfo",
+        request_id="req-1",
+        sequence_id=1,
+        event="Update",
+        transcript="hel",
+        words=[{"word": "hel", "confidence": 0.5}],
+    )
+    on_message(real_envelope)
+
+    result = session._results_q.get_nowait()
+    assert result == {"transcript": "hel", "confidence": 0.5, "is_final": False}
+
+
+def test_flux_fatal_error_dispatches_from_real_sdk_envelope_type():
+    session = _make_flux_session()
+    on_message = _extract_on_message(session)
+
+    real_envelope = ListenV2Connected(
+        type="FatalError",
+        request_id="req-1",
+        sequence_id=1,
+        code="ERR",
+        description="boom",
+    )
+    on_message(real_envelope)
+
+    result = session._results_q.get_nowait()
+    assert result["error"] == "boom"
+    assert result["is_final"] is True
+
+
+def test_flux_non_turn_envelope_types_are_ignored_without_crashing():
+    """A future envelope kind we don't recognize (e.g. a keepalive/metadata
+    frame) must be a silent no-op, not a crash -- covers the `else: return`
+    branch alongside the two recognized `.type` values."""
+    session = _make_flux_session()
+    on_message = _extract_on_message(session)
+
+    on_message(ListenV2Connected(type="Metadata", request_id="req-1", sequence_id=1))
+
+    assert session._results_q.empty()
 
 
 # ── recreate_with_endpointing no-op for Flux ──────────────────────────────────
