@@ -546,11 +546,20 @@ async def stream_mulaw_bytes_over_twilio(
     cancel: asyncio.Event | None = None,
     prime_frames: int = 0,
     mirror_mulaw: Callable[[bytes], Awaitable[None]] | None = None,
+    frame_gain_fn: Callable[[], float] | None = None,
 ):
     """
     Send mu-law audio to Twilio as 20ms 'media' frames.
     - Sends first frame immediately (early playback).
     - Optionally pace subsequent frames by ~20ms to match realtime.
+
+    ``frame_gain_fn``, when provided, is called fresh for EVERY frame (not
+    once for the whole ``audio_bytes`` buffer) so time-sensitive gain state —
+    e.g. TtsStreamMixin's soft-duck barge-in window — takes effect on the
+    very next frame after it activates, even mid-buffer, instead of being
+    locked in before this buffer started sending. Keep whatever this
+    callback does cheap (attribute reads / monotonic-clock comparisons only)
+    since it runs at ~50 Hz for the duration of the send.
     """
     first = True
     send_interval = 0.02  # 20ms
@@ -575,6 +584,10 @@ async def stream_mulaw_bytes_over_twilio(
     for frame in iter_mulaw_20ms_frames(audio_bytes):
         if cancel and cancel.is_set():
             break
+        if frame_gain_fn is not None:
+            gain = frame_gain_fn()
+            if gain != 1.0:
+                frame = apply_volume_fade(frame, gain)
         if mirror_mulaw:
             try:
                 await mirror_mulaw(frame)

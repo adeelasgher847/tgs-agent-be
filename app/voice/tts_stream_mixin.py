@@ -297,10 +297,34 @@ class TtsStreamMixin:
         pct = max(0.0, min(100.0, pct))
         return pct / 100.0
 
-    def _resolve_voice_volume(self) -> float:
+    def _apply_soft_duck(self, gain: float) -> float:
         """
-        Resolve TTS voice volume (linear gain) from agent settings with
-        provider-aware telephony baseline leveling.
+        Scale `gain` down while a soft-duck window is active (see
+        BidirectionalStreamHandler._on_stt_speech_started, set from
+        Deepgram's vad_events/SpeechStarted -- pure VAD onset, ahead of the
+        real confidence-gated barge-in decision). Twilio-only: the LiveKit
+        browser handler has no equivalent gain pipeline to hook into
+        (see livekit_browser_call_handler.py), so this is a no-op there via
+        the plain `getattr` default below.
+        """
+        duck_until = getattr(self, "_soft_duck_until_mono", 0.0)
+        if duck_until and time.monotonic() < duck_until:
+            duck_gain = getattr(self, "_soft_duck_gain", 0.35)
+            return gain * duck_gain
+        return gain
+
+    def _base_voice_gain_from_runtime(self, runtime) -> float:
+        """
+        Compute the (non-duck) base voice gain from an ALREADY-RESOLVED
+        ``ResolvedTtsRuntime``. Pure attribute reads -- cheap, no DB access.
+
+        Callers that have already called ``resolve_tts_runtime()`` earlier
+        in the same code path (e.g. `_stream_tts_chunk` resolves it once up
+        front to pick the provider) should reuse that result via this
+        method instead of calling `_resolve_voice_volume_base()`, which
+        would resolve the runtime a second time (and, for a BYO ElevenLabs
+        agent, decrypt the stored key a second time -- an extra Postgres
+        round-trip for no reason).
 
         - Google TTS outputs at nominal telephony level (~-18 dBFS RMS) -> baseline 1.0x.
         - ElevenLabs ulaw_8000 outputs at ~-25.7 to -26.3 dBFS RMS with -6.2 dBFS peak headroom.
@@ -308,16 +332,51 @@ class TtsStreamMixin:
           matching PSTN speech levels while maintaining safe peak headroom (-1.7 dBFS).
         - User-configured volume slider scales on top of the provider baseline.
         """
-        if not self.agent:
-            return 1.0
         try:
-            runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
             user_vol = float(runtime.settings_json.get("volume", 1.0))
             provider_slug = (runtime.adapter_slug or "").lower()
             baseline = 1.8 if provider_slug == "elevenlabs" else 1.0
             return max(0.0, user_vol * baseline)
         except Exception:
             return 1.0
+
+    def _resolve_voice_volume_base(self) -> float:
+        """
+        Resolve TTS voice volume (linear gain) from agent settings with
+        provider-aware telephony baseline leveling -- WITHOUT the soft-duck
+        adjustment (see _resolve_voice_volume() for that).
+
+        Deliberately NOT cheap enough to call at frame (20ms) granularity:
+        ``resolve_tts_runtime()`` can decrypt a BYO ElevenLabs key, which
+        hits Postgres (pgp_sym_decrypt). Callers that need duck-reactive
+        gain inside a frame-streaming loop should call this once per
+        chunk/utterance (or reuse an already-resolved runtime via
+        `_base_voice_gain_from_runtime()` if one is already in scope) and
+        re-apply only `_apply_soft_duck()` (cheap: attribute reads + a
+        monotonic-clock comparison) on every frame.
+        """
+        if not self.agent:
+            return 1.0
+        try:
+            runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
+            return self._base_voice_gain_from_runtime(runtime)
+        except Exception:
+            return 1.0
+
+    def _resolve_voice_volume(self) -> float:
+        """
+        Resolve TTS voice volume (linear gain) from agent settings with
+        provider-aware telephony baseline leveling, then apply the current
+        soft-duck window (see _apply_soft_duck()) on top.
+
+        NOTE: this recomputes the (non-cheap, see _resolve_voice_volume_base)
+        base gain every call. Frame-streaming loops should NOT call this
+        per-frame -- instead resolve the base gain once per chunk and call
+        `self._apply_soft_duck(base_gain)` per frame so the duck window
+        reacts immediately mid-chunk without repeating the expensive
+        resolution (and possible BYO-key DB decrypt) at 50 Hz.
+        """
+        return self._apply_soft_duck(self._resolve_voice_volume_base())
 
     async def _stream_tts_chunk(
         self,
@@ -541,7 +600,18 @@ class TtsStreamMixin:
                                 elif sleep_dur < -0.03:
                                     state["next_send"] = time.perf_counter()
 
-                            voice_gain = self._resolve_voice_volume()
+                            # Resolve the (non-duck) base gain once per utterance, from
+                            # the `tts_runtime` already resolved above (avoids a second
+                            # resolve_tts_runtime() call / a second BYO-ElevenLabs-key
+                            # Postgres decrypt). The duck-reactive part is re-applied
+                            # fresh below, inside the `async for chunk_bytes in
+                            # audio_iter` loop, so a SpeechStarted event landing
+                            # mid-chunk immediately affects whichever provider chunks
+                            # are still to be sent for this utterance -- see
+                            # _apply_soft_duck() / _resolve_voice_volume().
+                            base_voice_gain = self._base_voice_gain_from_runtime(
+                                tts_runtime
+                            )
 
                             async def stream_mulaw_from_audio_iter(audio_iter):
                                 """
@@ -550,8 +620,13 @@ class TtsStreamMixin:
                                 - Optional jitter-buffer priming (first speak only)
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
-                                - User-configurable voice gain applied per chunk (not on priming
-                                  / silence-drain frames, which stay at 0xFF).
+                                - User-configurable voice gain applied per provider chunk (not on
+                                  priming / silence-drain frames, which stay at 0xFF). The
+                                  soft-duck portion of this gain is re-resolved on every
+                                  iteration of the loop below (cheap: monotonic-clock check),
+                                  so a barge-in SpeechStarted event takes effect on the next
+                                  provider chunk still to arrive, not just on the next
+                                  full TTS-flush segment.
                                 """
                                 if self._is_background_audio_enabled():
                                     self._background_audio.set_user_level(
@@ -597,6 +672,13 @@ class TtsStreamMixin:
                                         return
                                     if not chunk_bytes:
                                         continue
+                                    # Re-resolve the duck-reactive gain on every provider
+                                    # chunk (cheap -- see _apply_soft_duck()) instead of
+                                    # reusing a value captured once before streaming
+                                    # started, so mid-utterance SpeechStarted events are
+                                    # audible immediately rather than only on the next
+                                    # TTS-flush segment.
+                                    voice_gain = self._apply_soft_duck(base_voice_gain)
                                     if voice_gain != 1.0:
                                         chunk_bytes = apply_volume_fade(
                                             chunk_bytes, voice_gain
@@ -998,9 +1080,23 @@ class TtsStreamMixin:
                         # User-configurable TTS voice gain (uniform across providers).
                         # Applied on speech bytes only; jitter priming + silence drain
                         # frames keep their 0xFF mulaw silence below.
-                        voice_gain = self._resolve_voice_volume()
-                        if to_stream and voice_gain != 1.0:
-                            to_stream = apply_volume_fade(to_stream, voice_gain)
+                        #
+                        # This whole buffer is pre-generated and handed to
+                        # stream_mulaw_bytes_over_twilio() to be paced out at 20ms/frame,
+                        # so baking a single gain value in here (before any real time has
+                        # elapsed) would freeze the soft-duck state as of NOW, before the
+                        # send loop even starts -- exactly the bug this fix addresses. So
+                        # we only bake in the non-duck base gain (provider baseline + user
+                        # volume slider -- static for the whole call, and the only part
+                        # worth resolving once since it can hit Postgres for a BYO
+                        # ElevenLabs key). The duck-reactive multiplier is re-resolved
+                        # fresh on every frame at actual send time via frame_gain_fn below.
+                        # Reuses the `tts_runtime` already resolved above in this same
+                        # function (avoids a second resolve_tts_runtime()/BYO-key-decrypt
+                        # call).
+                        base_voice_gain = self._base_voice_gain_from_runtime(tts_runtime)
+                        if to_stream and base_voice_gain != 1.0:
+                            to_stream = apply_volume_fade(to_stream, base_voice_gain)
 
                         # Mix with ambient bed only when explicitly enabled for office profile.
                         if self._is_background_audio_enabled():
@@ -1031,6 +1127,11 @@ class TtsStreamMixin:
                             cancel=self._tts_cancel,
                             prime_frames=prime_frames,
                             mirror_mulaw=self._livekit_recording_mirror(),
+                            # Cheap per-frame duck multiplier (1.0 outside the duck
+                            # window) -- see _apply_soft_duck(). Resolved fresh at
+                            # actual send time so a SpeechStarted event landing
+                            # mid-buffer immediately ducks the frames still to be sent.
+                            frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                         )
                         self._twilio_buffer_primed = True
 
@@ -1374,12 +1475,17 @@ class TtsStreamMixin:
                         db=getattr(self, "db", None),
                     )
 
-                    # Apply user-configurable voice gain BEFORE crossfade split so
+                    # Apply the (non-duck) base voice gain BEFORE crossfade split so
                     # both prefix_main and the crossfaded suffix join are scaled
-                    # consistently across all providers.
-                    voice_gain = self._resolve_voice_volume()
-                    if prefix_audio and voice_gain != 1.0:
-                        prefix_audio = apply_volume_fade(prefix_audio, voice_gain)
+                    # consistently across all providers. The duck-reactive multiplier
+                    # is intentionally NOT baked in here -- both prefix_main and the
+                    # suffix/tail are streamed out later via stream_mulaw_bytes_over_twilio(
+                    # frame_gain_fn=...), which re-resolves it fresh per frame at actual
+                    # send time so it reacts to SpeechStarted events mid-buffer instead
+                    # of freezing the duck state as of now, before any audio has played.
+                    base_voice_gain = self._resolve_voice_volume_base()
+                    if prefix_audio and base_voice_gain != 1.0:
+                        prefix_audio = apply_volume_fade(prefix_audio, base_voice_gain)
 
                     # Hold back 50ms for crossfade with next chunk (smooth transitions)
                     overlap_bytes = 400  # 50ms at 8kHz
@@ -1411,6 +1517,7 @@ class TtsStreamMixin:
                             cancel=self._tts_cancel,
                             prime_frames=0 if self._twilio_buffer_primed else 3,
                             mirror_mulaw=self._livekit_recording_mirror(),
+                            frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                         )
                         self._twilio_buffer_primed = True
 
@@ -1421,8 +1528,10 @@ class TtsStreamMixin:
                         except Exception:
                             suffix_audio = b""
 
-                        if suffix_audio and voice_gain != 1.0:
-                            suffix_audio = apply_volume_fade(suffix_audio, voice_gain)
+                        if suffix_audio and base_voice_gain != 1.0:
+                            suffix_audio = apply_volume_fade(
+                                suffix_audio, base_voice_gain
+                            )
 
                         if not self._tts_cancel.is_set():
                             if suffix_audio:
@@ -1442,6 +1551,7 @@ class TtsStreamMixin:
                                     cancel=self._tts_cancel,
                                     prime_frames=0,
                                     mirror_mulaw=self._livekit_recording_mirror(),
+                                    frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                                 )
                             else:
                                 # No suffix - flush held tail
@@ -1454,6 +1564,7 @@ class TtsStreamMixin:
                                         cancel=self._tts_cancel,
                                         prime_frames=0,
                                         mirror_mulaw=self._livekit_recording_mirror(),
+                                        frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                                     )
                 finally:
                     self.is_speaking = False

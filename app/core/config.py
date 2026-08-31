@@ -803,6 +803,16 @@ class Settings(BaseSettings):
     # needs a materially higher floor than the browser/LiveKit path above.
     VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO: float = 0.70
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO: float = 0.75
+    # Soft barge-in: Deepgram's vad_events SpeechStarted (pure VAD onset, no
+    # transcript/confidence yet) fires well before the first interim transcript.
+    # It is NOT gated on transcript confidence, so it must never hard-cancel the
+    # in-flight LLM/TTS turn (that stays gated on classify_turn() via the normal
+    # interim/final barge-in path above) -- it only dips TTS output volume
+    # briefly so a real interruption feels more responsive without risking a
+    # false-positive cut from ambient noise/breath triggering VAD onset.
+    VOICE_SOFT_DUCK_ENABLED: bool = True
+    VOICE_SOFT_DUCK_MS: int = 400
+    VOICE_SOFT_DUCK_GAIN: float = 0.35
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the

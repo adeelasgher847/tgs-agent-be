@@ -28,7 +28,13 @@ from typing import Awaitable, Callable, TYPE_CHECKING
 
 from app.core.config import settings
 from app.core.logger import logger
-from app.voice.stt_events import SttEventBus, SttInterimEvent, SttFinalEvent, SttErrorEvent
+from app.voice.stt_events import (
+    SttEventBus,
+    SttInterimEvent,
+    SttFinalEvent,
+    SttErrorEvent,
+    SttSpeechStartedEvent,
+)
 from app.voice.turn_signals import is_utterance_likely_incomplete
 
 if TYPE_CHECKING:
@@ -37,6 +43,7 @@ if TYPE_CHECKING:
 
 InterimCallback = Callable[[str, float], Awaitable[None]]
 FinalCallback = Callable[[str, float], Awaitable[None]]
+SpeechStartedCallback = Callable[[], Awaitable[None]]
 
 
 class SttPipeline:
@@ -73,10 +80,15 @@ class SttPipeline:
         event_bus: SttEventBus | None = None,
         model_id: str | None = None,
         incomplete_final_grace_ms: int = 0,
+        on_speech_started: SpeechStartedCallback | None = None,
     ) -> None:
         self._language_code = language_code
         self._on_interim = on_interim
         self._on_final = on_final
+        # Optional -- only Deepgram Nova-3 (StreamingSTTSession) ever emits
+        # this. None for every other provider/path; guarded with a plain
+        # `if self._on_speech_started:` check at the call site below.
+        self._on_speech_started = on_speech_started
         self._call_session_id = call_session_id
         self._agent_id = agent_id
         self._endpointing_ms: int | None = endpointing_ms
@@ -132,6 +144,7 @@ class SttPipeline:
         endpointing_ms: int | None = None,
         event_bus: SttEventBus | None = None,
         incomplete_final_grace_ms: int = 0,
+        on_speech_started: SpeechStartedCallback | None = None,
     ) -> "SttPipeline":
         """Factory: build SttPipeline from a ResolvedSttRuntime."""
         return cls(
@@ -149,6 +162,7 @@ class SttPipeline:
             event_bus=event_bus,
             model_id=resolved.model_id,
             incomplete_final_grace_ms=incomplete_final_grace_ms,
+            on_speech_started=on_speech_started,
         )
 
     @property
@@ -374,6 +388,21 @@ class SttPipeline:
                 continue
             if result.get("done"):
                 break
+            if result.get("speech_started"):
+                # Pure VAD onset (Deepgram Nova-3 `vad_events`) -- no
+                # transcript/confidence, so this is deliberately NOT run
+                # through _maybe_extend_incomplete_final/dedup below. Errors
+                # in the optional callback must never take down the reader
+                # loop (mirrors the try/except around on_interim/on_final).
+                try:
+                    await self._event_bus.emit(SttSpeechStartedEvent())
+                    if self._on_speech_started:
+                        await self._on_speech_started()
+                except Exception as cb_err:
+                    logger.error(
+                        "[STT] speech_started callback error: %s", cb_err, exc_info=True
+                    )
+                continue
             if result.get("error"):
                 err_msg = result.get("error", "unknown")
                 recoverable = bool(result.get("recoverable", True))
