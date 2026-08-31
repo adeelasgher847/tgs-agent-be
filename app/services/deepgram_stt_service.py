@@ -14,6 +14,7 @@ from typing import Any, Dict
 from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from deepgram.listen.v1.types.listen_v1results import ListenV1Results
+from deepgram.listen.v1.types.listen_v1speech_started import ListenV1SpeechStarted
 from deepgram.listen.v1.types.listen_v1utterance_end import ListenV1UtteranceEnd
 
 from app.core.config import settings
@@ -132,6 +133,19 @@ class DeepgramSTTService:
 
             def on_message(message: Any) -> None:
                 try:
+                    if isinstance(message, ListenV1SpeechStarted):
+                        # Pure VAD-onset signal (requires vad_events=true on
+                        # connect()) -- fires independently of transcript
+                        # generation, well before the first interim. No
+                        # confidence/transcript accompanies it, so callers
+                        # must only use this for a "soft" action (e.g. TTS
+                        # ducking), never a hard barge-in cancel -- that
+                        # stays gated on the classify_turn() interim/final
+                        # path below via the normal "transcript"/"is_final"
+                        # result shape.
+                        self._push_result({"speech_started": True})
+                        return
+
                     if isinstance(message, ListenV1UtteranceEnd):
                         # Word-timing-based fallback: fires when Deepgram sees a large
                         # gap between words, independent of audio silence. Only acts
@@ -341,6 +355,12 @@ class DeepgramSTTService:
                     endpointing=endpointing,
                     punctuate="true",
                     utterance_end_ms=utterance_end_ms,
+                    # Emits SpeechStarted (see on_message) -- Deepgram's fastest,
+                    # confidence-free "caller started talking" signal, used only
+                    # to drive a soft TTS-duck ahead of the real (confidence-
+                    # gated) barge-in decision. Nova-3/v1 only -- Flux has no
+                    # vad_events param and uses its own turn-taking events.
+                    vad_events="true",
                 ) as connection:
                     connection.on(EventType.MESSAGE, on_message)
                     connection.on(EventType.ERROR, on_error)

@@ -441,6 +441,15 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         self.is_speaking = False
         self._is_tts_playing = False
         self._tts_cancel = asyncio.Event()
+        # Soft barge-in observability only (see _on_stt_speech_started below) --
+        # unlike bidirectional_stream.py's TtsStreamMixin-based Twilio path,
+        # there is no existing per-chunk gain/volume pipeline on this
+        # LiveKit-native publish path to hook a real "duck" into without
+        # adding new raw-PCM gain math to the streaming hot path. Tracked
+        # here so the signal is at least visible/countable; wiring an actual
+        # audio duck is a follow-up once a gain primitive exists for this
+        # transport (see final report / flag for a future task).
+        self._soft_duck_signal_count: int = 0
         self._tts_lock = asyncio.Lock()
         self._tts_worker_task = None  # set by VoiceOrchestrator
         self._tts_pipeline = None  # set by VoiceOrchestrator
@@ -680,6 +689,27 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- must never hard-cancel a
+        turn (that stays gated on _should_barge_in_on_stt's classify_turn()
+        path below). Observability-only on this transport for now: LiveKit's
+        own WebRTC echo cancellation already makes false-positive barge-in
+        far less likely than on Twilio, and there is no existing per-chunk
+        TTS gain pipeline here to duck into (see _soft_duck_signal_count's
+        docstring in __init__) -- logged so the signal's arrival rate can be
+        observed before deciding whether a real duck primitive is worth
+        building for this path.
+        """
+        if not self._is_tts_playing:
+            return
+        self._soft_duck_signal_count += 1
+        logger.debug(
+            "[LiveKitBrowserCall] SpeechStarted (soft signal, no-op action) count=%d",
+            self._soft_duck_signal_count,
+        )
+
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         classification = classify_turn(
             transcript,
@@ -1563,6 +1593,7 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
                 call_session_id=handler.call_session_id,
                 agent_id=handler.agent_id,
                 event_bus=voice_orchestrator.stt_event_bus,
+                on_speech_started=voice_orchestrator._on_speech_started,
             )
             # Register onto VoiceOrchestrator so its shutdown() closes this
             # session too (it only closes a pipeline it knows about).

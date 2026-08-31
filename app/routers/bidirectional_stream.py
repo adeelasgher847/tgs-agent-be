@@ -462,6 +462,24 @@ class BidirectionalStreamHandler(
         self._barge_in_dead_zone_ms: float = float(
             getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 1000) or 1000
         )
+        # Soft barge-in: Deepgram vad_events/SpeechStarted (see
+        # VoiceOrchestrator._on_speech_started -> _on_stt_speech_started
+        # below) dips TTS output volume for a short window instead of
+        # cutting playback -- confidence-free VAD onset must never hard-
+        # cancel a turn (that stays gated on classify_turn() above).
+        # Monotonic deadline; _resolve_voice_volume() (TtsStreamMixin)
+        # applies the duck gain while time.monotonic() is under it.
+        self._soft_duck_until_mono: float = 0.0
+        self._soft_duck_enabled: bool = bool(
+            getattr(settings, "VOICE_SOFT_DUCK_ENABLED", True)
+        )
+        self._soft_duck_ms: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_MS", 400) or 400
+        )
+        self._soft_duck_gain: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_GAIN", 0.35) or 0.35
+        )
+        self._soft_duck_gain = max(0.0, min(1.0, self._soft_duck_gain))
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -1247,6 +1265,26 @@ class BidirectionalStreamHandler(
         if low in filler:
             return False
         return True
+
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- only takes a low-risk
+        "soft" action (temporary TTS volume duck), never a hard cancel. The
+        real barge-in decision stays entirely on _should_barge_in_on_stt's
+        classify_turn() gating (interim/final transcript path) so ambient
+        noise/breath triggering VAD onset can't cut the agent's turn.
+        No-op when TTS isn't currently playing -- ducking silence achieves
+        nothing and would just needlessly touch shared state.
+        """
+        if not self._soft_duck_enabled or not self._is_tts_playing:
+            return
+        self._soft_duck_until_mono = time.monotonic() + (self._soft_duck_ms / 1000.0)
+        logger.debug(
+            "[Barge-in/soft] SpeechStarted -> ducking TTS output for %.0fms (gain=%.2f)",
+            self._soft_duck_ms,
+            self._soft_duck_gain,
+        )
 
     def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""

@@ -413,6 +413,7 @@ class VoiceOrchestrator:
                         endpointing_ms=initial_endpointing,
                         event_bus=self._stt_event_bus,
                         incomplete_final_grace_ms=_incomplete_final_grace_ms,
+                        on_speech_started=self._on_speech_started,
                     )
                     # Start LiveKit audio subscriber for Google STT path
                     if (
@@ -432,6 +433,7 @@ class VoiceOrchestrator:
                         endpointing_ms=initial_endpointing,
                         event_bus=self._stt_event_bus,
                         incomplete_final_grace_ms=_incomplete_final_grace_ms,
+                        on_speech_started=self._on_speech_started,
                     )
 
                 ps = getattr(h, "_pipeline_session", None)
@@ -627,6 +629,25 @@ class VoiceOrchestrator:
         except Exception as exc:
             logger.error(
                 "[VoiceOrchestrator] _on_interim callback error: %s", exc, exc_info=True
+            )
+
+    async def _on_speech_started(self) -> None:
+        """
+        Deepgram Nova-3 `vad_events`/SpeechStarted callback -- pure VAD onset,
+        no transcript/confidence. Routed to the handler's own
+        `_on_stt_speech_started` (duck-typed via hasattr, same pattern used
+        throughout this file for transport-specific hooks) so each transport
+        can apply its own low-risk "soft" barge-in signal. Deliberately never
+        touches LLM/TTS cancellation itself -- that stays gated on
+        classify_turn() via _on_interim/_on_final.
+        """
+        try:
+            hook = getattr(self._h, "_on_stt_speech_started", None)
+            if hook is not None:
+                await hook()
+        except Exception as exc:
+            logger.error(
+                "[VoiceOrchestrator] _on_speech_started callback error: %s", exc, exc_info=True
             )
 
     async def _on_final(

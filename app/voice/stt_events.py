@@ -42,7 +42,18 @@ class SttErrorEvent:
     recoverable: bool = True
 
 
-SttEvent = SttInterimEvent | SttFinalEvent | SttErrorEvent
+@dataclass(frozen=True)
+class SttSpeechStartedEvent:
+    """Pure VAD-onset signal (Deepgram `vad_events`/`SpeechStarted`, Nova-3
+    only). No transcript/confidence -- fires ahead of the first interim as
+    the fastest possible "caller started talking" signal. Consumers must
+    only use this to drive low-risk "soft" actions (e.g. TTS ducking), never
+    a hard barge-in cancel -- that stays gated on SttInterimEvent/
+    SttFinalEvent via classify_turn()."""
+    type: Literal["speech_started"] = field(default="speech_started", init=False)
+
+
+SttEvent = SttInterimEvent | SttFinalEvent | SttErrorEvent | SttSpeechStartedEvent
 
 SttEventCallback = Callable[[SttEvent], Awaitable[None]]
 
