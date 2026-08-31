@@ -15,8 +15,6 @@ from deepgram import DeepgramClient
 from deepgram.core.events import EventType
 from deepgram.listen.v1.types.listen_v1results import ListenV1Results
 from deepgram.listen.v1.types.listen_v1utterance_end import ListenV1UtteranceEnd
-from deepgram.listen.v2.types.listen_v2fatal_error import ListenV2FatalError
-from deepgram.listen.v2.types.listen_v2turn_info import ListenV2TurnInfo
 
 from app.core.config import settings
 from app.core.logger import logger
@@ -455,7 +453,21 @@ class DeepgramSTTService:
             items = list(words or [])
             if not items:
                 return 0.0
-            confidences = [float(getattr(w, "confidence", 0.0) or 0.0) for w in items]
+            # Real deepgram-sdk 6.1.1 responses carry each word as a plain
+            # dict (confirmed by feeding real recorded call audio directly
+            # at a live v2/listen connection), not an attribute-style
+            # `ListenV2TurnInfoWordsItem` object -- `getattr(w, "confidence",
+            # 0.0)` silently returns the 0.0 default for a dict every time,
+            # so every Flux transcript's confidence came through as 0.0
+            # regardless of Deepgram's actual per-word confidence. Support
+            # both shapes so this doesn't silently zero out confidence
+            # again if the SDK's exact wire shape shifts once more.
+            def _word_confidence(w: Any) -> float:
+                if isinstance(w, dict):
+                    return float(w.get("confidence", 0.0) or 0.0)
+                return float(getattr(w, "confidence", 0.0) or 0.0)
+
+            confidences = [_word_confidence(w) for w in items]
             return sum(confidences) / len(confidences)
 
         def _run_blocking_stream(self) -> None:
@@ -470,16 +482,34 @@ class DeepgramSTTService:
 
             def on_message(message: Any) -> None:
                 try:
-                    if isinstance(message, ListenV2FatalError):
+                    # deepgram-sdk 6.1.1 delivers v2/listen events as a
+                    # discriminated-union envelope: EVERY message (TurnInfo,
+                    # FatalError, etc.) deserializes to the concrete class
+                    # `ListenV2Connected` regardless of its logical kind --
+                    # `isinstance(message, ListenV2TurnInfo)` /
+                    # `isinstance(message, ListenV2FatalError)` are FALSE for
+                    # real messages (confirmed by feeding a real recorded
+                    # Twilio call's MULAW audio directly at a v2/listen
+                    # connection: Flux produced perfect transcripts/turn
+                    # events, but every single one failed both isinstance
+                    # checks and was silently dropped here -- no error, no
+                    # log, just zero output). Branch on the `.type` string
+                    # discriminator instead, which is present and correct
+                    # on the real envelope object regardless of which
+                    # concrete class the SDK happens to deserialize to.
+                    message_type = getattr(message, "type", None)
+
+                    if message_type == "FatalError":
                         self._session_end_reason = "fatal_error"
                         logger.error(
                             "[Deepgram Flux STT] fatal error code=%s description=%s",
-                            message.code,
-                            message.description,
+                            getattr(message, "code", None),
+                            getattr(message, "description", None),
                         )
                         self._push_result(
                             {
-                                "error": message.description or message.code,
+                                "error": getattr(message, "description", None)
+                                or getattr(message, "code", None),
                                 "transcript": "",
                                 "confidence": 0.0,
                                 "is_final": True,
@@ -487,7 +517,7 @@ class DeepgramSTTService:
                         )
                         return
 
-                    if not isinstance(message, ListenV2TurnInfo):
+                    if message_type != "TurnInfo":
                         return
 
                     event = message.event
