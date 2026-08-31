@@ -95,15 +95,35 @@ def _respond_briefly(user_text: str, mood: UserMood, stt_confidence: float) -> b
     return False
 
 
+# ElevenLabs stability is a consistency/expressiveness dial, not a per-turn
+# mood switch: 0.30-0.50 = dynamic but occasionally unstable, 0.60-0.85 =
+# consistent but can read flat/monotonous (see ElevenLabs' own conversational
+# voice design guidance). Previously this returned one of FOUR distinct
+# values keyed off a coarse, regex-based mood classifier of the CALLER's last
+# utterance -- reapplied fresh every turn. Two problems: (1) the regexes
+# misfire easily (e.g. a calm "I'd like to cancel my old plan and get a
+# refund" hits both the FRUSTRATED and ANGRY keyword lists on a completely
+# neutral request), so the stability value could jump around turn-to-turn for
+# reasons unrelated to actual caller sentiment -- read by callers as
+# inconsistent/unnatural tone, not "sensible variation"; (2) ANGRY/FRUSTRATED/
+# URGENT previously mapped to the LOWEST (most dynamic/least stable) value,
+# which is backwards for de-escalation -- a stressed caller benefits from a
+# calmer, STEADIER agent voice, not a more variable one.
+#
+# Fixed to one deliberate baseline for the vast majority of turns (neutral/
+# happy/sad all share it -- per ElevenLabs guidance, pick one point on the
+# dial for your agent's personality and stay there), with a single,
+# genuinely-exceptional override for unmistakable caller distress: slightly
+# higher/steadier, not lower, since a calmer delivery is what actually helps
+# de-escalate rather than mirroring instability back at the caller.
+_TTS_STABILITY_DEFAULT = 0.50
+_TTS_STABILITY_CALMING = 0.58
+
+
 def _tts_stability_for_mood(mood: UserMood) -> float | None:
-    """Slightly lower = more variable prosody; higher = calmer. For future ElevenLabs mapping."""
     if mood in (UserMood.ANGRY, UserMood.FRUSTRATED, UserMood.URGENT):
-        return 0.42
-    if mood in (UserMood.SAD,):
-        return 0.55
-    if mood in (UserMood.HAPPY,):
-        return 0.50
-    return 0.48
+        return _TTS_STABILITY_CALMING
+    return _TTS_STABILITY_DEFAULT
 
 
 def build_turn_context(
@@ -144,3 +164,54 @@ def build_user_signals_block(ctx: TurnContext) -> str:
         f"- When inferred_mood is sad: be warm, gentle, and patient; do not be overly enthusiastic.\n"
         f"- When respond_briefly is yes: prefer very short TTS-friendly sentences."
     )
+
+
+# Trailing words that reliably signal a sentence isn't done yet -- caller paused
+# mid-clause (breath, thinking pause) rather than actually finishing their turn.
+# Mirrors the "custom endpointing rules by message content pattern" approach
+# documented by production voice platforms (e.g. Vapi's customEndpointingRules):
+# apply a longer wait specifically when the trailing text looks incomplete,
+# instead of raising the blanket silence threshold for every utterance.
+_INCOMPLETE_TRAILING_WORDS = frozenset(
+    {
+        # conjunctions
+        "and", "but", "or", "so", "because", "if", "when", "while", "as",
+        "than", "that", "which", "who", "though", "although",
+        # prepositions
+        "to", "for", "with", "in", "on", "at", "of", "from", "about",
+        "like", "into", "over", "under", "between",
+        # articles / determiners
+        "a", "an", "the", "my", "your", "our", "their", "his", "her",
+        # fillers
+        "um", "uh", "umm", "uhh", "er", "ah",
+    }
+)
+
+_TRAILING_WORD_RE = re.compile(r"[A-Za-z']+$")
+
+
+def is_utterance_likely_incomplete(text: str) -> bool:
+    """
+    True when `text` (a Deepgram speech_final transcript) reads like the
+    caller was cut off mid-thought rather than having actually finished --
+    e.g. "I wanted to ask about the pricing and" or "Can you send that to".
+
+    Deliberately conservative (few, unambiguous trailing words) to avoid
+    false positives that would delay a genuinely finished, short reply
+    like "yes" or "no thanks".
+    """
+    stripped = (text or "").strip()
+    if not stripped:
+        return False
+    # A transcript ending in terminal punctuation is a strong "done" signal
+    # even if the last word would otherwise look incomplete on its own
+    # (smart_format's punctuation reflects Deepgram's own confidence here).
+    if stripped[-1] in ".!?":
+        return False
+    if stripped.endswith(","):
+        return True
+    match = _TRAILING_WORD_RE.search(stripped)
+    if not match:
+        return False
+    last_word = match.group(0).lower()
+    return last_word in _INCOMPLETE_TRAILING_WORDS

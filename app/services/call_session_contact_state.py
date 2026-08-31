@@ -19,12 +19,28 @@ from app.models.transcript_message import TranscriptMessage
 from app.utils.spoken_email import normalize_stored_email
 from app.utils.voice_contact_extraction import (
     extract_spelled_name_from_line,
+    is_caller_id_phone_reference,
+    plausible_address_from_text,
     strict_contact_email_from_text,
+    strict_contact_phone_from_text,
 )
 
 CONTACT_INTAKE_KEY = "contact_intake"
 BOOKING_INTENT_KEY = "booking_intent"
-MAX_NAME_SPELL_FAILURES = 3
+# Hard retry ceiling shared by every intake field (name, phone, address).
+# Kept as one constant so the four fields behave uniformly; the effective
+# threshold (3) is unchanged from the original name-only MAX_NAME_SPELL_FAILURES.
+MAX_FIELD_COLLECTION_FAILURES = 3
+
+# Ceiling sentinel for phone/address: marks a field as "gave up asking" WITHOUT
+# promoting whatever garbled text last failed extraction into something that
+# looks like a real, usable value. build_contact_intake_prompt_block()
+# special-cases this to tell the model to stop asking without repeating
+# fabricated-looking data back to the caller or writing it to a CRM lead.
+_CEILING_UNRESOLVED = "__unresolved__"
+# Backward-compatible alias — some call sites/tests may still reference the
+# original name.
+MAX_NAME_SPELL_FAILURES = MAX_FIELD_COLLECTION_FAILURES
 
 _SPELL_NAME_AGENT = re.compile(
     r"\bspell\b.*\b(name|full\s*name|first\s*name|last\s*name)\b|\b(name|full\s*name)\b.*\bspell\b",
@@ -32,6 +48,20 @@ _SPELL_NAME_AGENT = re.compile(
 )
 _SPELL_EMAIL_AGENT = re.compile(
     r"\bspell\b.*\b(e-?mail|email\s*address)\b|\b(e-?mail)\b.*\bspell\b",
+    flags=re.IGNORECASE,
+)
+# Agent asking for a phone number / address. Unlike name/email these fields
+# are not typically spelled letter-by-letter, so we only need to know the
+# agent *asked* — not that it asked for a spelling — to set the awaiting
+# context that gates extraction on the caller's next turn.
+_ASK_PHONE_AGENT = re.compile(
+    r"\b(?:phone\s*number|contact\s*number|call(?:back)?\s*number|"
+    r"best\s+number\s+to\s+reach\s+you|number\s+to\s+reach\s+you)\b",
+    flags=re.IGNORECASE,
+)
+_ASK_ADDRESS_AGENT = re.compile(
+    r"\b(?:service\s+address|street\s+address|mailing\s+address|"
+    r"your\s+address|where\s+are\s+you\s+located)\b",
     flags=re.IGNORECASE,
 )
 
@@ -184,6 +214,16 @@ def default_contact_intake() -> dict[str, Any]:
         # before promoting to name_confident, so STT mishears alone never
         # trigger a confident booking.
         "name_self_introduced": False,
+        # Phone/address: unlike name/email these are not spelled
+        # letter-by-letter, so confirmation is immediate-on-extraction
+        # (format/plausibility check passes -> confirmed) rather than
+        # echo-and-wait-for-no-correction. See apply_transcript_turn.
+        "phone": None,
+        "phone_confirmed": False,
+        "phone_collection_failures": 0,
+        "address": None,
+        "address_confirmed": False,
+        "address_collection_failures": 0,
     }
 
 
@@ -264,6 +304,10 @@ def apply_transcript_turn(
             intake["awaiting_spell_field"] = "name"
         elif _SPELL_EMAIL_AGENT.search(text):
             intake["awaiting_spell_field"] = "email"
+        elif _ASK_PHONE_AGENT.search(text):
+            intake["awaiting_spell_field"] = "phone"
+        elif _ASK_ADDRESS_AGENT.search(text):
+            intake["awaiting_spell_field"] = "address"
 
         # Implicit confirmation: caller previously self-introduced (e.g.
         # "My name is Nishan") and the agent now uses that name in its
@@ -283,6 +327,8 @@ def apply_transcript_turn(
 
         email_context = awaiting == "email" or bool(_SPELL_EMAIL_AGENT.search(prev))
         name_context = awaiting == "name" or bool(_SPELL_NAME_AGENT.search(prev))
+        phone_context = awaiting == "phone" or bool(_ASK_PHONE_AGENT.search(prev))
+        address_context = awaiting == "address" or bool(_ASK_ADDRESS_AGENT.search(prev))
 
         if email_context and not name_context:
             email = strict_contact_email_from_text(text)
@@ -320,6 +366,97 @@ def apply_transcript_turn(
                     intake["name"] = None
                     intake["name_spelled_confirmed"] = False
                 intake["awaiting_spell_field"] = None
+
+        elif phone_context:
+            # Phone is not spelled letter-by-letter, so a caller answer that
+            # passes the basic format/plausibility check is confirmed
+            # immediately — no echo-and-wait-for-no-correction round trip
+            # (that choreography exists for name/email because STT letter
+            # spelling is error-prone in a way whole-number extraction isn't).
+            if is_caller_id_phone_reference(text):
+                caller_number = getattr(call_session, "from_number", None) or getattr(
+                    call_session, "customer_phone_number", None
+                )
+                if caller_number:
+                    intake["phone"] = str(caller_number).strip()
+                    intake["phone_confirmed"] = True
+                    intake["phone_collection_failures"] = 0
+                else:
+                    # Reference to "the number you called me from" but no
+                    # caller-id on file to resolve it against — count as a
+                    # failed attempt so the agent asks the caller to just say
+                    # the digits instead (mirrors the garbled "the the
+                    # number we call mister" real-world case).
+                    if len(text) >= 4:
+                        intake["phone_collection_failures"] = min(
+                            MAX_FIELD_COLLECTION_FAILURES,
+                            int(intake.get("phone_collection_failures") or 0) + 1,
+                        )
+            else:
+                phone = strict_contact_phone_from_text(text)
+                if phone:
+                    intake["phone"] = phone
+                    intake["phone_confirmed"] = True
+                    intake["phone_collection_failures"] = 0
+                elif len(text) >= 4:
+                    intake["phone_collection_failures"] = min(
+                        MAX_FIELD_COLLECTION_FAILURES,
+                        int(intake.get("phone_collection_failures") or 0) + 1,
+                    )
+            if (
+                not intake["phone_confirmed"]
+                and intake["phone_collection_failures"] >= MAX_FIELD_COLLECTION_FAILURES
+            ):
+                # Hard retry ceiling: stop re-asking rather than looping
+                # forever on unrecognizable audio. Do NOT promote the
+                # garbled/failed text as a real phone number (it already
+                # failed extraction 3 times) — mark unresolved instead so
+                # the prompt block tells the model to move on without
+                # repeating fabricated-looking data back to the caller.
+                intake["phone"] = _CEILING_UNRESOLVED
+                intake["phone_confirmed"] = True
+            # Only clear the awaiting-field marker once phone is settled
+            # (confirmed or ceiling-accepted). Otherwise keep it set to
+            # "phone" so the NEXT turn still counts as phone-collection
+            # context even if the agent's retry phrasing doesn't match
+            # _ASK_PHONE_AGENT (an LLM-generated re-ask can be worded many
+            # ways) — this is what makes the failure ceiling reliably
+            # reachable rather than resetting silently on a rephrase.
+            if intake["phone_confirmed"]:
+                intake["awaiting_spell_field"] = None
+            else:
+                intake["awaiting_spell_field"] = "phone"
+
+        elif address_context:
+            # Free-text, not letter-spelled — same immediate-confirm-on-
+            # plausibility semantics as phone above, not the name/email
+            # echo choreography.
+            address = plausible_address_from_text(text)
+            if address:
+                intake["address"] = address
+                intake["address_confirmed"] = True
+                intake["address_collection_failures"] = 0
+            elif len(text) >= 4:
+                intake["address_collection_failures"] = min(
+                    MAX_FIELD_COLLECTION_FAILURES,
+                    int(intake.get("address_collection_failures") or 0) + 1,
+                )
+            if (
+                not intake["address_confirmed"]
+                and intake["address_collection_failures"] >= MAX_FIELD_COLLECTION_FAILURES
+            ):
+                # Hard retry ceiling: stop re-asking rather than looping
+                # forever. Same reasoning as phone above — don't promote
+                # failed/garbled text as a real address.
+                intake["address"] = _CEILING_UNRESOLVED
+                intake["address_confirmed"] = True
+            # Same reasoning as phone above: only clear once settled, else
+            # keep "address" set so the ceiling is reachable regardless of
+            # how the agent rephrases its retry.
+            if intake["address_confirmed"]:
+                intake["awaiting_spell_field"] = None
+            else:
+                intake["awaiting_spell_field"] = "address"
 
         else:
             # Vapi-style natural confirmation: agent repeated a name and the caller
@@ -470,6 +607,52 @@ def merge_contact_for_post_call(
 
 def booking_allowed(intake: dict[str, Any]) -> bool:
     return bool(intake.get("name_confident")) and bool((intake.get("name") or "").strip())
+
+
+def build_contact_intake_prompt_block(intake: dict[str, Any]) -> str:
+    """
+    Render a deterministic "already collected, do not re-ask" block from
+    contact_intake state for injection into the per-turn system prompt.
+
+    This is the structural complement to the prompt-level "NO CONFIRMATION
+    LOOPS" grounding rule: instead of relying on the model to infer
+    completion by re-reading raw transcript history, tell it explicitly
+    which fields are already confirmed and their values. Only confirmed
+    fields are listed (unconfirmed/pending fields are omitted, not called
+    out as missing, so this never pressures the model to ask about fields
+    unrelated to its own flow). Returns "" when nothing is confirmed yet, so
+    calls that never populate contact_intake see no prompt change at all.
+    """
+    lines: list[str] = []
+    if intake.get("name_confident") and (intake.get("name") or "").strip():
+        lines.append(f"- Name: CONFIRMED ({intake['name']})")
+    if intake.get("email_validated") and (intake.get("email") or "").strip():
+        lines.append(f"- Email: CONFIRMED ({intake['email']})")
+    if intake.get("phone_confirmed") and (intake.get("phone") or "").strip():
+        if intake["phone"] == _CEILING_UNRESOLVED:
+            lines.append(
+                "- Phone: SKIPPED (caller unable to provide after repeated "
+                "attempts — do not ask again)"
+            )
+        else:
+            lines.append(f"- Phone: CONFIRMED ({intake['phone']})")
+    if intake.get("address_confirmed") and (intake.get("address") or "").strip():
+        if intake["address"] == _CEILING_UNRESOLVED:
+            lines.append(
+                "- Address: SKIPPED (caller unable to provide after repeated "
+                "attempts — do not ask again)"
+            )
+        else:
+            lines.append(f"- Address: CONFIRMED ({intake['address']})")
+    if not lines:
+        return ""
+    return (
+        "# ALREADY COLLECTED — DO NOT RE-ASK\n"
+        "These fields are already captured for this call. Never ask for or "
+        "re-confirm them again unless the caller explicitly says one is "
+        "wrong; move on to whatever is still missing, or to closing the "
+        "call if everything needed is here.\n" + "\n".join(lines)
+    )
 
 
 def persist_booking_intent_fields(

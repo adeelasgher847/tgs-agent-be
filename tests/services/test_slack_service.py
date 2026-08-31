@@ -643,7 +643,17 @@ def _call_session(
     cs.customer_phone_number = phone
     cs.status = status
     cs.duration = duration
-    cs.call_metadata = metadata if metadata is not None else {}
+    if metadata is not None:
+        cs.call_metadata = metadata
+    else:
+        cs.call_metadata = {
+            "llm_call_analysis": {
+                "analysis": {
+                    "summary": "Default call summary.",
+                    "sentiment": "positive",
+                }
+            }
+        }
     cs.transcript_summary = transcript_summary
     return cs
 
@@ -913,19 +923,41 @@ class TestSendCallSummary:
         db.close.assert_called_once()
 
     @pytest.mark.anyio
-    async def test_lazily_computes_analysis_when_not_cached(self):
+    async def test_send_call_summary_waits_for_background_arq_completion(self):
+        """When llm_call_analysis is not yet present on first check, the polling
+        loop re-queries (on its own dedicated session) until the background ARQ
+        worker commits the full summary."""
         db = MagicMock()
         call_flow = _call_flow(enabled=True)
-        call_session = _call_session(call_flow_id=call_flow, metadata={})
+        call_session = _call_session(
+            call_flow_id=call_flow,
+            metadata={},
+            transcript_summary="Interim partial snippet...",
+        )
         self._setup_db(db, call_session=call_session, call_flow=call_flow)
         integration = _integration(default_channel_id="C1")
 
-        def _fake_ensure(db_arg, cs_arg, raise_on_no_transcript=False):
-            cs_arg.call_metadata = {
-                "llm_call_analysis": {
-                    "analysis": {"summary": "Lazy summary.", "sentiment": "neutral"}
+        poll_db = MagicMock()
+        poll_count = 0
+
+        def _fake_poll_row(*_args, **_kwargs):
+            nonlocal poll_count
+            poll_count += 1
+            row = MagicMock()
+            if poll_count >= 2:
+                row.call_metadata = {
+                    "llm_call_analysis": {
+                        "analysis": {
+                            "summary": "Full LLM summary committed by ARQ worker.",
+                            "sentiment": "positive",
+                        }
+                    }
                 }
-            }
+            else:
+                row.call_metadata = {}
+            return row
+
+        poll_db.execute.return_value.scalar_one_or_none.side_effect = _fake_poll_row
 
         with (
             patch(
@@ -936,68 +968,50 @@ class TestSendCallSummary:
                 return_value="xoxb-plain",
             ),
             patch(
-                "app.services.voice_analysis_service.ensure_call_summary_locked",
-                side_effect=_fake_ensure,
+                "app.services.slack_service.SessionLocal", return_value=poll_db
+            ),
+            patch(
+                "app.services.voice_analysis_service.ensure_call_summary_locked"
             ) as mock_ensure,
             patch(
                 "app.services.slack_service._post_message", new=AsyncMock()
             ) as mock_post,
         ):
-            await slack_service._send_call_summary_async(db, _SESSION_ID)
-
-        mock_ensure.assert_called_once()
-        text_blocks = mock_post.call_args[0][3]
-        summary_block = next(
-            b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
-        )
-        assert "Lazy summary." in str(summary_block)
-
-    @pytest.mark.anyio
-    async def test_analysis_generation_failure_fails_open_and_uses_fallback_summary(
-        self,
-    ):
-        db = MagicMock()
-        call_flow = _call_flow(enabled=True)
-        call_session = _call_session(call_flow_id=call_flow, metadata={})
-        self._setup_db(db, call_session=call_session, call_flow=call_flow)
-        integration = _integration(default_channel_id="C1")
-
-        with (
-            patch(
-                "app.services.slack_service.get_integration", return_value=integration
-            ),
-            patch(
-                "app.services.slack_service.decrypt_slack_token",
-                return_value="xoxb-plain",
-            ),
-            patch(
-                "app.services.voice_analysis_service.ensure_call_summary_locked",
-                side_effect=Exception("advisory lock contention"),
-            ),
-            patch(
-                "app.services.slack_service._post_message", new=AsyncMock()
-            ) as mock_post,
-        ):
             await slack_service._send_call_summary_async(
-                db, _SESSION_ID
-            )  # must not raise
+                db,
+                _SESSION_ID,
+                poll_interval_seconds=0.001,
+                max_wait_seconds=0.1,
+            )
 
+        # ARQ worker finished on 2nd poll; fallback locked analysis should NOT be called
+        mock_ensure.assert_not_called()
+        assert poll_count >= 2
+        poll_db.close.assert_called_once()
         mock_post.assert_awaited_once()
         text_blocks = mock_post.call_args[0][3]
         summary_block = next(
             b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
         )
-        assert "No summary available." in str(summary_block)
+        assert "Full LLM summary committed by ARQ worker." in str(summary_block)
+        assert "Interim partial snippet..." not in str(summary_block)
 
     @pytest.mark.anyio
-    async def test_uses_transcript_summary_over_llm_analysis_when_present(self):
+    async def test_send_call_summary_not_sent_with_truncated_interim_snippets(self):
+        """Proves full LLM analysis summary is prioritized over any in-call partial
+        or truncated transcript summary."""
         db = MagicMock()
         call_flow = _call_flow(enabled=True)
         call_session = _call_session(
             call_flow_id=call_flow,
-            transcript_summary="Explicit transcript summary.",
+            transcript_summary="The call began with the agent greeting...",
             metadata={
-                "llm_call_analysis": {"analysis": {"summary": "Analysis summary."}}
+                "llm_call_analysis": {
+                    "analysis": {
+                        "summary": "Customer called to inquire about pricing and agreed to a follow-up demo on Thursday.",
+                        "sentiment": "positive",
+                    }
+                }
             },
         )
         self._setup_db(db, call_session=call_session, call_flow=call_flow)
@@ -1021,8 +1035,205 @@ class TestSendCallSummary:
         summary_block = next(
             b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
         )
-        assert "Explicit transcript summary." in str(summary_block)
-        assert "Analysis summary." not in str(summary_block)
+        assert "Customer called to inquire about pricing" in str(summary_block)
+        assert "The call began with the agent greeting..." not in str(summary_block)
+
+    @pytest.mark.anyio
+    async def test_uses_transcript_summary_when_llm_analysis_summary_is_empty(self):
+        """llm_call_analysis is present but its analysis.summary is None/empty —
+        must fall through to call_session.transcript_summary rather than
+        rendering an empty summary block."""
+        db = MagicMock()
+        call_flow = _call_flow(enabled=True)
+        call_session = _call_session(
+            call_flow_id=call_flow,
+            transcript_summary="Interim partial snippet from the live call.",
+            metadata={
+                "llm_call_analysis": {
+                    "analysis": {
+                        "summary": None,
+                        "sentiment": "neutral",
+                    }
+                }
+            },
+        )
+        self._setup_db(db, call_session=call_session, call_flow=call_flow)
+        integration = _integration(default_channel_id="C1")
+
+        with (
+            patch(
+                "app.services.slack_service.get_integration", return_value=integration
+            ),
+            patch(
+                "app.services.slack_service.decrypt_slack_token",
+                return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service._post_message", new=AsyncMock()
+            ) as mock_post,
+        ):
+            await slack_service._send_call_summary_async(db, _SESSION_ID)
+
+        text_blocks = mock_post.call_args[0][3]
+        summary_block = next(
+            b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
+        )
+        assert "Interim partial snippet from the live call." in str(summary_block)
+
+    @pytest.mark.anyio
+    async def test_lazily_computes_analysis_when_not_cached_and_timeout_expires(self):
+        """When ARQ worker does not populate llm_call_analysis within timeout,
+        ensure_call_summary_locked is invoked synchronously."""
+        db = MagicMock()
+        call_flow = _call_flow(enabled=True)
+        call_session = _call_session(call_flow_id=call_flow, metadata={})
+        self._setup_db(db, call_session=call_session, call_flow=call_flow)
+        integration = _integration(default_channel_id="C1")
+
+        def _fake_ensure(db_arg, cs_arg, raise_on_no_transcript=False):
+            cs_arg.call_metadata = {
+                "llm_call_analysis": {
+                    "analysis": {"summary": "Lazy locked summary.", "sentiment": "neutral"}
+                }
+            }
+
+        poll_db = MagicMock()
+        poll_db.execute.return_value.scalar_one_or_none.return_value = None
+
+        with (
+            patch(
+                "app.services.slack_service.get_integration", return_value=integration
+            ),
+            patch(
+                "app.services.slack_service.decrypt_slack_token",
+                return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service.SessionLocal", return_value=poll_db
+            ),
+            patch(
+                "app.services.voice_analysis_service.ensure_call_summary_locked",
+                side_effect=_fake_ensure,
+            ) as mock_ensure,
+            patch(
+                "app.services.slack_service._post_message", new=AsyncMock()
+            ) as mock_post,
+        ):
+            await slack_service._send_call_summary_async(
+                db,
+                _SESSION_ID,
+                poll_interval_seconds=0.001,
+                max_wait_seconds=0.005,
+            )
+
+        mock_ensure.assert_called_once()
+        text_blocks = mock_post.call_args[0][3]
+        summary_block = next(
+            b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
+        )
+        assert "Lazy locked summary." in str(summary_block)
+
+    @pytest.mark.anyio
+    async def test_analysis_generation_failure_fails_open_and_uses_fallback_summary(
+        self,
+    ):
+        db = MagicMock()
+        call_flow = _call_flow(enabled=True)
+        call_session = _call_session(call_flow_id=call_flow, metadata={})
+        self._setup_db(db, call_session=call_session, call_flow=call_flow)
+        integration = _integration(default_channel_id="C1")
+
+        poll_db = MagicMock()
+        poll_db.execute.return_value.scalar_one_or_none.return_value = None
+
+        with (
+            patch(
+                "app.services.slack_service.get_integration", return_value=integration
+            ),
+            patch(
+                "app.services.slack_service.decrypt_slack_token",
+                return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service.SessionLocal", return_value=poll_db
+            ),
+            patch(
+                "app.services.voice_analysis_service.ensure_call_summary_locked",
+                side_effect=Exception("advisory lock contention"),
+            ),
+            patch(
+                "app.services.slack_service._post_message", new=AsyncMock()
+            ) as mock_post,
+        ):
+            await slack_service._send_call_summary_async(
+                db,
+                _SESSION_ID,
+                poll_interval_seconds=0.001,
+                max_wait_seconds=0.005,
+            )  # must not raise
+
+        mock_post.assert_awaited_once()
+        text_blocks = mock_post.call_args[0][3]
+        summary_block = next(
+            b for b in text_blocks if b.get("type") == "section" and "Summary" in str(b)
+        )
+        assert "No summary available." in str(summary_block)
+
+    @pytest.mark.anyio
+    async def test_send_call_summary_handles_web_demo_caller_fallback(self):
+        """When phone is None or empty (e.g. Web Demo), caller displays 'Web Demo Link'."""
+        db = MagicMock()
+        call_flow = _call_flow(enabled=True)
+        call_session = _call_session(
+            call_flow_id=call_flow,
+            phone=None,
+            metadata={
+                "llm_call_analysis": {
+                    "analysis": {"summary": "Web demo call.", "sentiment": "neutral"}
+                }
+            },
+        )
+        self._setup_db(db, call_session=call_session, call_flow=call_flow)
+        integration = _integration(default_channel_id="C1")
+
+        with (
+            patch(
+                "app.services.slack_service.get_integration", return_value=integration
+            ),
+            patch(
+                "app.services.slack_service.decrypt_slack_token",
+                return_value="xoxb-plain",
+            ),
+            patch(
+                "app.services.slack_service._post_message", new=AsyncMock()
+            ) as mock_post,
+        ):
+            await slack_service._send_call_summary_async(db, _SESSION_ID)
+
+        access_token, channel, text, blocks = mock_post.call_args[0]
+        assert "Web Demo Link" in text
+        caller_field = next(f for f in blocks[1]["fields"] if "Caller" in f["text"])
+        assert "Web Demo Link" in caller_field["text"]
+
+    def test_resolve_channel_whitespace_and_fallback(self):
+        """Verify _resolve_channel properly handles whitespace and falls back."""
+        integration = _integration(default_channel_id="C-DEFAULT")
+
+        # 1. Unset call_flow channel falls back to default
+        flow1 = _call_flow(channel_id=None)
+        assert slack_service._resolve_channel(flow1, integration) == "C-DEFAULT"
+
+        # 2. Whitespace-only call_flow channel falls back to default
+        flow2 = _call_flow(channel_id="   ")
+        assert slack_service._resolve_channel(flow2, integration) == "C-DEFAULT"
+
+        # 3. Explicit call_flow channel overrides default
+        flow3 = _call_flow(channel_id="C-FLOW")
+        assert slack_service._resolve_channel(flow3, integration) == "C-FLOW"
+
+        # 4. Both unset returns None
+        empty_integration = _integration(default_channel_id="  ")
+        assert slack_service._resolve_channel(flow1, empty_integration) is None
 
 
 class TestScheduleSlackSummary:

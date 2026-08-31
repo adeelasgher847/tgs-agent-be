@@ -3,6 +3,7 @@ Booking & Calendar Token Mixin for BidirectionalStreamHandler.
 Handles Calendly-backed booking (via Gemini function-calling), in-call
 calendar-slot memory/dedup, and TTS-safe control-token stripping.
 """
+
 from __future__ import annotations
 
 import json
@@ -19,7 +20,9 @@ if TYPE_CHECKING:
     pass
 
 _RE_VOICE_END_CALL = re.compile(r"\[\s*END_CALL\s*\]", re.IGNORECASE)
-_RE_VOICE_SCREENING_QUALIFIED = re.compile(r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE)
+_RE_VOICE_SCREENING_QUALIFIED = re.compile(
+    r"\[\s*SCREENING_QUALIFIED\s*\]", re.IGNORECASE
+)
 
 
 class BookingMixin:
@@ -55,7 +58,9 @@ class BookingMixin:
                 # so a caller-requested duration cannot filter/size the results.
                 date_str = (args.get("date") or "").strip()
                 target = self._resolve_calendly_target_date(date_str)
-                date_from = datetime.combine(target, datetime.min.time(), tzinfo=timezone.utc)
+                date_from = datetime.combine(
+                    target, datetime.min.time(), tzinfo=timezone.utc
+                )
                 date_to = date_from + timedelta(days=1)
                 slots = await calendly_service.get_available_slots(
                     self.db, tenant_id, date_from, date_to
@@ -84,17 +89,23 @@ class BookingMixin:
                 slot_dt = self._resolve_cached_calendar_slot(slot_raw)
                 if slot_dt is None:
                     try:
-                        slot_dt = datetime.fromisoformat(slot_raw.replace("Z", "+00:00"))
+                        slot_dt = datetime.fromisoformat(
+                            slot_raw.replace("Z", "+00:00")
+                        )
                     except ValueError:
                         return {"error": f"invalid slot datetime: {slot_raw}"}
                 attendee_name = ""
                 try:
-                    from app.services.call_session_contact_state import get_contact_intake
+                    from app.services.call_session_contact_state import (
+                        get_contact_intake,
+                    )
 
                     intake = get_contact_intake(self.call_session)
                     attendee_name = (intake.get("name") or "").strip()
                 except Exception as exc:
-                    logger.debug("Failed to get contact intake name for booking: %s", exc)
+                    logger.debug(
+                        "Failed to get contact intake name for booking: %s", exc
+                    )
                 summary = (self.call_session.transcript_summary or "").strip()
                 result = await calendly_service.book_appointment(
                     self.db,
@@ -104,7 +115,11 @@ class BookingMixin:
                     attendee_name=attendee_name or "Caller",
                     description=summary or None,
                 )
-                return {"booked": True, "slot_start": slot_dt.isoformat(), "calendly_event": result.get("resource", result)}
+                return {
+                    "booked": True,
+                    "slot_start": slot_dt.isoformat(),
+                    "calendly_event": result.get("resource", result),
+                }
 
             return {"error": f"unknown function: {name}"}
         except ValueError as ve:
@@ -166,12 +181,27 @@ class BookingMixin:
         if not haystack.strip():
             return False
         booking_keywords = (
-            "book", "booking", "schedule", "appointment", "reschedule", "slot", "available slot",
-            "am", "pm", "a.m", "p.m", "date", "time", "tomorrow", "today",
+            "book",
+            "booking",
+            "schedule",
+            "appointment",
+            "reschedule",
+            "slot",
+            "available slot",
+            "am",
+            "pm",
+            "a.m",
+            "p.m",
+            "date",
+            "time",
+            "tomorrow",
+            "today",
         )
         return any(k in haystack for k in booking_keywords)
 
-    def _should_use_latency_fastpath(self, user_text: str, booking_intent_turn: bool) -> bool:
+    def _should_use_latency_fastpath(
+        self, user_text: str, booking_intent_turn: bool
+    ) -> bool:
         """
         Fast-path only for short/simple turns where heavy context is unlikely to help.
         Keeps booking/business-intent turns on the full context path.
@@ -188,9 +218,27 @@ class BookingMixin:
         if len(words) > max_words:
             return False
         heavy_intent_markers = (
-            "price", "pricing", "cost", "address", "phone", "email", "website",
-            "service", "book", "booking", "appointment", "schedule", "slot", "quote",
-            "area", "location", "city", "state", "zip", "county", "region",
+            "price",
+            "pricing",
+            "cost",
+            "address",
+            "phone",
+            "email",
+            "website",
+            "service",
+            "book",
+            "booking",
+            "appointment",
+            "schedule",
+            "slot",
+            "quote",
+            "area",
+            "location",
+            "city",
+            "state",
+            "zip",
+            "county",
+            "region",
         )
         return not any(k in text for k in heavy_intent_markers)
 
@@ -217,7 +265,11 @@ class BookingMixin:
             return False
         now = time.monotonic()
         for u_norm, _a_norm, ts in self._recent_agent_pairs:
-            if (now - ts) < self._DUP_USER_TURN_WINDOW_SEC and u_norm and u_norm == user_norm:
+            if (
+                (now - ts) < self._DUP_USER_TURN_WINDOW_SEC
+                and u_norm
+                and u_norm == user_norm
+            ):
                 return True
         return False
 
@@ -242,7 +294,9 @@ class BookingMixin:
                 # Same agent line recently spoken — duplicate regardless of user turn.
                 return True
             # Very similar (same prefix ≥ 90%) on a non-trivial reply — treat as dup too.
-            if len(a_norm) > 30 and (a_norm.startswith(prev_a) or prev_a.startswith(a_norm)):
+            if len(a_norm) > 30 and (
+                a_norm.startswith(prev_a) or prev_a.startswith(a_norm)
+            ):
                 shorter, longer = sorted((a_norm, prev_a), key=len)
                 if shorter and len(shorter) / max(len(longer), 1) >= 0.9:
                     # And the user turn matches (or was empty) — safe to dedupe.
@@ -252,27 +306,44 @@ class BookingMixin:
 
     def _is_agent_self_echo(self, transcript: str) -> bool:
         """
-        True when an incoming STT final closely matches text the agent recently spoke.
+        True when an incoming STT closely matches text the agent is currently speaking
+        or recently spoke.
 
         Phone-line sidetone and open-mic setups can feed the agent's TTS audio back
-        into the STT stream as a "final" transcript.  The word-overlap check requires
-        ≥80 % of the shorter text's words to be shared, with a minimum of 4 words in
-        the transcript so that short overlapping phrases don't trigger false positives.
-
-        Window: 12 s — covers TTS latency, full playback of long replies, plus STT
-        pipeline lag before the echo arrives as a final result.
+        into the STT stream as a transcript.
         """
-        if not transcript or not self._recent_agent_pairs:
+        if not transcript:
             return False
         t_norm = self._normalize_turn_text(transcript)
         if not t_norm:
             return False
         t_words = t_norm.split()
+        if not t_words:
+            return False
+
+        # 1. Live speaking check: if agent is currently speaking, check if incoming STT
+        # text matches what the agent is actively uttering right now (even 2-3 words).
+        current_speaking = getattr(self, "_current_speaking_agent_text", "")
+        if current_speaking:
+            curr_norm = self._normalize_turn_text(current_speaking)
+            if curr_norm:
+                if t_norm in curr_norm or curr_norm in t_norm:
+                    return True
+                curr_words = curr_norm.split()
+                if len(curr_words) >= 2 and len(t_words) >= 2:
+                    overlap_curr = len(set(t_words) & set(curr_words))
+                    if (overlap_curr / len(t_words)) >= 0.75:
+                        return True
+
+        # 2. Historical check: last 12s of committed agent replies (requires >= 4 words to avoid false positives)
+        recent_pairs = getattr(self, "_recent_agent_pairs", None)
+        if not recent_pairs:
+            return False
         if len(t_words) < 4:
             return False
         t_word_set = set(t_words)
         now = time.monotonic()
-        for _u, a_norm, ts in self._recent_agent_pairs:
+        for _u, a_norm, ts in recent_pairs:
             if (now - ts) > 12.0:
                 continue
             if not a_norm:
@@ -282,7 +353,7 @@ class BookingMixin:
                 continue
             overlap = len(t_word_set & a_word_set)
             shorter = min(len(t_word_set), len(a_word_set))
-            if overlap / shorter >= 0.80:
+            if shorter > 0 and (overlap / shorter >= 0.80):
                 return True
         return False
 
@@ -296,7 +367,9 @@ class BookingMixin:
         u_norm = self._normalize_turn_text(user_text or "")
         self._recent_agent_pairs.append((u_norm, a_norm, time.monotonic()))
         if len(self._recent_agent_pairs) > self._RECENT_AGENT_PAIRS_MAX:
-            self._recent_agent_pairs = self._recent_agent_pairs[-self._RECENT_AGENT_PAIRS_MAX :]
+            self._recent_agent_pairs = self._recent_agent_pairs[
+                -self._RECENT_AGENT_PAIRS_MAX :
+            ]
 
     def _should_defer_interim_response(self, transcript: str) -> bool:
         """
@@ -383,20 +456,32 @@ class BookingMixin:
             if not self._is_booking_context_active(final_transcript):
                 return False
             final_slot = self._resolve_cached_calendar_slot(final_transcript)
-            seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+            seed_slot = self._resolve_cached_calendar_slot(
+                self._turn_response_seed_text
+            )
             if final_slot and seed_slot and final_slot != seed_slot:
                 return True
             return False
 
         # Booking: slot/date resolution changed — re-run
-        if self._is_booking_context_active(final_transcript) or self._is_booking_context_active(
-            self._turn_response_seed_text
-        ):
+        if self._is_booking_context_active(
+            final_transcript
+        ) or self._is_booking_context_active(self._turn_response_seed_text):
             final_slot = self._resolve_cached_calendar_slot(final_transcript)
-            seed_slot = self._resolve_cached_calendar_slot(self._turn_response_seed_text)
+            seed_slot = self._resolve_cached_calendar_slot(
+                self._turn_response_seed_text
+            )
             if final_slot != seed_slot:
                 return True
-            correction_markers = ("wrong", "no no", "not ", "already", "spell", "11 00", "11 am")
+            correction_markers = (
+                "wrong",
+                "no no",
+                "not ",
+                "already",
+                "spell",
+                "11 00",
+                "11 am",
+            )
             if any(marker in final_norm for marker in correction_markers):
                 return True
 
@@ -554,9 +639,11 @@ class BookingMixin:
         """
         Final text gate before queueing TTS.
         """
+        from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+
         cleaned = self._strip_control_tokens_for_tts(text or "")
         cleaned = self._strip_premature_booking_confirmation(cleaned)
-        cleaned = re.sub(r"\s+", " ", cleaned).strip()
+        cleaned = prepare_tts_text_for_provider(cleaned, None)
         if self._looks_like_control_leak(cleaned):
             logger.warning("TTSGuard: dropped token-like leak text=%r", cleaned[:180])
             return ""
@@ -579,8 +666,7 @@ class BookingMixin:
                 candidates.add(slot_dt.strftime("%I %p").lstrip("0"))
 
             normalized_candidates = {
-                self._normalize_calendar_slot_key(candidate)
-                for candidate in candidates
+                self._normalize_calendar_slot_key(candidate) for candidate in candidates
             }
             if normalized in normalized_candidates:
                 return slot_dt
@@ -593,13 +679,19 @@ class BookingMixin:
         if parsed_dt is not None:
             for slot_dt in self._last_offered_calendar_slots:
                 if parsed_dt.tzinfo is None:
-                    offered_local = slot_dt.replace(tzinfo=None, second=0, microsecond=0)
+                    offered_local = slot_dt.replace(
+                        tzinfo=None, second=0, microsecond=0
+                    )
                     parsed_local = parsed_dt.replace(second=0, microsecond=0)
                     if offered_local == parsed_local:
                         return slot_dt
                 else:
-                    offered_utc = slot_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
-                    parsed_utc = parsed_dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+                    offered_utc = slot_dt.astimezone(timezone.utc).replace(
+                        second=0, microsecond=0
+                    )
+                    parsed_utc = parsed_dt.astimezone(timezone.utc).replace(
+                        second=0, microsecond=0
+                    )
                     if offered_utc == parsed_utc:
                         return slot_dt
 
@@ -609,7 +701,8 @@ class BookingMixin:
                 matches = [
                     slot_dt
                     for slot_dt in self._last_offered_calendar_slots
-                    if slot_dt.hour == parsed_time.hour and slot_dt.minute == parsed_time.minute
+                    if slot_dt.hour == parsed_time.hour
+                    and slot_dt.minute == parsed_time.minute
                 ]
                 if len(matches) == 1:
                     return matches[0]
@@ -624,9 +717,7 @@ class BookingMixin:
         if self.call_session and self.call_session.call_transcript:
             try:
                 raw = self.call_session.call_transcript
-                conversation_history = (
-                    json.loads(raw) if isinstance(raw, str) else raw
-                )
+                conversation_history = json.loads(raw) if isinstance(raw, str) else raw
             except Exception:
                 conversation_history = []
         if not isinstance(conversation_history, list):

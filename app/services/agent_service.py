@@ -15,6 +15,7 @@ from app.schemas.agent import (
     AgentCreate,
     AgentUpdate,
     AgentListResponse,
+    AgentStatusEnum,
     TtsModelSchema,
     TtsProviderEnum,
     SttModelSchema,
@@ -224,7 +225,21 @@ class AgentService:
             update_dict["model_id"] = model.id
             update_dict["provider_id"] = model.provider_id
         if agent_in.status is not None:
-            update_dict["status"] = agent_in.status.value
+            requested_status = agent_in.status.value
+            # `Agent.status` conflates two concerns: telephony-binding
+            # readiness ("pending"/"ready"/"error", written by
+            # PhoneNumberService.bind_number/unbind_number) and generic
+            # enable/disable state ("active"/"inactive"/"draft", written by
+            # this generic update endpoint). The outbound-call gate in
+            # voice_call_service only treats "ready" as callable, so a
+            # generic "activate" request against an agent with a bound
+            # phone number must not clobber "ready" — otherwise the agent
+            # becomes uncallable despite a genuinely active binding.
+            if requested_status == AgentStatusEnum.active.value and self.has_active_phone_binding(
+                db, agent.id
+            ):
+                requested_status = AgentStatusEnum.ready.value
+            update_dict["status"] = requested_status
         if agent_in.tts_model is not None:
             update_dict.update(self._resolve_tts_model(db, agent_in.tts_model))
             if agent_in.tts_model.provider != TtsProviderEnum.elevenlabs_byo:
@@ -412,14 +427,11 @@ class AgentService:
         if not prompt_text:
             return
 
-        if not settings.PINECONE_API_KEY:
-            logger.info(
-                "Auto KB ingest skipped for agent_id=%s: PINECONE_API_KEY not configured",
-                agent.id,
-            )
-            return
-
-        # We need at least one embedding provider available.
+        # We need at least one embedding provider available. RAG is backed by
+        # pgvector on Postgres (see rag_service.py) -- there is no Pinecone
+        # dependency here; a stale PINECONE_API_KEY gate previously caused
+        # this to be skipped unconditionally on every tenant that (correctly)
+        # never configures Pinecone.
         if not settings.GEMINI_API_KEY and not settings.OPENAI_API_KEY:
             logger.info(
                 "Auto KB ingest skipped for agent_id=%s: no embedding provider key configured",

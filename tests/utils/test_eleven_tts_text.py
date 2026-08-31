@@ -10,10 +10,19 @@ from app.utils.eleven_tts_text import (
 )
 
 
-def test_elevenlabs_pass_through():
-    raw = "[breathes] Hello there [sigh]"
-    assert prepare_tts_text_for_provider(raw, "elevenlabs") == raw
-    assert prepare_tts_text_for_provider(raw, "ElevenLabs") == raw
+def test_elevenlabs_strips_audio_and_ssml_tags():
+    """Verify ElevenLabs strips SSML tags and audio bracket tags to prevent literal reading."""
+    assert prepare_tts_text_for_provider("[breathes] Hello there [sigh]", "elevenlabs") == "Hello there"
+    assert prepare_tts_text_for_provider("[excited] That's wonderful!", "elevenlabs") == "That's wonderful!"
+    assert prepare_tts_text_for_provider("[sad] I'm sorry to hear that.", "elevenlabs") == "I'm sorry to hear that."
+    assert (
+        prepare_tts_text_for_provider(
+            '<speak><prosody rate="0.93" pitch="0st" volume="medium"><break time="400ms"/> Hello world.</prosody></speak>',
+            "elevenlabs",
+        )
+        == "Hello world."
+    )
+    assert prepare_tts_text_for_provider('<break time="400ms"/> Let me see.', "elevenlabs") == "Let me see."
 
 
 def test_google_strips_known_tags():
@@ -30,18 +39,36 @@ def test_google_strips_known_tags():
     )
 
 
+def test_tags_split_across_streaming_chunks():
+    """Verify split SSML/XML tags across streaming chunks do not leak tag words."""
+    # Chunk 1 ends with unclosed tag
+    assert prepare_tts_text_for_provider('Hello <prosody rate="95%"', "elevenlabs") == "Hello"
+    # Chunk 2 starts with trailing tag closure
+    assert prepare_tts_text_for_provider(' pitch="+1st">how are you?', "elevenlabs") == "how are you?"
+    # Unclosed break tag fragment
+    assert prepare_tts_text_for_provider('time="400ms"/> Welcome!', "elevenlabs") == "Welcome!"
+
+
 def test_unknown_brackets_preserved():
     s = "Price is [500] and code [SKU-12]."
     assert strip_eleven_v3_style_tags_for_non_eleven_tts(s) == s
+    assert prepare_tts_text_for_provider(s, "elevenlabs") == s
+
+
+def test_normal_business_and_punctuation_intact():
+    s = "Your 10% discount on order #1234 is confirmed for 2:30 PM."
+    assert prepare_tts_text_for_provider(s, "elevenlabs") == s
 
 
 def test_no_brackets_fast_path():
     s = "Plain text without tags."
-    assert strip_eleven_v3_style_tags_for_non_eleven_tts(s) is s
+    assert strip_eleven_v3_style_tags_for_non_eleven_tts(s) == s
 
 
 def test_empty_after_strip():
     assert prepare_tts_text_for_provider("[breathes]", "google") == ""
+    assert prepare_tts_text_for_provider("[breathes]", "elevenlabs") == ""
+    assert prepare_tts_text_for_provider('<break time="200ms"/>', "elevenlabs") == ""
 
 
 def test_default_non_eleven_strips():
@@ -49,35 +76,24 @@ def test_default_non_eleven_strips():
     assert "[breathes]" not in prepare_tts_text_for_provider("[breathes] Hi", "openai-tts")
 
 
-def test_only_elevenlabs_supports_audio_tags():
-    assert supports_elevenlabs_audio_tags("elevenlabs") is True
-    assert supports_elevenlabs_audio_tags("ElevenLabs") is True
+def test_audio_tags_gated_by_provider_and_settings():
+    # Non-ElevenLabs providers never support the bracketed audio tags.
     assert supports_elevenlabs_audio_tags("google") is False
     assert supports_elevenlabs_audio_tags(None) is False
-
-
-def test_supports_respects_config_disable(monkeypatch):
-    from app.core import config
-    from app.utils import eleven_tts_text
-
-    monkeypatch.setattr(config.settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", False)
-    # settings is the same object used by the module
-    assert eleven_tts_text.supports_elevenlabs_audio_tags("elevenlabs") is False
+    # ElevenLabs is gated by settings.ENABLE_ELEVENLABS_AUDIO_TAGS, which
+    # defaults to False (Flash/Turbo/Multilingual read brackets out loud).
+    assert supports_elevenlabs_audio_tags("elevenlabs") is False
     assert build_elevenlabs_audio_tag_prompt_block("elevenlabs") == ""
 
 
-def test_prompt_block_only_emitted_for_elevenlabs():
-    from app.utils.eleven_tts_text import get_elevenlabs_voice_prompt_rule_lines
+def test_audio_tags_can_be_opted_back_in_via_settings():
+    """Operators can re-enable ElevenLabs audio tags via ENABLE_ELEVENLABS_AUDIO_TAGS."""
+    from unittest.mock import patch
 
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "ELEVENLABS" in block
-    assert "[breathe]" in block or "[breathes]" in block
-    assert "[excited]" in block
-    assert "[sad]" in block or "sorrowful" in block
-    assert build_elevenlabs_audio_tag_prompt_block("google") == ""
-    a, b, c = get_elevenlabs_voice_prompt_rule_lines()
-    assert a.startswith("- OUTPUT")
-    assert "3. NO SSML" in c
+    with patch("app.utils.eleven_tts_text.settings.ENABLE_ELEVENLABS_AUDIO_TAGS", True):
+        assert supports_elevenlabs_audio_tags("elevenlabs") is True
+        # Non-ElevenLabs providers remain unaffected regardless of the setting.
+        assert supports_elevenlabs_audio_tags("google") is False
 
 
 def test_contains_elevenlabs_audio_tag_detects_known_tags():
@@ -85,58 +101,7 @@ def test_contains_elevenlabs_audio_tag_detects_known_tags():
     assert contains_elevenlabs_audio_tag("Price is [500]") is False
 
 
-def test_breathing_fallback_added_for_long_eleven_text():
+def test_breathing_fallback_does_not_inject_literal_tags():
     raw = "Hello there, thank you for calling today."
-    assert apply_elevenlabs_breathing_fallback(raw) == "[breathes] Hello there, thank you for calling today."
-    assert prepare_tts_text_for_provider(raw, "elevenlabs") == raw
+    assert apply_elevenlabs_breathing_fallback(raw) == raw
 
-
-def test_breathing_fallback_skips_short_or_control_token_text():
-    assert apply_elevenlabs_breathing_fallback("Thanks") == "Thanks"
-    token_text = "Sure [CHECK_SLOTS:date=2026-05-01]"
-    assert apply_elevenlabs_breathing_fallback(token_text) == token_text
-
-
-# ─────────────────────────────────────────────────────────────────────────
-# Phase 5-4: build_elevenlabs_audio_tag_prompt_block() is the ONE
-# authoritative bracket-tag rule source. These assert the specific new
-# rules text is present, so a future edit can't silently drop one.
-# ─────────────────────────────────────────────────────────────────────────
-
-def test_prompt_block_states_max_one_tag_per_response():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "ONE tag per response" in block or "one optional bracketed audio tag" in block.lower()
-
-
-def test_prompt_block_states_leading_placement_only():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "first thing in the response" in block.lower() or "start of the spoken line" in block.lower()
-
-
-def test_prompt_block_prohibits_mid_sentence_and_word_emphasis_placement():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "middle" in block.lower()
-    assert "emphasize" in block.lower()
-
-
-def test_prompt_block_prohibits_inventing_new_tags():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "no others" in block.lower() or "never invent" in block.lower()
-
-
-def test_prompt_block_default_is_no_tag_and_not_forced():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    assert "default is **no** tag" in block.lower() or "default is no tag" in block.lower()
-    assert "do not add a tag to every message" in block.lower() or "do not add tags in every message" in block.lower() or "never force" in block.lower()
-
-
-def test_prompt_block_preserves_control_token_carve_out():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    for token in ("[CHECK_SLOTS:", "[BOOK_APPOINTMENT:", "[END_CALL]", "[SCREENING_QUALIFIED]", "[OUTCOME:"):
-        assert token in block
-
-
-def test_prompt_block_whitelist_unchanged():
-    block = build_elevenlabs_audio_tag_prompt_block("elevenlabs")
-    for tag in ("[breathes]", "[breathe]", "[excited]", "[sad]", "[sorrowful]"):
-        assert tag in block

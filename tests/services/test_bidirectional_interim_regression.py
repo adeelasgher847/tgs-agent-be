@@ -117,6 +117,13 @@ def _empty_handler() -> Handler:
     h.call_session = None
     h._screening_decline_handled = False
     h._jd_recruitment_screening_active = lambda: False  # type: ignore[method-assign, assignment]
+    # Quick-ack turn-identity gate state: incremented by _maybe_process_interim
+    # (speculative interim) and by the final-transcript no-interim-in-flight
+    # branch (see BidirectionalStreamHandler._send_quick_acknowledgement).
+    h._turn_generation_id = 0
+    h._last_quick_ack_turn_id = -1
+    h._turns_since_last_ack = 0
+    h._last_quick_ack_phrase = ""
     return h
 
 
@@ -235,6 +242,104 @@ def test_complete_final_regen_calls_generate_once() -> None:
     asyncio.run(_body())
 
 
+# --- Re-endpointing duplicate STT finals (real production bug) ---
+#
+# Deepgram sometimes emits a second "final" a few hundred ms after the first
+# for the same spoken turn, where one transcript is a substring of the other
+# (observed live: first final 'Hello there. Could I Hey. Hi. How are you
+# today?' -- garbled/merged with stale text -- followed ~400ms later by the
+# corrected 'Hey. Hi. How are you today?'). Both used to independently reach
+# the no-interim-in-flight branch and fire their own full LLM+TTS turn, so
+# the caller heard the agent answer twice for one utterance.
+
+
+def test_reendpoint_containment_duplicate_final_not_regenerated() -> None:
+    """Second final is a substring of the first (garbled-then-corrected) --
+    must not trigger a second LLM call."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hello there. Could I Hey. Hi. How are you today?", 1.0
+            )
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hey. Hi. How are you today?", 1.0
+            )
+
+        assert calls == ["Hello there. Could I Hey. Hi. How are you today?"]
+
+    asyncio.run(_body())
+
+
+def test_reendpoint_containment_duplicate_reverse_order_not_regenerated() -> None:
+    """Same bug, but the short/clean final arrives FIRST and the
+    longer/garbled one arrives second -- containment check must be symmetric."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hey. Hi. How are you today?", 1.0
+            )
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hello there. Could I Hey. Hi. How are you today?", 1.0
+            )
+
+        assert calls == ["Hey. Hi. How are you today?"]
+
+    asyncio.run(_body())
+
+
+def test_reendpoint_dedup_does_not_suppress_short_word_false_positive() -> None:
+    """Guardrail: a genuine, unrelated follow-up must not be dropped just
+    because it happens to contain a short common word from the previous
+    (already-answered) turn -- containment dedup requires the shorter string
+    to have at least 3 words."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(h, "yes", 1.0)
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "yes I understand, but what about the pricing for the annual plan?", 1.0
+            )
+
+        assert calls == [
+            "yes",
+            "yes I understand, but what about the pricing for the annual plan?",
+        ]
+
+    asyncio.run(_body())
+
+
 def test_should_accept_final_transcript_allows_soft_multword() -> None:
     h = _empty_handler()
     assert Handler._should_accept_final_transcript(h, "yes i need help", 0.18) is True
@@ -243,3 +348,83 @@ def test_should_accept_final_transcript_allows_soft_multword() -> None:
 def test_should_accept_final_transcript_rejects_soft_filler() -> None:
     h = _empty_handler()
     assert Handler._should_accept_final_transcript(h, "uh huh", 0.20) is False
+
+
+# --- TOCTOU race on _llm_turn_serial_lock re-acquisition ---
+#
+# _complete_llm_turn_after_stt_final releases _llm_turn_serial_lock while it
+# awaits an in-flight interim task, then re-acquires the lock to (maybe)
+# write _llm_last_answered_transcript/_ts if the interim task didn't pan out.
+# In between, a second, independent final-transcript handler (a genuinely
+# newer turn) can run start-to-finish and advance those same two fields.
+# The first handler must not then clobber the newer turn's dedup state with
+# its own stale values.
+
+
+def test_stale_interim_fallback_does_not_clobber_newer_turns_dedup_guard() -> None:
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._should_regenerate_on_final = types.MethodType(lambda _self, _ft: False, h)  # type: ignore[misc,assignment]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+        h._interim_task_response_produced = False
+
+        generated_for: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            generated_for.append(user_text)
+
+        Handler_generate_patch = patch.object(
+            Handler, "generate_and_stream_response", new=fake_generate
+        )
+
+        # Turn A: a final transcript arrives while an interim LLM task for
+        # this same turn is still running (not done yet).
+        interim_future: asyncio.Future = asyncio.get_event_loop().create_future()
+        h._turn_response_started = True
+        h._turn_response_seed_text = "seed"
+        h._llm_response_task = interim_future
+
+        with Handler_generate_patch:
+            task_a = asyncio.create_task(
+                Handler._complete_llm_turn_after_stt_final(h, "final A utterance", 0.9)
+            )
+            # Let task_a run Phase 1: it observes turn_response_started=True,
+            # should_regenerate=False, interim task not done -> takes the
+            # _wait_for_interim_task branch, snapshots the dedup guard
+            # (still "" / 0.0), releases the lock, and suspends inside
+            # asyncio.wait_for(asyncio.shield(interim_future), timeout=2.5).
+            for _ in range(5):
+                await asyncio.sleep(0)
+
+            assert h._turn_response_started is False  # cleared by task_a's Phase 1
+            assert not task_a.done()
+
+            # Turn B: a completely independent, newer final transcript comes
+            # in and runs start-to-finish while task_a is still waiting.
+            task_b = asyncio.create_task(
+                Handler._complete_llm_turn_after_stt_final(h, "final B utterance", 0.9)
+            )
+            await task_b
+
+            assert h._llm_last_answered_transcript == "final B utterance"
+            newer_ts = h._llm_last_answered_ts
+            assert newer_ts > 0.0
+
+            # Now let task_a's interim task resolve with an invalid/empty
+            # result, forcing it down the "generate for final" fallback path
+            # that re-acquires the lock to update the dedup guard.
+            interim_future.set_result("")
+            await task_a
+
+        # The fix: task_a's stale write must NOT clobber turn B's newer
+        # dedup-guard state.
+        assert h._llm_last_answered_transcript == "final B utterance"
+        assert h._llm_last_answered_ts == newer_ts
+
+        # Both turns still generated their own response (the race is about
+        # guard bookkeeping, not about suppressing legitimate generation).
+        assert generated_for == ["final B utterance", "final A utterance"]
+
+    asyncio.run(_body())

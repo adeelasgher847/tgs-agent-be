@@ -14,7 +14,6 @@ from app.core.config import settings
 from typing import AsyncIterator
 import os
 import json
-import re
 from app.core.logger import logger
 from google.api_core.client_options import ClientOptions
 
@@ -382,10 +381,9 @@ class GoogleTTSService:
         # In streaming_synthesize, HD "markup" is NOT SSML. If we send SSML tags here,
         # some voices may literally speak them (e.g. "less than prosody...").
         # So we ALWAYS stream plain text (strip any SSML/XML tags defensively).
-        text_stripped = (text or "").strip()
-        if "<" in text_stripped and ">" in text_stripped:
-            text_stripped = re.sub(r"<[^>]+>", "", text_stripped)
-            text_stripped = re.sub(r"\s+", " ", text_stripped).strip()
+        from app.utils.ssml_utils import strip_ssml_tags
+
+        text_stripped = strip_ssml_tags(text or "")
 
         async def request_generator():
             # First request must be config only

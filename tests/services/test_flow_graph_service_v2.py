@@ -123,3 +123,54 @@ class TestValidateGraphEntryNode:
         dup_err = next(e for e in errors if e["code"] == "duplicate_edge_handle")
         assert dup_err["node_id"] == "branch_node"
         assert "duplicate outgoing edges" in dup_err["message"]
+
+    def test_stringified_json_flow_data_validates_cleanly(self):
+        import json
+
+        data_str = json.dumps(_flow())
+        assert validate_graph(data_str) == []
+
+    def test_invalid_json_string_returns_validation_error(self):
+        errors = validate_graph("not a valid json {")
+        assert len(errors) == 1
+        assert errors[0]["code"] == "invalid_flow_data"
+
+    def test_none_flow_data_returns_empty_graph_error(self):
+        errors = validate_graph(None)
+        assert len(errors) == 1
+        assert errors[0]["code"] == "empty_graph"
+
+    def test_non_dict_flow_data_returns_validation_error(self):
+        errors = validate_graph(12345)  # type: ignore[arg-type]
+        assert len(errors) == 1
+        assert errors[0]["code"] == "invalid_flow_data"
+
+    def test_node_as_string_does_not_crash_and_returns_invalid_node_error(self):
+        # Reproduces the AttributeError: 'str' object has no attribute 'get' bug
+        data = {
+            "entry_node_id": "greet",
+            "nodes": ["greet", "branch_node"],
+            "edges": [],
+        }
+        errors = validate_graph(data)
+        codes = [e["code"] for e in errors]
+        assert "invalid_node" in codes
+
+    def test_edge_as_string_does_not_crash_and_returns_invalid_edge_error(self):
+        data = _flow()
+        data["edges"].append("malformed_edge_string")
+        errors = validate_graph(data)
+        codes = [e["code"] for e in errors]
+        assert "invalid_edge" in codes
+
+    def test_compile_graph_with_stringified_json_and_malformed_nodes(self):
+        import json
+
+        data_str = json.dumps(_flow())
+        compiled = compile_graph(data_str)
+        assert "greet" in compiled
+
+        # None or invalid input returns empty dict without crashing
+        assert compile_graph(None) == {}
+        assert compile_graph("invalid json") == {}
+        assert compile_graph({"nodes": ["string_node"], "edges": ["string_edge"]}) == {}

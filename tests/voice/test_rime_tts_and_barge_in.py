@@ -541,10 +541,10 @@ class TestGuardedBargeIn:
         h._tts_pipeline.cancel_current_and_clear_queue.assert_called_once()
 
     def test_barge_in_does_not_fire_on_single_word_even_high_confidence(self):
-        """Default min 2 words: single-word 'stop' must not cancel (phantom guard)."""
+        """Default min 2 words: non-command single-word 'hello' must not cancel (phantom guard)."""
         h = _base_handler()
         h._is_tts_playing = True
-        asyncio.run(h._maybe_process_interim("stop", 0.85))
+        asyncio.run(h._maybe_process_interim("hello", 0.85))
         h._tts_pipeline.cancel_current_and_clear_queue.assert_not_called()
 
     def test_barge_in_fires_on_single_word_when_min_words_is_one(self):

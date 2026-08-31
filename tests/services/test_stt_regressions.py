@@ -199,3 +199,99 @@ def test_prerecorded_mulaw_path_passes_sample_rate(monkeypatch):
     assert out["transcript"] == "hello"
     assert captured.get("encoding") == "mulaw"
     assert captured.get("sample_rate") == 8000
+
+
+def test_deepgram_sender_loop_sends_keepalive_on_idle_and_resumes_audio():
+    """
+    Verify sender_loop wakes up on queue idle timeout, invokes send_keep_alive(),
+    and continues forwarding subsequent audio chunks normally without dropping or disconnecting.
+    """
+    import threading
+    import time
+
+    events = []
+    listening_started = threading.Event()
+
+    class FakeConnection:
+        def __init__(self):
+            self._websocket = None
+
+        def on(self, *args, **kwargs):
+            pass
+
+        def send_keep_alive(self):
+            events.append("keep_alive")
+
+        def send_media(self, chunk):
+            events.append(("media", chunk))
+
+        def send_finalize(self):
+            events.append("finalize")
+
+        def send_close_stream(self):
+            events.append("close_stream")
+
+        def start_listening(self):
+            listening_started.set()
+
+    class FakeConnectCM:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def __enter__(self):
+            return self.conn
+
+        def __exit__(self, exc_type, exc_val, exc_tb):
+            pass
+
+    class FakeListenV1:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def connect(self, **kwargs):
+            return FakeConnectCM(self.conn)
+
+    class FakeClient:
+        def __init__(self, conn):
+            self.listen = SimpleNamespace(v1=FakeListenV1(conn))
+
+    conn = FakeConnection()
+    svc = DeepgramSTTService()
+    session = svc.StreamingSTTSession(
+        client=FakeClient(conn),
+        language_code="en-US",
+        encoding="MULAW",
+        sample_rate=8000,
+        interim_results=True,
+        single_utterance=False,
+    )
+
+    # Monkeypatch the queue get timeout in the test to 0.05s so the test runs in <0.3s
+    orig_get = session._audio_q.get
+
+    def fast_get(timeout=None):
+        if timeout == 4.0:
+            return orig_get(timeout=0.05)
+        return orig_get(timeout=timeout)
+
+    session._audio_q.get = fast_get
+
+    t = threading.Thread(target=session._run_blocking_stream, daemon=True)
+    t.start()
+
+    assert listening_started.wait(timeout=1.0)
+
+    # 1. Let it sit idle -> verify keep_alive is sent
+    time.sleep(0.12)
+    assert "keep_alive" in events
+
+    # 2. Push audio -> verify chunk is forwarded normally
+    session.push_audio(b"audio_chunk_1")
+    time.sleep(0.05)
+    assert ("media", b"audio_chunk_1") in events
+
+    # 3. Finish session -> verify clean shutdown
+    session.finish()
+    t.join(timeout=1.0)
+    assert session._session_end_reason == "client_finish"
+

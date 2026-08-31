@@ -55,7 +55,8 @@ async def test_publish_mulaw_writes_pcm_into_int16_frame_without_raising():
     publisher._source = MagicMock()
     publisher._source.capture_frame = AsyncMock()
 
-    mulaw_bytes = bytes([0xFF]) * MULAW_FRAME_BYTES
+    # One full MULAW_FRAME_BYTES chunk of non-zero audio bytes (0x00 = max negative in ulaw).
+    mulaw_bytes = bytes([0x00]) * MULAW_FRAME_BYTES
 
     await publisher.publish_mulaw(mulaw_bytes)
 

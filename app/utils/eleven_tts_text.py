@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 
 from app.core.config import settings
+from app.utils.ssml_utils import strip_ssml_tags
+
 
 # Single-pass regex; only substitute when inner normalizes to a known tag
 _TAG_RE = re.compile(r"\[([^\]]*)\]")
@@ -106,29 +108,40 @@ def strip_eleven_v3_style_tags_for_non_eleven_tts(text: str) -> str:
 
 def prepare_tts_text_for_provider(text: str, provider_slug: str | None) -> str:
     """
-    ElevenLabs: pass through known v3 audio tags; strip unknown/unsupported ones.
-    All other TTS providers: strip all known Eleven-style bracket tags.
-    No network; negligible CPU; safe when text has no tags (fast path: no '[').
+    Sanitize text before it reaches any TTS provider adapter.
+    - Strips all complete and incomplete SSML/XML tags (<speak>, <prosody>, <break>, etc.).
+    - Strips all bracket audio tags ([breathes], [excited], [sad], [pause], etc.).
+    - Strips backend control tokens ([END_CALL], [TRANSFER_CALL], [SCREENING_QUALIFIED], etc.).
+    - Preserves legitimate business bracket text (e.g. [SKU-100], [Order #123]).
     """
-    if (provider_slug or "").lower() == "elevenlabs":
-        if not text or "[" not in text:
-            return text
-        # Strip [pause]/[pauses] — some Eleven model variants speak them literally.
-        out = _PAUSE_TAG_RE.sub("", text)
-        # Also strip any [tag] whose inner text is NOT in the known ElevenLabs set.
-        # This prevents unknown/malformed variants (e.g. [breath], [breathing]) from
-        # being spoken as literal words by the model.
-        def _repl_unknown(m: re.Match) -> str:
-            raw = m.group(1)
-            if not raw.strip():
-                return ""
-            key = _normalize_tag_inner(raw)
-            return m.group(0) if key in _ELEVEN_V3_TAG_INNERS else ""
+    if not text:
+        return ""
 
-        out = _TAG_RE.sub(_repl_unknown, out)
-        out = re.sub(r"[ \t]{2,}", " ", out)
-        return out.strip()
-    return strip_eleven_v3_style_tags_for_non_eleven_tts(text)
+    # 1. Defensively strip all SSML / XML tags
+    cleaned = strip_ssml_tags(text)
+    if not cleaned:
+        return ""
+
+    if "[" not in cleaned:
+        return cleaned
+
+    # 2. Strip pause tags and control tokens
+    cleaned = _PAUSE_TAG_RE.sub("", cleaned)
+    cleaned = _CONTROL_TOKEN_RE.sub("", cleaned)
+
+    # 3. Strip all known bracketed prosody/audio tags for all providers
+    def _repl_audio_tag(m: re.Match) -> str:
+        raw = m.group(1)
+        if not raw.strip():
+            return ""
+        key = _normalize_tag_inner(raw)
+        if key in _ELEVEN_V3_TAG_INNERS:
+            return ""
+        return m.group(0)
+
+    cleaned = _TAG_RE.sub(_repl_audio_tag, cleaned)
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    return cleaned.strip()
 
 
 def supports_elevenlabs_audio_tags(provider_slug: str | None) -> bool:
@@ -138,25 +151,17 @@ def supports_elevenlabs_audio_tags(provider_slug: str | None) -> bool:
     """
     if (provider_slug or "").lower() != "elevenlabs":
         return False
-    return bool(getattr(settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", True))
+    return bool(getattr(settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", False))
 
 
 def get_elevenlabs_voice_prompt_rule_lines() -> tuple[str, str, str]:
     """
-    (output_plain_text_rule, no_ssml_rule_base, no_ssml_rule) for the base / custom
-    voice system prompts. Only call when supports_elevenlabs_audio_tags is True
-    to avoid duplicate instruction blocks for non–ElevenLabs TTS.
+    (output_plain_text_rule, no_ssml_rule_base, no_ssml_rule) for voice system prompts.
     """
-    # Short inline reminder; the detailed policy lives in build_elevenlabs_audio_tag_prompt_block.
-    short = (
-        "Optional: at most ONE ElevenLabs audio tag per reply when it clearly helps: "
-        "[breathes] or [breathe], [excited], [sad] or [sorrowful] — "
-        "not every line; most replies have zero tags. See # ELEVENLABS AUDIO TAGS below."
-    )
     return (
-        f"- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML or XML. {short}",
-        f"4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only. {short}",
-        f"3. NO SSML: Plain text only. No <speak>, <prosody>, or XML. {short}",
+        "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or bracketed tags. Prosody is handled by the system.",
+        "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.",
+        "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.",
     )
 
 
@@ -172,51 +177,16 @@ def contains_elevenlabs_audio_tag(text: str) -> bool:
 
 def apply_elevenlabs_breathing_fallback(text: str) -> str:
     """
-    Add a subtle leading [breathes] tag for longer ElevenLabs utterances when the
-    model did not emit any known audio tag itself.
-
-    Safety rules:
-    - Never touch control-token responses.
-    - Never add a duplicate if a known audio tag already exists.
-    - Skip very short transactional replies.
+    Pass through text cleanly without injecting literal [breathes] tags.
     """
-    if not text or not text.strip():
-        return text
-    if _CONTROL_TOKEN_RE.search(text):
-        return text
-    if contains_elevenlabs_audio_tag(text):
-        return text
-
-    stripped = text.strip()
-    word_count = len(stripped.split())
-    has_long_form_shape = word_count >= 9 or any(mark in stripped for mark in (".", "?", "!", ",", ";", ":"))
-    if word_count < 6 or not has_long_form_shape:
-        return stripped
-    return f"[breathes] {stripped}"
+    return (text or "").strip()
 
 
 def build_elevenlabs_audio_tag_prompt_block(provider_slug: str | None) -> str:
     """
-    Guidance injected into voice prompts.
-    Only when ElevenLabs TTS is in use and ENABLE_ELEVENLABS_AUDIO_TAGS is True; other
-    providers must never receive this block (brackets can be read aloud or break TTS).
+    Guidance injected into voice prompts. Empty when audio tags are disabled.
     """
     if not supports_elevenlabs_audio_tags(provider_slug):
         return ""
-    return (
-        "# ELEVENLABS AUDIO TAGS — THIS IS THE ONLY BRACKET-TAG RULE FOR THIS CALL\n"
-        "- This call uses **ElevenLabs** TTS. Bracketed audio tags are **optional**. Default is **no** tag "
-        "— most replies should have zero tags; do NOT add a tag to every message and never force one when "
-        "the emotional context does not call for it.\n"
-        "- **Allowed tags (and no others):** [breathes] or [breathe] (light lead-in); "
-        "[excited] (genuine energy); [sad] or [sorrowful] (empathy — use sparingly, professional call tone). "
-        "Never invent or use any other bracketed tag.\n"
-        "- **At most ONE tag per response.** Never use more than one tag in the same reply.\n"
-        "- **Placement:** if used, the tag must be the very first thing in the response, before any words. "
-        "Never place a tag in the middle or at the end of a sentence, and never place a tag immediately "
-        "before a specific word just to emphasize that word.\n"
-        "- **When to skip tags:** short transactional replies (yes/no, numbers, times, one-line confirmations), "
-        "or any reply where plain text is enough — in those cases output no tag at all.\n"
-        "- **Never** put audio tags inside system tokens: [CHECK_SLOTS:...], [BOOK_APPOINTMENT:...], "
-        "[END_CALL], [SCREENING_QUALIFIED], or [OUTCOME:...].\n"
-    )
+    return ""
+

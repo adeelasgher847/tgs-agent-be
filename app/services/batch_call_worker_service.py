@@ -16,7 +16,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import text, update
+from sqlalchemy import select, text, update
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -113,6 +113,37 @@ class BatchCallWorkerService:
 
     # ── Dispatch ──────────────────────────────────────────────────────────────
 
+    def _resolve_system_call_owner_user_id(
+        self,
+        agent_id: uuid.UUID,
+        workspace_id: uuid.UUID,
+    ) -> uuid.UUID | None:
+        """
+        CallSession.user_id is a NOT NULL FK to `user.id`, but a batch-dispatched
+        call (is_system_call=True) has no authenticated human initiator. Follow
+        the same attribution convention already used for other "no real user"
+        call paths — inbound Twilio calls (app/routers/voice.py:
+        user_id=resolved_agent.created_by) and demo-link calls
+        (app/routers/sdk.py: owner_user_id = agent.created_by or
+        demo_link.created_by_user_id, falling back to the workspace creator):
+        attribute the session to whoever created the agent being dialed, and
+        fall back to the workspace's creator (RBAC `is_creator`) if the agent
+        has no creator on record (e.g. an API-key-originated agent).
+        """
+        from app.models.agent import Agent
+        from app.models.user import user_tenant_association
+
+        agent = self._db.get(Agent, agent_id)
+        owner_user_id = getattr(agent, "created_by", None)
+        if owner_user_id is None:
+            owner_user_id = self._db.execute(
+                select(user_tenant_association.c.user_id).where(
+                    user_tenant_association.c.tenant_id == workspace_id,
+                    user_tenant_association.c.is_creator == True,  # noqa: E712
+                )
+            ).scalar_one_or_none()
+        return owner_user_id
+
     async def dispatch_record(
         self,
         record: BatchCallRecord,
@@ -195,13 +226,15 @@ class BatchCallWorkerService:
             phone_number_id=rotated_phone_number_id,
         )
 
+        owner_user_id = self._resolve_system_call_owner_user_id(agent_id, workspace_id)
+
         try:
             result = await initiate_call(
                 call_request=call_request,
                 db=self._db,
                 is_system_call=True,
                 tenant_id=workspace_id,
-                user_id=None,
+                user_id=owner_user_id,
             )
         except Exception as exc:
             logger.error("Batch dispatch error for record %s: %s", record.id, exc)

@@ -60,6 +60,11 @@ from app.voice.conversation_orchestrator import ConversationOrchestrator, VOICE_
 from app.voice.gemini_live_audio_bridge import GEMINI_OUTPUT_PCM_RATE_HZ
 from app.services.openai_realtime_service import LIVEKIT_AUDIO_RATE_HZ as OPENAI_REALTIME_AUDIO_RATE_HZ
 from app.voice.humanization_engine import pause_frames_for_chunk
+from app.voice.backchannel_classifier import (
+    TurnClassification,
+    classify_turn,
+    is_known_non_actionable_backchannel,
+)
 
 if TYPE_CHECKING:
     from app.voice.humanization_engine import PacingHint
@@ -436,6 +441,15 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         self.is_speaking = False
         self._is_tts_playing = False
         self._tts_cancel = asyncio.Event()
+        # Soft barge-in observability only (see _on_stt_speech_started below) --
+        # unlike bidirectional_stream.py's TtsStreamMixin-based Twilio path,
+        # there is no existing per-chunk gain/volume pipeline on this
+        # LiveKit-native publish path to hook a real "duck" into without
+        # adding new raw-PCM gain math to the streaming hot path. Tracked
+        # here so the signal is at least visible/countable; wiring an actual
+        # audio duck is a follow-up once a gain primitive exists for this
+        # transport (see final report / flag for a future task).
+        self._soft_duck_signal_count: int = 0
         self._tts_lock = asyncio.Lock()
         self._tts_worker_task = None  # set by VoiceOrchestrator
         self._tts_pipeline = None  # set by VoiceOrchestrator
@@ -675,18 +689,46 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         mirrors that default behaviour rather than reimplementing the
         early-LLM path's seed/regeneration bookkeeping.
         """
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- must never hard-cancel a
+        turn (that stays gated on _should_barge_in_on_stt's classify_turn()
+        path below). Observability-only on this transport for now: LiveKit's
+        own WebRTC echo cancellation already makes false-positive barge-in
+        far less likely than on Twilio, and there is no existing per-chunk
+        TTS gain pipeline here to duck into (see _soft_duck_signal_count's
+        docstring in __init__) -- logged so the signal's arrival rate can be
+        observed before deciding whether a real duck primitive is worth
+        building for this path.
+        """
+        if not self._is_tts_playing:
+            return
+        self._soft_duck_signal_count += 1
+        logger.debug(
+            "[LiveKitBrowserCall] SpeechStarted (soft signal, no-op action) count=%d",
+            self._soft_duck_signal_count,
+        )
+
+    def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
+        classification = classify_turn(
+            transcript,
+            confidence,
+            is_tts_playing=True,
+            min_confidence=self._barge_in_min_conf,
+            min_words=self._barge_in_min_words,
+            min_confidence_1w=self._barge_in_min_conf_1w,
+        )
+        return classification == TurnClassification.BARGE_IN
+
+    async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         try:
             text = (transcript or "").strip()
             if not text:
                 return
             word_count = len(text.split())
 
-            min_conf = self._barge_in_min_conf_1w if word_count < 2 else self._barge_in_min_conf
-            is_barge_in = (
-                self._is_tts_playing
-                and word_count >= self._barge_in_min_words
-                and confidence >= min_conf
-            )
+            is_barge_in = self._is_tts_playing and self._should_barge_in_on_stt(text, confidence)
             if is_barge_in:
                 logger.info(
                     "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
@@ -713,6 +755,8 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         """
         if self._rag_prefetch_task is not None:
             return  # already fired for this turn — never fire a duplicate request
+        if is_known_non_actionable_backchannel(text):
+            return  # backchannels should not prefetch RAG
         flow_kb_ids = (self.call_flow.knowledge_base_ids or []) if self.call_flow else []
         if not flow_kb_ids or not self.db:
             return  # RAG/KB not configured for this call flow — nothing to prefetch
@@ -807,8 +851,15 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 return
 
             if self._is_tts_playing:
-                logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
-                await self._cancel_inflight_llm_response()
+                if self._should_barge_in_on_stt(text, confidence):
+                    logger.info("[LiveKitBrowserCall] barge-in (final): %r", text[:40])
+                    await self._cancel_inflight_llm_response()
+                else:
+                    logger.info(
+                        "[LiveKitBrowserCall] suppressing backchannel final while TTS is playing: %r",
+                        text[:40],
+                    )
+                    return
 
             if hasattr(self, "_voice_metrics") and self._voice_metrics:
                 self._voice_metrics.begin_turn_at_stt_final(acoustic_speech_end_mono)
@@ -1542,6 +1593,7 @@ async def run_livekit_browser_call(call_session_id: uuid.UUID) -> None:
                 call_session_id=handler.call_session_id,
                 agent_id=handler.agent_id,
                 event_bus=voice_orchestrator.stt_event_bus,
+                on_speech_started=voice_orchestrator._on_speech_started,
             )
             # Register onto VoiceOrchestrator so its shutdown() closes this
             # session too (it only closes a pipeline it knows about).

@@ -41,6 +41,7 @@ from typing import Any, Dict
 
 from app.core.logger import logger
 from app.voice.humanization_engine import analyze_response
+from app.voice.tts_stream_mixin import TtsStreamMixin
 
 # ── Tuning constants ──────────────────────────────────────────────────────────
 
@@ -649,9 +650,16 @@ class TtsPipeline:
         of _try_elevenlabs_ws_route purely so the gate-release `finally`
         above stays simple and always fires exactly once.
         """
+        from app.utils.eleven_tts_text import prepare_tts_text_for_provider
+        clean_text = prepare_tts_text_for_provider(text, "elevenlabs")
+        if not clean_text:
+            if is_final and self._eleven_ws_session is not None:
+                await self._eleven_ws_session.finalize()
+            return ("relayed" if self._eleven_ws_session is not None else None), None
+
         # ── Non-owner: an active session already exists for this turn ─────
         if self._eleven_ws_session is not None:
-            await self._eleven_ws_session.send_text(text)
+            await self._eleven_ws_session.send_text(clean_text)
             if is_final:
                 await self._eleven_ws_session.finalize()
             return "relayed", None
@@ -713,7 +721,7 @@ class TtsPipeline:
             api_key_override=api_key_override,
         )
         try:
-            await session.start(initial_text=text)
+            await session.start(initial_text=clean_text)
         except ElevenLabsWebSocketSessionError as exc:
             self._eleven_ws_failed_this_turn = True
             logger.warning(
@@ -989,14 +997,27 @@ class TtsPipeline:
             _vm = getattr(self._handler, "_voice_metrics", None)
             if _vm:
                 _vm.mark_first_playback()
-            await self._handler._stream_tts_chunk(  # type: ignore[attr-defined]
-                text,
-                use_ssml=use_ssml,
-                is_final=effective_is_final,
-                prefetched_bytes=audio_bytes,
-                pacing=decision.pacing if decision is not None else None,
-                previous_text=task.get("_previous_text"),
-            )
+            _stream_kwargs: Dict[str, Any] = {
+                "use_ssml": use_ssml,
+                "is_final": effective_is_final,
+                "prefetched_bytes": audio_bytes,
+                "pacing": decision.pacing if decision is not None else None,
+                "previous_text": task.get("_previous_text"),
+            }
+            # Twilio-only: TtsStreamMixin._stream_tts_chunk accepts
+            # humanization_decision (see its docstring) so its rare live-
+            # synthesis fallback branch can apply the same ElevenLabs
+            # stability overlay _prefetch_tts_audio already applies —
+            # otherwise that branch would silently diverge in tone/
+            # stability from every other chunk. LiveKitBrowserCallHandler's
+            # OWN, separate _stream_tts_chunk (browser/demo transport, not
+            # touched by this fix) does not accept this parameter, so it is
+            # only added to the call when the handler is Twilio-shaped —
+            # never a blind kwarg that would TypeError on the other
+            # transport.
+            if isinstance(self._handler, TtsStreamMixin):
+                _stream_kwargs["humanization_decision"] = decision
+            await self._handler._stream_tts_chunk(text, **_stream_kwargs)  # type: ignore[attr-defined]
 
             # Phase 6-3: distinguish "WS owner's iter_audio() ended because
             # the server sent isFinal (normal)" from "it was force-unblocked

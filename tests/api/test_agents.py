@@ -502,6 +502,71 @@ class TestUpdateAgent:
         )
         assert resp.status_code == 404
 
+    def test_put_status_active_on_bound_agent_preserves_ready(
+        self, authed_client, auth_tenant, db
+    ):
+        """Regression test for the production incident on agent
+        6ad98ae6-c93f-41e3-a5e8-f65a8eee10d1: a generic "activate" request
+        (status="active") must not clobber the "ready" telephony-binding
+        marker set by POST /api/v1/telephony/bind — doing so silently made
+        a genuinely bound agent uncallable via voice_call_service's
+        ``agent.status != "ready"`` outbound-call gate.
+        """
+        created = authed_client.post(
+            "/api/v1/agent",
+            json=_valid_create_body(name=f"BoundActivate {uuid.uuid4().hex[:6]}"),
+            headers=_headers(auth_tenant),
+        ).json()
+        agent_id = uuid.UUID(created["id"])
+
+        # Simulate a real telephony bind: agent.status == "ready" plus an
+        # active PhoneNumber row bound to it.
+        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent.status = "ready"
+        phone = PhoneNumber(
+            tenant_id=auth_tenant.id,
+            phone_number=f"+1555{uuid.uuid4().hex[:7]}",
+            label="Bound to test agent",
+            status="active",
+            assistant_id=agent_id,
+        )
+        db.add(phone)
+        db.commit()
+
+        # Generic dashboard "enable" action sends status="active".
+        resp = authed_client.put(
+            f"/api/v1/agent/{agent_id}",
+            json={"status": "active"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+
+        db.expire_all()
+        row = db.query(Agent).filter(Agent.id == agent_id).first()
+        assert row.status == "ready"
+
+    def test_put_status_active_on_unbound_agent_sets_active(
+        self, authed_client, auth_tenant, db
+    ):
+        """Unbound agents keep the normal enable/disable semantics."""
+        created = authed_client.post(
+            "/api/v1/agent",
+            json=_valid_create_body(name=f"UnboundActivate {uuid.uuid4().hex[:6]}"),
+            headers=_headers(auth_tenant),
+        ).json()
+        agent_id = uuid.UUID(created["id"])
+
+        resp = authed_client.put(
+            f"/api/v1/agent/{agent_id}",
+            json={"status": "active"},
+            headers=_headers(auth_tenant),
+        )
+        assert resp.status_code == 200, resp.text
+
+        db.expire_all()
+        row = db.query(Agent).filter(Agent.id == agent_id).first()
+        assert row.status == "active"
+
 
 @pytest.mark.usefixtures("db")
 class TestDeleteAgent:
