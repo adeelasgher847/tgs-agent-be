@@ -35,6 +35,16 @@ from app.routers.general_websocket import broadcast_call_status_update
 # Outbound sessions occupying a workspace concurrent-call slot (must match DB values).
 _ACTIVE_OUTBOUND_STATUSES = ("initiated", "ringing", "connected", "in-progress")
 
+# `Agent.status` values that explicitly disqualify an agent from receiving
+# outbound calls, regardless of whether a genuine active PhoneNumber binding
+# exists (Check B, below). "inactive"/"draft" are the tenant's intentional
+# disable states; "error" signals a telephony-provisioning failure. Any other
+# status (including "active", which can legitimately coexist with a real
+# binding due to the generic enable/disable PATCH path — see
+# agent_service.py's _apply_ticket_update) is NOT treated as disqualifying:
+# the real source of truth for callability is the PhoneNumber row itself.
+_DISQUALIFYING_AGENT_STATUSES = {"inactive", "draft", "error"}
+
 # Retry/backoff for transient Twilio call-creation failures — deliberately narrow:
 # `calls.create` is a non-idempotent, side-effecting operation (it actually dials the
 # customer) and Twilio provides no idempotency-key mechanism for it. Only HTTP 429 is
@@ -145,9 +155,11 @@ async def initiate_call(
             )
 
         # ── 3. Agent not ready (GAP 3) ────────────────────────────────────
-        # agent.status is set to "ready" by POST /api/v1/telephony/bind.
-        # Any other status means no phone number is bound.
-        if agent.status != "ready":
+        # See _DISQUALIFYING_AGENT_STATUSES above: only explicit disable /
+        # provisioning-failure states block a call here. `status == "ready"`
+        # is deliberately NOT required — Check B below (a genuine active
+        # PhoneNumber row) is the real source of truth for callability.
+        if agent.status in _DISQUALIFYING_AGENT_STATUSES:
             return _err(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
                 "agent_not_ready",

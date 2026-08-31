@@ -84,10 +84,15 @@ def _call_session(*, sid: uuid.UUID = _SESSION_ID):
     return cs
 
 
-def _db(phone: MagicMock | None = None, active_outbound: int = 0):
-    """Mock DB that returns a bound phone number and a scalar count for concurrent limit."""
+def _db(phone: MagicMock | None = None, active_outbound: int = 0, has_active_phone: bool = True):
+    """Mock DB that returns a bound phone number and a scalar count for concurrent limit.
+
+    `has_active_phone=False` simulates no genuinely active PhoneNumber row bound to
+    the agent (Check B) regardless of `phone`/`agent_status` — used to test the
+    readiness gate independently of the (drift-prone) `agent.status` string.
+    """
     db = MagicMock()
-    phone_obj = phone or _phone_number()
+    phone_obj = (phone or _phone_number()) if has_active_phone else None
 
     # query(PhoneNumber).filter().first() → phone_obj
     # query(func.count()).filter().scalar() → active_outbound
@@ -127,6 +132,7 @@ async def _run(
     twilio_make_call=None,
     call_session_obj=None,
     phone_obj=None,
+    has_active_phone: bool = True,
     credit_check_result=(True, 100, 10, "ok"),
 ):
     from app.services.voice_call_service import initiate_call
@@ -144,7 +150,7 @@ async def _run(
     mock_livekit.generate_agent_token = MagicMock(return_value="token.payload.sig")
     mock_livekit.close_room = AsyncMock()
 
-    db = _db(phone=phone_obj, active_outbound=active_outbound)
+    db = _db(phone=phone_obj, active_outbound=active_outbound, has_active_phone=has_active_phone)
 
     with (
         patch(
@@ -273,11 +279,16 @@ class TestHappyPath:
 
 
 class TestAgentNotReady:
+    # `status="pending"` genuinely means "no phone number bound yet" (see
+    # AgentStatusEnum docstring), so realistically there is no active
+    # PhoneNumber row either — simulate that via has_active_phone=False so the
+    # test exercises the real-world combination rather than an internally
+    # inconsistent one.
     @pytest.mark.asyncio
     async def test_pending_agent_returns_422(self):
-        """Agent with status='pending' returns 422 with agent_not_ready code."""
+        """Agent with status='pending' and no bound number returns 422 with agent_not_ready code."""
         req = _request()
-        result, _, _, _ = await _run(req, agent_status="pending")
+        result, _, _, _ = await _run(req, agent_status="pending", has_active_phone=False)
 
         assert isinstance(result, JSONResponse)
         assert result.status_code == http_status.HTTP_422_UNPROCESSABLE_ENTITY
@@ -288,7 +299,7 @@ class TestAgentNotReady:
         import json
 
         req = _request()
-        result, _, _, _ = await _run(req, agent_status="pending")
+        result, _, _, _ = await _run(req, agent_status="pending", has_active_phone=False)
 
         body = json.loads(result.body)
         assert body["error"]["code"] == "agent_not_ready"
@@ -297,7 +308,7 @@ class TestAgentNotReady:
     async def test_pending_agent_livekit_not_called(self):
         """LiveKit create_room is NOT called when agent is not ready."""
         req = _request()
-        _, mock_livekit, _, _ = await _run(req, agent_status="pending")
+        _, mock_livekit, _, _ = await _run(req, agent_status="pending", has_active_phone=False)
 
         mock_livekit.create_room.assert_not_awaited()
 
@@ -305,9 +316,66 @@ class TestAgentNotReady:
     async def test_pending_agent_twilio_not_called(self):
         """Twilio make_call is NOT called when agent is not ready."""
         req = _request()
-        _, _, twilio_call, _ = await _run(req, agent_status="pending")
+        _, _, twilio_call, _ = await _run(req, agent_status="pending", has_active_phone=False)
 
         twilio_call.assert_not_called()
+
+    # ── Regression coverage: agent.status drift (BE production incident) ──
+
+    @pytest.mark.asyncio
+    async def test_active_status_with_active_binding_succeeds(self):
+        """Agent with status='active' (drifted via generic PATCH) but a genuine
+        active phone binding is still callable — status is not the sole
+        source of truth, Check B (real PhoneNumber row) is."""
+        req = _request()
+        result, _, _, _ = await _run(req, agent_status="active", has_active_phone=True)
+
+        assert hasattr(result, "data"), f"Unexpected result type: {type(result)}"
+        assert result.data.status == "initiated"
+
+    @pytest.mark.asyncio
+    async def test_error_status_with_active_binding_still_rejected(self):
+        """status='error' (provisioning failure) is a disqualifying state and
+        must still block calls even if a PhoneNumber row happens to be active."""
+        req = _request()
+        result, _, _, _ = await _run(req, agent_status="error", has_active_phone=True)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_inactive_status_with_active_binding_rejected(self):
+        """Explicit tenant disable (status='inactive') must still block calls
+        even though a phone number remains bound — this is intentional, not
+        drift, and must not regress."""
+        req = _request()
+        result, _, _, _ = await _run(req, agent_status="inactive", has_active_phone=True)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_422_UNPROCESSABLE_ENTITY
+        import json
+
+        body = json.loads(result.body)
+        assert body["error"]["code"] == "agent_not_ready"
+
+    @pytest.mark.asyncio
+    async def test_draft_status_with_active_binding_rejected(self):
+        """status='draft' must still block calls even with an active binding."""
+        req = _request()
+        result, _, _, _ = await _run(req, agent_status="draft", has_active_phone=True)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_422_UNPROCESSABLE_ENTITY
+
+    @pytest.mark.asyncio
+    async def test_ready_status_without_active_binding_still_rejected(self):
+        """status='ready' alone is not sufficient — Check B (a genuine active
+        PhoneNumber row) must still be enforced independently."""
+        req = _request()
+        result, _, _, _ = await _run(req, agent_status="ready", has_active_phone=False)
+
+        assert isinstance(result, JSONResponse)
+        assert result.status_code == http_status.HTTP_422_UNPROCESSABLE_ENTITY
 
     @pytest.mark.asyncio
     async def test_from_number_mismatch_returns_400(self):
