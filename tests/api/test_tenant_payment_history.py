@@ -2,9 +2,10 @@
 Regression coverage for GET /tenants/payment-history
 (app/api/api_v1/endpoints/tenant.py::get_payment_history).
 
-Two real production bugs, both from stripe-python 15.x's StripeObject no
-longer behaving like the older dict-subclassing versions this endpoint was
-apparently written against:
+Three real production bugs, all from stripe-python's StripeObject no longer
+behaving like the older dict-subclassing versions this endpoint was
+apparently written against, plus API version drift ("Basil",
+2025-03-31+) that removed fields this endpoint relied on:
 
 1. `payment_intent.last_payment_error.get("message", ...)` -- StripeObject
    no longer implements dict-style `.get()`; accessing `.get` falls through
@@ -16,11 +17,21 @@ apparently written against:
    was a copy-paste from the Checkout Session block above (which DOES have
    a top-level `amount_total`) and raised AttributeError on every real
    invoice. Fixed to `invoice.total`.
+3. `invoice.payment_intent` -- removed entirely in Stripe API version
+   "Basil" (2025-03-31+) to support multiple partial payments per invoice.
+   Replaced by the `invoice.payments` collection (list of InvoicePayment
+   objects, each with a `.payment` sub-object; when `.payment.type ==
+   "payment_intent"`, `.payment.payment_intent` holds the ID). The same
+   Basil release also removed the top-level `invoice.subscription` field,
+   moved to `invoice.parent.subscription_details.subscription`. Both raised
+   AttributeError on every real invoice; fixed by deriving both values
+   defensively via `getattr(..., default=None)` chains.
 
 The stand-ins below deliberately do NOT support dict-style `.get()` and do
-NOT define `amount_total`, mirroring real stripe-python StripeObject
-behavior closely enough to have caught both bugs (a MagicMock would not,
-since it auto-creates any attribute access).
+NOT define `amount_total` or the removed scalar `payment_intent` /
+`subscription` fields, mirroring real stripe-python StripeObject behavior
+closely enough to have caught all three bugs (a MagicMock would not, since
+it auto-creates any attribute access).
 """
 
 from __future__ import annotations
@@ -100,15 +111,45 @@ def _fake_checkout_sessions(payment_status="paid", with_failed_intent=False):
     return SimpleNamespace(data=[session])
 
 
-def _fake_invoices(total_cents=9900, attempt_count=0, status="paid"):
+def _fake_invoices(
+    total_cents=9900,
+    attempt_count=0,
+    status="paid",
+    payment_intent_id=None,
+    subscription_id=None,
+):
+    """Basil-shaped Invoice stand-in: deliberately does NOT define the
+    removed scalar `payment_intent`/`subscription` fields -- only the
+    `payments` collection and `parent.subscription_details.subscription`
+    that replaced them, matching the real stripe-python 2025-03-31+ shape."""
+    if payment_intent_id is not None:
+        payments = SimpleNamespace(
+            data=[
+                _StripeObjectStub(
+                    payment=_StripeObjectStub(
+                        type="payment_intent", payment_intent=payment_intent_id
+                    )
+                )
+            ]
+        )
+    else:
+        payments = SimpleNamespace(data=[])
+
+    if subscription_id is not None:
+        parent = _StripeObjectStub(
+            subscription_details=_StripeObjectStub(subscription=subscription_id)
+        )
+    else:
+        parent = None
+
     invoice = _StripeObjectStub(
         id="in_test_1",
         status=status,
         total=total_cents,
         currency="usd",
         created=1735689600,
-        payment_intent=None,
-        subscription=None,
+        payments=payments,
+        parent=parent,
         invoice_pdf="https://invoice.stripe.test/in_test_1.pdf",
         period_start=1735689600,
         period_end=1738368000,
@@ -184,6 +225,69 @@ class TestPaymentHistoryStripeObjectCompatibility:
         assert "Error getting invoices" not in caplog.text
         assert len(result.data["payment_history"]) == 2
         assert result.data["summary"]["total_payments"] == 2
+
+    def test_invoice_payment_intent_extracted_from_payments_collection(
+        self, db, tenant, user
+    ):
+        """Regression: invoice.payment_intent no longer exists on a Basil-era
+        Invoice (removed 2025-03-31 to support multiple partial payments).
+        Accessing it directly used to raise AttributeError on every real
+        invoice. The endpoint must instead derive the payment_intent ID from
+        the first payment_intent-typed entry in invoice.payments."""
+        with patch(
+            "stripe.checkout.Session.list",
+            return_value=_fake_checkout_sessions(),
+        ), patch(
+            "stripe.Invoice.list",
+            return_value=_fake_invoices(payment_intent_id="pi_basil_test_1"),
+        ):
+            result = get_payment_history(current_user=user, db=db)
+
+        invoice_entries = [
+            e for e in result.data["payment_history"] if e["type"] == "invoice"
+        ]
+        assert len(invoice_entries) == 1
+        assert invoice_entries[0]["payment_intent"] == "pi_basil_test_1"
+
+    def test_invoice_with_no_payments_yields_none_payment_intent(
+        self, db, tenant, user
+    ):
+        """An invoice with an empty `payments` collection (e.g. never
+        attempted) must not raise and must default payment_intent to None."""
+        with patch(
+            "stripe.checkout.Session.list",
+            return_value=_fake_checkout_sessions(),
+        ), patch(
+            "stripe.Invoice.list",
+            return_value=_fake_invoices(payment_intent_id=None),
+        ):
+            result = get_payment_history(current_user=user, db=db)
+
+        invoice_entries = [
+            e for e in result.data["payment_history"] if e["type"] == "invoice"
+        ]
+        assert len(invoice_entries) == 1
+        assert invoice_entries[0]["payment_intent"] is None
+
+    def test_invoice_subscription_id_read_from_parent_subscription_details(
+        self, db, tenant, user
+    ):
+        """Regression: invoice.subscription was removed in the same Basil
+        release, moved to invoice.parent.subscription_details.subscription."""
+        with patch(
+            "stripe.checkout.Session.list",
+            return_value=_fake_checkout_sessions(),
+        ), patch(
+            "stripe.Invoice.list",
+            return_value=_fake_invoices(subscription_id="sub_basil_test_1"),
+        ):
+            result = get_payment_history(current_user=user, db=db)
+
+        invoice_entries = [
+            e for e in result.data["payment_history"] if e["type"] == "invoice"
+        ]
+        assert len(invoice_entries) == 1
+        assert invoice_entries[0]["subscription_id"] == "sub_basil_test_1"
 
     def test_no_stripe_customer_returns_empty_history(self, db, user, tenant):
         tenant.stripe_customer_id = None
