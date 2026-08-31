@@ -1442,17 +1442,15 @@ class BidirectionalStreamHandler(
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
-                # Persist redacted client speech for post-call analysis; LLM uses original below.
-                from app.core.pii_redactor import redact_pii
-
-                transcript_for_db = redact_pii(transcript)
+                # Persist client speech as spoken. `_add_to_transcript` resolves
+                # `hipaa_enabled` from `call_flow.hipaa_compliance` and routes through
+                # `transcript_service.add_and_broadcast_message()`, which applies PHI/PII
+                # redaction via `dlp_service.redact_phi_if_hipaa()` only when HIPAA
+                # compliance is enabled for this call flow. Do not redact unconditionally
+                # here — that bypassed the HIPAA gate and masked PII on every call.
                 await self._add_to_transcript(
                     "client",
-                    (
-                        transcript_for_db
-                        if isinstance(transcript_for_db, str)
-                        else str(transcript_for_db)
-                    ),
+                    transcript,
                     "speech",
                     confidence,
                     defer_post_write=True,
