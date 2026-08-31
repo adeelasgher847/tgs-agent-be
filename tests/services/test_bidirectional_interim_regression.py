@@ -117,6 +117,13 @@ def _empty_handler() -> Handler:
     h.call_session = None
     h._screening_decline_handled = False
     h._jd_recruitment_screening_active = lambda: False  # type: ignore[method-assign, assignment]
+    # Quick-ack turn-identity gate state: incremented by _maybe_process_interim
+    # (speculative interim) and by the final-transcript no-interim-in-flight
+    # branch (see BidirectionalStreamHandler._send_quick_acknowledgement).
+    h._turn_generation_id = 0
+    h._last_quick_ack_turn_id = -1
+    h._turns_since_last_ack = 0
+    h._last_quick_ack_phrase = ""
     return h
 
 
@@ -231,6 +238,104 @@ def test_complete_final_regen_calls_generate_once() -> None:
         h.generate_and_stream_response.assert_awaited_once()  # type: ignore[attr-defined]
         assert h.generate_and_stream_response.call_args[0][0] == "a longer final utterance"  # type: ignore[attr-defined]
         assert h.generate_and_stream_response.call_args[1].get("is_greeting") is False  # type: ignore[attr-defined]
+
+    asyncio.run(_body())
+
+
+# --- Re-endpointing duplicate STT finals (real production bug) ---
+#
+# Deepgram sometimes emits a second "final" a few hundred ms after the first
+# for the same spoken turn, where one transcript is a substring of the other
+# (observed live: first final 'Hello there. Could I Hey. Hi. How are you
+# today?' -- garbled/merged with stale text -- followed ~400ms later by the
+# corrected 'Hey. Hi. How are you today?'). Both used to independently reach
+# the no-interim-in-flight branch and fire their own full LLM+TTS turn, so
+# the caller heard the agent answer twice for one utterance.
+
+
+def test_reendpoint_containment_duplicate_final_not_regenerated() -> None:
+    """Second final is a substring of the first (garbled-then-corrected) --
+    must not trigger a second LLM call."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hello there. Could I Hey. Hi. How are you today?", 1.0
+            )
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hey. Hi. How are you today?", 1.0
+            )
+
+        assert calls == ["Hello there. Could I Hey. Hi. How are you today?"]
+
+    asyncio.run(_body())
+
+
+def test_reendpoint_containment_duplicate_reverse_order_not_regenerated() -> None:
+    """Same bug, but the short/clean final arrives FIRST and the
+    longer/garbled one arrives second -- containment check must be symmetric."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hey. Hi. How are you today?", 1.0
+            )
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "Hello there. Could I Hey. Hi. How are you today?", 1.0
+            )
+
+        assert calls == ["Hey. Hi. How are you today?"]
+
+    asyncio.run(_body())
+
+
+def test_reendpoint_dedup_does_not_suppress_short_word_false_positive() -> None:
+    """Guardrail: a genuine, unrelated follow-up must not be dropped just
+    because it happens to contain a short common word from the previous
+    (already-answered) turn -- containment dedup requires the shorter string
+    to have at least 3 words."""
+
+    async def _body() -> None:
+        h = _empty_handler()
+        h._flow_executor = None
+        h._arm_silence_watchdog = lambda: None  # type: ignore[method-assign]
+        h._cancel_inflight_llm_response = AsyncMock()  # type: ignore[method-assign]
+
+        calls: list[str] = []
+
+        async def fake_generate(self, user_text, confidence, is_greeting=False):  # noqa: ARG001
+            calls.append(user_text)
+
+        with patch.object(Handler, "generate_and_stream_response", new=fake_generate):
+            await Handler._complete_llm_turn_after_stt_final(h, "yes", 1.0)
+            await Handler._complete_llm_turn_after_stt_final(
+                h, "yes I understand, but what about the pricing for the annual plan?", 1.0
+            )
+
+        assert calls == [
+            "yes",
+            "yes I understand, but what about the pricing for the annual plan?",
+        ]
 
     asyncio.run(_body())
 

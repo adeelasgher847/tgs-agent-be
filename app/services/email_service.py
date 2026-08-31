@@ -25,6 +25,7 @@ def build_invite_email_content(
     """Subject + HTML body for workspace invite."""
     subject = f"You're invited to join {tenant_name} on Voice Agent Platform"
     invite_link = f"{settings.FRONTEND_URL}/accept-invite?token={invite_token}"
+    invite_link = f"{settings.FRONTEND_URL.rstrip('/')}/accept-invite/?token={invite_token}"
     html_body = f"""
             <html>
             <body>
@@ -72,6 +73,7 @@ class EmailService:
         try:
             subject = "Password Reset Request - Voice Agent Platform"
             reset_link = f"{settings.FRONTEND_URL}/reset-password?token={reset_token}"
+            reset_link = f"{settings.FRONTEND_URL.rstrip('/')}/reset-password/?token={reset_token}"
             body = f"""
             <html>
             <body>

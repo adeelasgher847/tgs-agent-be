@@ -308,6 +308,10 @@ class BidirectionalStreamHandler(
     QUICK_ACK_MIN_WORDS = VOICE_TUNABLES.quick_ack.min_words
     QUICK_ACK_PROBABILITY = VOICE_TUNABLES.quick_ack.probability
     QUICK_ACK_SKIP_PHRASES = VOICE_TUNABLES.quick_ack.skip_phrases
+    # Cooldown: only roll the ack probability check every Nth eligible turn,
+    # so acks read as occasional natural backchanneling rather than firing
+    # (probabilistically) on every single turn.
+    QUICK_ACK_COOLDOWN_TURNS = 3
 
     # Conversation context: keep the prompt small for latency (voice calls)
     HISTORY_MAX_MESSAGES = VOICE_TUNABLES.history_max_messages
@@ -371,10 +375,22 @@ class BidirectionalStreamHandler(
         self._twilio_buffer_primed = False  # Track if jitter buffer has been primed
         self._tts_pipeline: TtsPipeline | None = None
         self._use_ssml = False  # Disabled by default; only enabled if provider explicitly supports SSML
-        # Quick-ack dedup guard: prevent repeated acknowledgements for the same
-        # user turn when interim/final regeneration paths overlap.
-        self._last_quick_ack_user_norm: str = ""
-        self._last_quick_ack_mono: float = 0.0
+        # Quick-ack turn-identity gate: `generate_and_stream_response` can be
+        # invoked more than once for the same logical user turn (once
+        # speculatively on a qualifying interim, once again on the STT
+        # final) -- `_turn_generation_id` is incremented exactly once per
+        # logical turn (see `_maybe_process_interim` and
+        # `_complete_llm_turn_after_stt_final`) so `_send_quick_acknowledgement`
+        # can recognize "already evaluated this turn" and never fire (or
+        # re-roll) a second ack for it.
+        self._turn_generation_id: int = 0
+        self._last_quick_ack_turn_id: int = -1
+        # Cooldown/frequency gate: only allow the ack probability roll once
+        # every QUICK_ACK_COOLDOWN_TURNS eligible turns; reset to 0 whenever
+        # an ack is actually sent.
+        self._turns_since_last_ack: int = 0
+        # Variety gate: avoid repeating the exact same ack phrase back-to-back.
+        self._last_quick_ack_phrase: str = ""
         # Latency instrumentation timestamps (time.perf_counter() — single clock for all deltas)
         self._metric_stt_final_ts: float = 0.0  # STT final received
         self._metric_gen_start_ts: float = 0.0  # LLM generation started
@@ -446,6 +462,24 @@ class BidirectionalStreamHandler(
         self._barge_in_dead_zone_ms: float = float(
             getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 1000) or 1000
         )
+        # Soft barge-in: Deepgram vad_events/SpeechStarted (see
+        # VoiceOrchestrator._on_speech_started -> _on_stt_speech_started
+        # below) dips TTS output volume for a short window instead of
+        # cutting playback -- confidence-free VAD onset must never hard-
+        # cancel a turn (that stays gated on classify_turn() above).
+        # Monotonic deadline; _resolve_voice_volume() (TtsStreamMixin)
+        # applies the duck gain while time.monotonic() is under it.
+        self._soft_duck_until_mono: float = 0.0
+        self._soft_duck_enabled: bool = bool(
+            getattr(settings, "VOICE_SOFT_DUCK_ENABLED", True)
+        )
+        self._soft_duck_ms: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_MS", 400) or 400
+        )
+        self._soft_duck_gain: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_GAIN", 0.35) or 0.35
+        )
+        self._soft_duck_gain = max(0.0, min(1.0, self._soft_duck_gain))
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -868,6 +902,13 @@ class BidirectionalStreamHandler(
         self._llm_response_task = None
         self._interim_task_response_produced = False
         self._current_speaking_agent_text = ""
+        # Quick-ack turn-identity gate: an interrupted/cancelled turn never
+        # produced a real ack decision worth remembering — clear it so a
+        # genuinely new turn isn't blocked by stale gate state. (Turn ids are
+        # monotonically increasing so this is mostly defensive; it does NOT
+        # touch `_turns_since_last_ack`, which must only change on a real
+        # eligibility evaluation/ack-sent, never on cancellation.)
+        self._last_quick_ack_turn_id = -1
         if t and not t.done():
             t.cancel()
             try:
@@ -953,15 +994,47 @@ class BidirectionalStreamHandler(
             # Duplicate-transcript gate: near-simultaneous STT finals for the
             # same utterance (Deepgram re-endpoints) all queue here.  Once the
             # first sets _llm_last_answered_transcript, the rest bail instantly.
+            _last_answered = self._llm_last_answered_transcript
+            _since_answered = _now_m - self._llm_last_answered_ts
+            _is_exact_dup = (
+                tstrip and tstrip == _last_answered and _since_answered < 10.0
+            )
+            # Re-endpointing dup: Deepgram sometimes emits a SECOND final for
+            # the same spoken turn a few hundred ms after the first, where one
+            # transcript is a strict prefix/suffix/substring of the other
+            # (e.g. first final 'Hello there. Could I Hey. Hi. How are you
+            # today?' -- garbled/merged with stale text -- followed ~400ms
+            # later by the corrected 'Hey. Hi. How are you today?'). The exact-
+            # match check above never catches this since the strings differ,
+            # so both fired a full LLM+TTS turn and the caller heard the agent
+            # answer twice. Narrowly scoped to avoid dropping a genuine fast
+            # follow-up utterance: a short window (STT re-endpoint corrections
+            # land within ~1s; a caller speaking again takes longer) and a
+            # minimum word count on the shorter string (so a stray short word
+            # incidentally contained in an unrelated longer sentence doesn't
+            # false-positive).
+            _is_reendpoint_dup = False
             if (
-                tstrip
-                and tstrip == self._llm_last_answered_transcript
-                and (_now_m - self._llm_last_answered_ts) < 10.0
+                not _is_exact_dup
+                and tstrip
+                and _last_answered
+                and _since_answered < 1.5
             ):
+                _shorter, _longer = (
+                    (tstrip, _last_answered)
+                    if len(tstrip) <= len(_last_answered)
+                    else (_last_answered, tstrip)
+                )
+                if len(_shorter.split()) >= 3 and _shorter in _longer:
+                    _is_reendpoint_dup = True
+
+            if _is_exact_dup or _is_reendpoint_dup:
                 logger.info(
-                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
+                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago, "
+                    "%s)",
                     tstrip[:40],
-                    _now_m - self._llm_last_answered_ts,
+                    _since_answered,
+                    "exact" if _is_exact_dup else "re-endpoint containment",
                 )
                 return
 
@@ -1014,6 +1087,9 @@ class BidirectionalStreamHandler(
                 _need_cancel = True  # cancel any stale task from a previous turn
                 self._llm_last_answered_transcript = tstrip
                 self._llm_last_answered_ts = _now_m
+                # Final-only turn (no interim ever started for it): this is a
+                # new logical turn for the quick-ack turn-identity gate.
+                self._turn_generation_id += 1
         # ── Lock released ──────────────────────────────────────────────────────
 
         # If an interim task was in-flight and considered a continuation, wait for it outside the lock.
@@ -1190,6 +1266,26 @@ class BidirectionalStreamHandler(
             return False
         return True
 
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- only takes a low-risk
+        "soft" action (temporary TTS volume duck), never a hard cancel. The
+        real barge-in decision stays entirely on _should_barge_in_on_stt's
+        classify_turn() gating (interim/final transcript path) so ambient
+        noise/breath triggering VAD onset can't cut the agent's turn.
+        No-op when TTS isn't currently playing -- ducking silence achieves
+        nothing and would just needlessly touch shared state.
+        """
+        if not self._soft_duck_enabled or not self._is_tts_playing:
+            return
+        self._soft_duck_until_mono = time.monotonic() + (self._soft_duck_ms / 1000.0)
+        logger.debug(
+            "[Barge-in/soft] SpeechStarted -> ducking TTS output for %.0fms (gain=%.2f)",
+            self._soft_duck_ms,
+            self._soft_duck_gain,
+        )
+
     def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
         return is_pure_acoustic_filler(transcript)
@@ -1346,17 +1442,15 @@ class BidirectionalStreamHandler(
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
-                # Persist redacted client speech for post-call analysis; LLM uses original below.
-                from app.core.pii_redactor import redact_pii
-
-                transcript_for_db = redact_pii(transcript)
+                # Persist client speech as spoken. `_add_to_transcript` resolves
+                # `hipaa_enabled` from `call_flow.hipaa_compliance` and routes through
+                # `transcript_service.add_and_broadcast_message()`, which applies PHI/PII
+                # redaction via `dlp_service.redact_phi_if_hipaa()` only when HIPAA
+                # compliance is enabled for this call flow. Do not redact unconditionally
+                # here — that bypassed the HIPAA gate and masked PII on every call.
                 await self._add_to_transcript(
                     "client",
-                    (
-                        transcript_for_db
-                        if isinstance(transcript_for_db, str)
-                        else str(transcript_for_db)
-                    ),
+                    transcript,
                     "speech",
                     confidence,
                     defer_post_write=True,
@@ -1518,11 +1612,24 @@ class BidirectionalStreamHandler(
                 if not advanced:
                     return
 
-            self._last_interim_text = transcript
-            self._last_interim_sent_ts = now
-            self._turn_response_started = True
-            self._turn_response_seed_text = transcript
-            self._interim_task_response_produced = False
+            # The final-transcript handler mutates `_turn_response_started`/
+            # `_turn_generation_id` under `_llm_turn_serial_lock` (see
+            # `_complete_llm_turn_after_stt_final`). Re-check-and-set here
+            # under the same lock so a final task scheduled just before this
+            # interim runs (via asyncio.create_task, not yet executed) can't
+            # have its own turn-start decision silently overwritten by this
+            # interim believing it's starting a fresh turn.
+            async with self._llm_turn_serial_lock:
+                if self._turn_response_started:
+                    return
+                self._last_interim_text = transcript
+                self._last_interim_sent_ts = now
+                self._turn_response_started = True
+                self._turn_response_seed_text = transcript
+                self._interim_task_response_produced = False
+                # New logical turn starting speculatively on this interim;
+                # see `_send_quick_acknowledgement`'s turn-identity gate.
+                self._turn_generation_id += 1
 
             async def _run_interim() -> str | None:
                 try:
@@ -1556,7 +1663,29 @@ class BidirectionalStreamHandler(
     async def _send_quick_acknowledgement(self, user_text: str):
         """
         Send instant acknowledgement for longer queries while generating full response.
-        Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time — more natural.
+
+        `generate_and_stream_response` can be invoked more than once for the
+        same logical user turn -- once speculatively on a qualifying interim
+        (`_maybe_process_interim`), and again for the STT-finalized transcript
+        (`_complete_llm_turn_after_stt_final`). Both calls reach this method.
+        Four gates run in order so this fires at most once per turn, and only
+        when it reads as natural backchanneling rather than a verbal tic:
+
+        1. Turn-identity: `_turn_generation_id`/`_last_quick_ack_turn_id`
+           ensure at most one ack is ever sent per logical turn -- once one
+           call (interim or final) actually sends an ack for a turn, the
+           counterpart call for that same turn is a no-op. A call that
+           *doesn't* send one (e.g. the interim's text was too short for
+           `should_send_quick_ack` but the final's fuller text would pass)
+           does NOT lock the turn, so the later call gets a fair evaluation.
+        2. Content: never ack the caller's own short backchannel/confirmation
+           ("yes", "okay", "right", ...) -- those aren't substantive turns.
+        3. Cooldown: only roll the probability check every
+           QUICK_ACK_COOLDOWN_TURNS eligible turns, so acks land occasionally
+           rather than (probabilistically) every turn.
+        4. Variety: don't repeat the exact same ack phrase back-to-back.
+
+        Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time -- more natural.
         Disabled by default (VOICE_QUICK_ACK_PROBABILITY=0.0) in Sprint 1 to prevent
         semantically incorrect fillers and TTS concurrency load.
         """
@@ -1565,19 +1694,35 @@ class BidirectionalStreamHandler(
         if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
             return
 
+        # Gate 1 (turn-identity): if an ack was already sent for this turn
+        # (by the interim or final call, whichever ran first), the
+        # counterpart call is a no-op. Locking happens only on actual send
+        # (below) -- not here -- so a call that falls through without acking
+        # (e.g. text too short) doesn't block a later, more-eligible call for
+        # the same turn.
+        turn_id = self._turn_generation_id
+        if self._last_quick_ack_turn_id == turn_id:
+            return
+
         text = (user_text or "").strip()
         if not text:
             return
-        now_mono = time.monotonic()
-        user_norm = self._normalize_turn_text(text)
-        if (
-            user_norm
-            and user_norm == self._last_quick_ack_user_norm
-            and (now_mono - self._last_quick_ack_mono) < 12.0
-        ):
+
+        # Gate 2 (content): never echo an ack onto the caller's own short
+        # confirmation/backchannel turn.
+        if is_known_non_actionable_backchannel(text):
             return
+
         # First check if this text is even eligible for a quick acknowledgement
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
+            return
+
+        # Gate 3 (cooldown/frequency): every turn that reaches this point
+        # counts toward the cooldown, whether or not it ends up producing an
+        # ack; only once the cooldown has elapsed do we roll the probability
+        # check below.
+        self._turns_since_last_ack += 1
+        if self._turns_since_last_ack < self.QUICK_ACK_COOLDOWN_TURNS:
             return
 
         # Apply probability filter so we don't say "Got it" every single time
@@ -1595,9 +1740,20 @@ class BidirectionalStreamHandler(
             "Hang on a sec",
             "Let me check that",
         ]
-        ack = random.choice(acks)
+        # Gate 4 (variety): avoid repeating the exact same phrase back-to-back.
+        _ack_choices = [a for a in acks if a != self._last_quick_ack_phrase] or acks
+        ack = random.choice(_ack_choices)
         if not self._tts_pipeline:
             return
+        # Lock the turn now, synchronously, before the only `await` in this
+        # method -- everything above this point is synchronous (no await),
+        # so no concurrent call for the same turn_id can have observed an
+        # unlocked state past this point. Locking after the await instead
+        # would leave a window where two concurrent calls for the same turn
+        # both pass gates 1-4 and both queue an ack before either locks.
+        self._last_quick_ack_turn_id = turn_id
+        self._last_quick_ack_phrase = ack
+        self._turns_since_last_ack = 0
         await self._tts_pipeline.queue_tts(
             {
                 "text": ack,
@@ -1607,8 +1763,6 @@ class BidirectionalStreamHandler(
                 "is_final": False,
             }
         )
-        self._last_quick_ack_user_norm = user_norm
-        self._last_quick_ack_mono = now_mono
 
     async def _prefetch_rag_context(self, user_text: str) -> tuple:
         """
@@ -1641,19 +1795,21 @@ class BidirectionalStreamHandler(
             )
         except asyncio.TimeoutError:
             logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+            fallback_trace = {"status": "timeout", "timeout": True}
         except Exception as exc:
             logger.debug("[RAG prefetch] failed: %s", exc)
-        # Fallback: empty context (LLM still runs, just without RAG)
-        tenant_uuid = self.call_session.tenant_id if self.call_session else None
-        agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = (
-            None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
-        )
-        return build_rag_context_block_with_trace(
-            user_text="",
-            tenant_id=tenant_uuid,
-            agent_id=rag_agent_scope,
-        )
+            fallback_trace = {"status": "failure", "error": str(exc)}
+        # Fallback: genuinely empty context (LLM still runs, just without
+        # RAG) -- NOT a call to build_rag_context_block_with_trace(user_text
+        # ="", ...), which routes into that function's empty-input branch
+        # and returns a block that explicitly instructs the LLM to refuse
+        # ("respond that this information is not available instead of
+        # guessing") purely because retrieval was too slow/technically
+        # failed, even when the KB genuinely has the answer. Match the
+        # browser/LiveKit path's equivalent timeout behavior
+        # (kb_retrieval_service.py): omit the block entirely rather than
+        # actively telling the LLM to deny knowledge it may actually have.
+        return "", fallback_trace
 
     async def build_system_prompt(self, user_text: str, confidence: float) -> str:
         """Public string-returning entry point — see _build_system_prompt_full
@@ -1808,24 +1964,33 @@ class BidirectionalStreamHandler(
                         ),
                     )
             except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
+                # Technical failure (retrieval didn't finish in the latency
+                # budget), NOT a semantic "no KB entries match this query"
+                # result. Previously this called build_rag_context_block_
+                # with_trace(user_text="", ...), which routes into that
+                # function's empty-input branch and returns a block that
+                # explicitly instructs the LLM: "respond that this
+                # information is not available instead of guessing" — i.e.
+                # a hard refusal directive, injected purely because
+                # retrieval was too slow, even when the KB genuinely
+                # contains the answer. The browser/LiveKit path's equivalent
+                # timeout (kb_retrieval_service.py) just proceeds with no KB
+                # context block and no explicit instruction either way —
+                # match that behavior here: omit the block entirely and let
+                # the LLM answer from conversation history/general
+                # knowledge, rather than actively telling it to refuse.
+                rag_context_block = ""
+                rag_trace = {"status": "timeout", "timeout": True}
             except Exception as e:
                 logger.error(
                     "RAG context build failed unexpectedly: %s", e, exc_info=True
                 )
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
+                # Same reasoning as the timeout branch above: a technical
+                # retrieval failure is not evidence the KB lacks the answer,
+                # so don't inject the "respond that this information is not
+                # available" refusal directive for it.
+                rag_context_block = ""
+                rag_trace = {"status": "failure", "error": str(e)}
 
         # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
         # These are agent/tenant-level and don't change during the call, so serving
@@ -2085,6 +2250,8 @@ You are {agent_name}, having a real-time phone call with a human.
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -2148,6 +2315,8 @@ These rules override any conflicting custom instructions below. Never deviate fr
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
@@ -2195,6 +2364,8 @@ These rules override any conflicting model instructions below. Never deviate fro
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}{greeting_instruction_block}
 # CONVERSATION STATE

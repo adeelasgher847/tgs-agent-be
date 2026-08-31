@@ -677,16 +677,47 @@ class Settings(BaseSettings):
     DEEPGRAM_STT_LANGUAGE: str = (
         "en"  # Deepgram listen param; override in .env if needed
     )
-    # Silence (ms) before Deepgram marks speech_final. 300ms splits spelling/email pauses;
-    # ~900ms matches typical telephony spelling tolerance (Vapi-style longer listen window).
-    DEEPGRAM_STT_ENDPOINTING_MS: int = 350
-    # After the agent asks for email, bidirectional stream may reopen STT once with this value.
-    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 500
+    # Silence (ms) before Deepgram marks speech_final.
+    #
+    # Raised 350 -> 450 after real-call feedback that 350ms was still not
+    # patient enough: quick-ack ("Got it"/"Okay") and full LLM responses
+    # both key off Deepgram's speech_final, so ANY silence-based endpointing
+    # value is this system's entire notion of "has the caller actually
+    # finished speaking" -- a value too short doesn't just cause the
+    # duplicate/premature-final bugs already fixed this session, it makes
+    # the agent audibly cut in with an acknowledgement mid-thought whenever
+    # the caller pauses between clauses of one longer sentence. 450ms sits
+    # comfortably inside the ~400-800ms range production voice platforms
+    # commonly use for natural conversational pacing, while staying below
+    # the EXTENDED tier below (which intentionally stays more patient than
+    # this, for spelling/email collection specifically).
+    DEEPGRAM_STT_ENDPOINTING_MS: int = 450
+    # After the agent asks for email, bidirectional stream may reopen STT
+    # once with this value. Raised 500 -> 700 alongside the base value above
+    # so EXTENDED remains strictly more patient than normal conversation
+    # (spelling out an email/confirmation code has longer natural pauses
+    # between characters than ordinary speech).
+    DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED: int = 700
     # Word-timing-based fallback for end-of-turn detection (Deepgram's UtteranceEnd event),
     # robust to phone-line noise that can prevent silence-based endpointing/speech_final
     # from firing. Deepgram requires >=1000ms; only takes effect if speech_final never
     # arrives for the current utterance -- never fires early, never double-finalizes.
     DEEPGRAM_STT_UTTERANCE_END_MS: int = 1000
+    # Content-aware grace window, applied ON TOP OF the silence-based
+    # endpointing above, Twilio calls only. A blanket silence threshold
+    # can't distinguish "caller finished" from "caller paused mid-clause"
+    # (e.g. "...and pricing for the" then a breath) -- raising it further
+    # for every utterance just adds latency to genuinely finished replies.
+    # Instead: when a speech_final transcript's trailing word looks
+    # unfinished (see turn_signals.is_utterance_likely_incomplete --
+    # conjunction/preposition/article/filler, or a trailing comma), give
+    # it this many extra ms to catch a continuation before treating it as
+    # a completed turn. Mirrors production voice platforms' documented
+    # "custom endpointing rules by message content pattern" approach
+    # (e.g. Vapi's customEndpointingRules) rather than a semantic ML model,
+    # keeping this dependency-free and low-latency for the common case
+    # (complete sentences are unaffected -- 0 added delay). 0 disables it.
+    VOICE_STT_INCOMPLETE_FINAL_GRACE_MS: int = 500
     # Telecom-oriented silence window for spelling/email (when mode is extended or email-recreate runs).
     # Ignored unless VOICE_STT_ENDPOINTING_MODE == "extended" or email flow bumps endpointing.
     # One-time Deepgram reconnect with extended endpointing when agent transcript matches email ask.
@@ -695,7 +726,25 @@ class Settings(BaseSettings):
     #   normal     → DEEPGRAM_STT_ENDPOINTING_MS
     #   extended   → max(base, DEEPGRAM_STT_ENDPOINTING_MS_EXTENDED)
     #   aggressive → faster finals (lower ms, clamped) for snappier turns
-    VOICE_STT_ENDPOINTING_MODE: str = "aggressive"
+    #
+    # Default is "normal" (uses DEEPGRAM_STT_ENDPOINTING_MS above directly,
+    # currently 450ms), not "aggressive". "aggressive" applies
+    # voice_orchestrator.py::_resolve_initial_endpointing_ms's
+    # max(80, int(base*0.55)) formula, which against this file's original
+    # DEEPGRAM_STT_ENDPOINTING_MS=350 worked out to ~192ms -- confirmed via
+    # real production call logs (three separate calls) to be short enough
+    # that Deepgram routinely marks speech_final mid-sentence on an
+    # ordinary conversational pause between clauses/words (e.g. a caller's
+    # single continuous thought split into 3 separate "final" transcripts
+    # within ~2 seconds). Each premature final is handed to the LLM as a
+    # complete turn, so the agent starts responding before the caller
+    # actually finished -- heard as the agent interrupting, worse on
+    # longer sentences (more chances to hit a short gap somewhere in the
+    # middle). This just stops "aggressive" from silently overriding the
+    # base value by default; see DEEPGRAM_STT_ENDPOINTING_MS's own comment
+    # above for the subsequent 350->450ms increase that addressed the same
+    # complaint recurring even under "normal".
+    VOICE_STT_ENDPOINTING_MODE: str = "normal"
     # Secondary dedup in STT pipeline: normalized text, same window idea as handler (seconds).
     VOICE_STT_FINAL_NORMALIZED_DEDUP_SEC: float = 6.0
     STT_SAMPLE_RATE: int = (
@@ -754,6 +803,16 @@ class Settings(BaseSettings):
     # needs a materially higher floor than the browser/LiveKit path above.
     VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO: float = 0.70
     VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO: float = 0.75
+    # Soft barge-in: Deepgram's vad_events SpeechStarted (pure VAD onset, no
+    # transcript/confidence yet) fires well before the first interim transcript.
+    # It is NOT gated on transcript confidence, so it must never hard-cancel the
+    # in-flight LLM/TTS turn (that stays gated on classify_turn() via the normal
+    # interim/final barge-in path above) -- it only dips TTS output volume
+    # briefly so a real interruption feels more responsive without risking a
+    # false-positive cut from ambient noise/breath triggering VAD onset.
+    VOICE_SOFT_DUCK_ENABLED: bool = True
+    VOICE_SOFT_DUCK_MS: int = 400
+    VOICE_SOFT_DUCK_GAIN: float = 0.35
     VOICE_HISTORY_MAX_MESSAGES: int = 50
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the

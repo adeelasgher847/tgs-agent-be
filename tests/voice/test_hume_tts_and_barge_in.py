@@ -509,6 +509,55 @@ class TestHumeTtsServiceErrors:
 
         assert fake_ws.closed is True
 
+    def test_error_envelope_without_type_field_raises_service_error(self):
+        """Hume's general API error envelope (dev.hume.ai/docs/resources/errors)
+        is `{"code": "E0100", "message": "..."}` and does NOT carry
+        `type: "error"` the way the TTS streaming schema's audio/timestamp
+        messages do. Before this fix, this was indistinguishable from a
+        genuinely unknown message (both have `msg_type is None`) and was
+        silently swallowed as a benign end-of-stream, leaving a real Hume
+        failure (bad voice, quota, auth) undiagnosable and the call silent."""
+        from app.services.hume_tts_service import HumeTtsService, HumeTtsServiceError
+
+        messages = [json.dumps({"code": "E0100", "message": "invalid voice"})]
+        fake_ws = _FakeHumeWebSocket(messages)
+        key_patch, fake_connect = _patch_hume_connect(fake_ws)
+        with key_patch, patch("websockets.connect", side_effect=fake_connect):
+            svc = HumeTtsService()
+
+            async def _run():
+                chunks = []
+                async for chunk in svc.stream_text_to_speech(text="Hi"):
+                    chunks.append(chunk)
+                return chunks
+
+            with pytest.raises(HumeTtsServiceError, match="invalid voice"):
+                asyncio.run(_run())
+
+        assert fake_ws.closed is True
+
+    def test_error_envelope_with_code_only_raises_service_error(self):
+        """Same error envelope but with only `code` (no `message`) still must
+        raise, not fall through to the silent unrecognized-message path."""
+        from app.services.hume_tts_service import HumeTtsService, HumeTtsServiceError
+
+        messages = [json.dumps({"code": "E0800"})]
+        fake_ws = _FakeHumeWebSocket(messages)
+        key_patch, fake_connect = _patch_hume_connect(fake_ws)
+        with key_patch, patch("websockets.connect", side_effect=fake_connect):
+            svc = HumeTtsService()
+
+            async def _run():
+                chunks = []
+                async for chunk in svc.stream_text_to_speech(text="Hi"):
+                    chunks.append(chunk)
+                return chunks
+
+            with pytest.raises(HumeTtsServiceError, match="E0800"):
+                asyncio.run(_run())
+
+        assert fake_ws.closed is True
+
     def test_unrecognized_message_type_ends_stream_without_raising(self):
         """A message type outside Hume's documented audio/timestamp/error
         vocabulary is logged and ends the stream, but does not hard-fail the

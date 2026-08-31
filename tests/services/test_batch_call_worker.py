@@ -94,7 +94,7 @@ def _make_tenant(db) -> uuid.UUID:
     return t.id
 
 
-def _make_agent(db, tenant_id: uuid.UUID, prompt: str = "") -> uuid.UUID:
+def _make_agent(db, tenant_id: uuid.UUID, prompt: str = "", created_by: uuid.UUID | None = None) -> uuid.UUID:
     from app.models.agent import Agent
 
     a = Agent(
@@ -102,11 +102,28 @@ def _make_agent(db, tenant_id: uuid.UUID, prompt: str = "") -> uuid.UUID:
         name="TestAgent",
         system_prompt=prompt,
         status="ready",
+        created_by=created_by,
     )
     db.add(a)
     db.commit()
     db.refresh(a)
     return a.id
+
+
+def _make_user(db, email: str) -> uuid.UUID:
+    from app.models.user import User
+
+    u = User(
+        id=uuid.uuid4(),
+        first_name="Test",
+        last_name="User",
+        email=email,
+        hashed_password="x",
+    )
+    db.add(u)
+    db.commit()
+    db.refresh(u)
+    return u.id
 
 
 def _make_batch_job(
@@ -494,6 +511,98 @@ class TestDispatch:
             req = mock_call.call_args.kwargs["call_request"]
             assert req.batch_call_record_id == str(record.id)
             assert req.batch_prompt_override == "Hello Alice"
+
+    def test_dispatch_passes_agent_creator_as_user_id(self, db):
+        """
+        Regression test: batch-dispatched calls must not pass user_id=None to
+        initiate_call — CallSession.user_id is a NOT NULL FK to user.id, and a
+        raw None there triggers a psycopg2.errors.NotNullViolation /
+        PendingRollbackError at INSERT time in production (see prod incident:
+        every batch campaign call failing at voice_call_service.py:423).
+
+        When the dialed agent has a recorded creator, that creator's user_id
+        must be threaded through as the call's owner, per the same convention
+        already used for inbound Twilio calls and demo-link calls.
+        """
+        from app.schemas.base import SuccessResponse
+        from app.schemas.twilio import CallInitiateResponse
+
+        workspace_id = _make_tenant(db)
+        creator_id = _make_user(db, "agent-creator@example.com")
+        agent_id = _make_agent(db, workspace_id, created_by=creator_id)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1)
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        db.commit()
+
+        _cid = uuid.uuid4()
+        fake_response = SuccessResponse(
+            data=CallInitiateResponse(
+                callId=str(_cid),
+                twilioCallSid="CAowner",
+                callSessionId=str(_cid),
+                status="initiated",
+            )
+        )
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch(
+            "app.services.voice_call_service.initiate_call",
+            new=AsyncMock(return_value=fake_response),
+        ) as mock_call:
+            svc = BatchCallWorkerService(db)
+            asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+
+        assert mock_call.call_args.kwargs["user_id"] == creator_id
+
+    def test_dispatch_falls_back_to_workspace_creator_when_agent_has_no_creator(self, db):
+        """
+        When the dialed agent has no recorded creator (e.g. an API-key-
+        originated agent), dispatch must still resolve a non-None user_id by
+        falling back to the workspace's creator (is_creator=True).
+        """
+        from app.models.user import user_tenant_association
+        from app.schemas.base import SuccessResponse
+        from app.schemas.twilio import CallInitiateResponse
+
+        workspace_id = _make_tenant(db)
+        workspace_creator_id = _make_user(db, "workspace-creator@example.com")
+        db.execute(
+            user_tenant_association.insert().values(
+                user_id=workspace_creator_id,
+                tenant_id=workspace_id,
+                is_creator=True,
+            )
+        )
+        db.commit()
+
+        agent_id = _make_agent(db, workspace_id, created_by=None)
+        job = _make_batch_job(db, workspace_id, agent_id, total=1)
+        record = _make_record(db, job.id, "+15550001111", status="active")
+        job.active_count = 1
+        db.commit()
+
+        _cid = uuid.uuid4()
+        fake_response = SuccessResponse(
+            data=CallInitiateResponse(
+                callId=str(_cid),
+                twilioCallSid="CAfallback",
+                callSessionId=str(_cid),
+                status="initiated",
+            )
+        )
+
+        from app.services.batch_call_worker_service import BatchCallWorkerService
+
+        with patch(
+            "app.services.voice_call_service.initiate_call",
+            new=AsyncMock(return_value=fake_response),
+        ) as mock_call:
+            svc = BatchCallWorkerService(db)
+            asyncio.run(svc.dispatch_record(record, workspace_id, agent_id, None))
+
+        assert mock_call.call_args.kwargs["user_id"] == workspace_creator_id
 
     def test_dispatch_system_error_marks_failed_without_billing(self, db):
         workspace_id = _make_tenant(db)

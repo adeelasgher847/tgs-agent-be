@@ -294,13 +294,39 @@ class HumeTtsService:
                     logger.error("[Hume] TTS error response: %s", error_detail)
                     raise HumeTtsServiceError(f"Hume TTS error: {error_detail}")
                 if msg_type != "audio":
-                    # Unrecognized message type — log it (visible in logs,
-                    # unlike a fully silent break) and end the stream. Not
-                    # raised, since Hume's message vocabulary beyond
-                    # audio/timestamp/error isn't fully documented and an
-                    # unknown-but-benign message type shouldn't hard-fail a call.
+                    # Hume's general API error envelope (per dev.hume.ai/docs/
+                    # resources/errors) is `{"code": "E0100"/"W0105"/..., "message":
+                    # "..."}` — it does NOT carry `type: "error"` the way the TTS
+                    # streaming output schema's audio/timestamp messages do. A real
+                    # failure (bad voice, invalid request, quota, auth) surfaces this
+                    # way and was previously indistinguishable from a genuinely
+                    # unknown/benign message: both hit this branch with
+                    # `msg_type is None` and were silently swallowed as "ending
+                    # stream", producing a dead-silent call with no diagnosable
+                    # error anywhere in the logs. Detect the error envelope by its
+                    # actual shape (a `code` and/or `message`) regardless of
+                    # `type`, and raise with the real detail so the caller's
+                    # fallback path engages instead of a call going silently dark.
+                    error_code = msg.get("code")
+                    error_message = msg.get("message")
+                    if error_code or error_message:
+                        logger.error(
+                            "[Hume] TTS error response (code=%r): %s",
+                            error_code,
+                            error_message or msg,
+                        )
+                        raise HumeTtsServiceError(
+                            f"Hume TTS error {error_code}: {error_message or msg}"
+                        )
+                    # Truly unrecognized message shape — log the full raw content
+                    # (not just the missing type) so a future occurrence is
+                    # diagnosable, and end the stream without hard-failing the
+                    # call, since Hume's message vocabulary beyond
+                    # audio/timestamp/error isn't fully documented.
                     logger.warning(
-                        "[Hume] unexpected message type %r — ending stream", msg_type
+                        "[Hume] unexpected message type %r — ending stream. raw=%s",
+                        msg_type,
+                        _redact(json.dumps(msg))[:500],
                     )
                     break
 

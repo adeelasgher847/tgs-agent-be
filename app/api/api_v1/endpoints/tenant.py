@@ -496,7 +496,13 @@ def get_payment_history(
                     try:
                         payment_intent = stripe.PaymentIntent.retrieve(session.payment_intent)
                         if payment_intent.last_payment_error:
-                            payment_entry["failure_reason"] = payment_intent.last_payment_error.get("message", "Payment failed")
+                            # stripe-python 15.x's StripeObject no longer supports
+                            # dict-style .get() (it did in older SDK versions) --
+                            # .get("message", ...) hits __getattr__, which treats
+                            # "get" as a data-key lookup and raises AttributeError.
+                            payment_entry["failure_reason"] = getattr(
+                                payment_intent.last_payment_error, "message", "Payment failed"
+                            )
                     except stripe.error.StripeError:
                         pass
                 
@@ -512,18 +518,51 @@ def get_payment_history(
             )
             
             for invoice in invoices.data:
-                amount_dollars = invoice.amount_total / 100 if invoice.amount_total else 0
+                # Invoice's top-level total-after-discounts-and-taxes field is
+                # `.total` -- `amount_total` only exists nested inside
+                # `invoice.shipping_cost` (Stripe SDK 15.x's ShippingCost
+                # sub-object), not on the Invoice itself. This previously
+                # raised AttributeError on every invoice (copy-paste from the
+                # Checkout Session block above, which DOES have a top-level
+                # amount_total).
+                amount_dollars = invoice.total / 100 if invoice.total else 0
+
+                # Stripe API version "Basil" (2025-03-31+) removed the scalar
+                # `invoice.payment_intent` field to support multiple partial
+                # payments per invoice; it was replaced by the `invoice.payments`
+                # collection (list of InvoicePayment objects, each with a
+                # `.payment` sub-object). Mirror the old single-value semantics
+                # by taking the first payment_intent-typed entry, if any.
+                # https://docs.stripe.com/changelog/basil/2025-03-31/add-support-for-multiple-partial-payments-on-invoices
+                payment_intent_id = None
+                invoice_payments = getattr(invoice, "payments", None)
+                for invoice_payment in (invoice_payments.data if invoice_payments else []):
+                    payment = getattr(invoice_payment, "payment", None)
+                    if payment is not None and getattr(payment, "type", None) == "payment_intent":
+                        payment_intent_id = getattr(payment, "payment_intent", None)
+                        break
+
+                # Same Basil release also removed the top-level
+                # `invoice.subscription` field -- the subscription reference
+                # moved to `invoice.parent.subscription_details.subscription`.
+                subscription_id = None
+                invoice_parent = getattr(invoice, "parent", None)
+                if invoice_parent is not None:
+                    subscription_details = getattr(invoice_parent, "subscription_details", None)
+                    if subscription_details is not None:
+                        subscription_id = getattr(subscription_details, "subscription", None)
+
                 payment_entry = {
                     "type": "invoice",
                     "id": invoice.id,
                     "status": invoice.status,
                     "amount_total": amount_dollars,
-                    "amount_total_cents": invoice.amount_total,
+                    "amount_total_cents": invoice.total,
                     "amount_formatted": f"${amount_dollars:.2f}",  # Format as USD
                     "currency": invoice.currency,
                     "created": invoice.created,
-                    "payment_intent": invoice.payment_intent,
-                    "subscription_id": invoice.subscription,
+                    "payment_intent": payment_intent_id,
+                    "subscription_id": subscription_id,
                     "success": invoice.status == "paid",
                     "failure_reason": None,
                     "invoice_url": invoice.invoice_pdf,

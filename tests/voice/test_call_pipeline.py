@@ -126,8 +126,10 @@ def _base_handler() -> Handler:
     h._RECENT_AGENT_PAIRS_MAX = 5
     h._llm_last_answered_transcript = ""
     h._llm_last_answered_ts = 0.0
-    h._last_quick_ack_user_norm = ""
-    h._last_quick_ack_mono = 0.0
+    h._turn_generation_id = 0
+    h._last_quick_ack_turn_id = -1
+    h._turns_since_last_ack = 0
+    h._last_quick_ack_phrase = ""
 
     # KB cache
     h._cached_inbound_kb_block = ""

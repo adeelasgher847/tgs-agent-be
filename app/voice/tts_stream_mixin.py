@@ -50,6 +50,13 @@ if TYPE_CHECKING:
 # so the agent's AudioSource never goes quiet for more than one tick.
 _AGENT_MIRROR_KEEPALIVE_INTERVAL_S = 0.02  # 20ms, matches Twilio's own frame cadence
 _AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S = 0.025  # 25ms — small margin over one tick
+# Bounded queue depth for real frames awaiting the mirror writer (see
+# _agent_mirror_keepalive_loop): ~5s of audio at one 20ms frame per slot.
+# Generous enough to absorb any realistic synthesis burst/stall without
+# growing unbounded; if ever exceeded, the OLDEST queued frame is dropped
+# to make room — a lost recording frame is inconsequential, growing memory
+# or blocking the enqueuer is not (see _mirror_enqueue).
+_AGENT_MIRROR_QUEUE_MAXSIZE = 250
 
 
 class TtsStreamMixin:
@@ -58,32 +65,79 @@ class TtsStreamMixin:
     def _livekit_recording_mirror(self):
         """Return agent TTS mirror callback when LiveKit egress recording is active.
 
-        The returned callback wraps the publisher's real `publish_mulaw` so every
-        REAL frame push stamps `self._agent_mirror_last_real_frame_ts` — read by
-        `_agent_mirror_keepalive_loop` to decide when to fill silence gaps.
+        The returned callback is a fast, non-blocking ENQUEUE onto
+        `self._agent_mirror_queue` — it never itself calls the publisher or
+        awaits any network/pacing operation. The actual `pub.publish_mulaw()`
+        call (which wraps LiveKit's rate-limited `AudioSource.capture_frame`)
+        happens exclusively inside `_agent_mirror_keepalive_loop`, the single
+        dedicated background writer for this call.
+
+        This split exists because `capture_frame()` is a self-pacing API: it
+        can legitimately take longer than one 20ms tick to maintain its own
+        real-time delivery to the recording track. Previously this callback
+        awaited `publish_mulaw()` directly, INLINE, before the caller-facing
+        Twilio send in both `stream_mulaw_bytes_over_twilio` and
+        `_stream_tts_chunk`'s `send_frame` — coupling the live call's audio
+        pacing to the recording mirror's independent pacing clock. Confirmed
+        via real-recording frame-level analysis: ~5.5% of frames showed a
+        brief volume dip during continuous speech, consistent with this
+        coupling occasionally delaying a live frame's send. Enqueueing here
+        instead means the Twilio-facing call sites' `await mirror_mulaw(...)`
+        now awaits a synchronous, in-memory queue operation (microseconds,
+        no I/O) — it can never block, delay, or otherwise affect the audio
+        sent to the caller, regardless of how the LiveKit publish is paced.
         """
         pub = getattr(self, "_lk_agent_publisher", None)
         if not (pub and getattr(pub, "connected", False)):
             return None
 
-        async def _mirror_and_stamp(mulaw_bytes: bytes) -> None:
-            self._agent_mirror_last_real_frame_ts = time.monotonic()
-            await pub.publish_mulaw(mulaw_bytes)
+        async def _mirror_enqueue(mulaw_bytes: bytes) -> None:
+            queue: asyncio.Queue | None = getattr(self, "_agent_mirror_queue", None)
+            if queue is None:
+                return
+            try:
+                queue.put_nowait(mulaw_bytes)
+            except asyncio.QueueFull:
+                # Drop the oldest queued frame to make room rather than
+                # growing unbounded or blocking the caller — see
+                # _AGENT_MIRROR_QUEUE_MAXSIZE.
+                try:
+                    queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    pass
+                try:
+                    queue.put_nowait(mulaw_bytes)
+                except asyncio.QueueFull:
+                    pass
 
-        return _mirror_and_stamp
+        return _mirror_enqueue
 
     async def _agent_mirror_keepalive_loop(self) -> None:
         """
-        Background task: keep the agent recording-mirror track fed with a
-        continuous, steady cadence for the entire call, so its underlying
-        WebRTC AudioSource/RTP track never goes quiet for more than one tick
-        (see module-level comment above for the full diagnosis).
+        Background task: the SOLE writer to the agent recording-mirror
+        publisher for this call — both real TTS frames (drained from
+        `self._agent_mirror_queue`, enqueued by `_livekit_recording_mirror`'s
+        callback) and silence keep-alive frames are published from here,
+        never from the Twilio-facing send path directly. This guarantees:
 
-        Wakes up every ~20ms and pushes one silent μ-law frame via the agent
-        publisher UNLESS a real TTS frame was pushed within the last
-        `_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S` — i.e. it is a no-op during
-        active speech (the real streaming loop already paces itself at 20ms)
-        and only fills in the gaps between turns.
+        1. The caller-facing Twilio audio path never awaits anything that
+           touches the LiveKit publisher — the recording mirror truly cannot
+           block or delay live playback (see _livekit_recording_mirror's
+           docstring for the frame-drop evidence that motivated this).
+        2. Exactly one coroutine ever calls `pub.publish_mulaw()` — removing
+           any possibility of this loop's own keep-alive silence frame
+           racing/interleaving with a real frame pushed concurrently by a
+           second producer (both now flow through this single loop, in
+           order).
+
+        Wakes up every ~20ms; if a real frame is queued, publishes the
+        OLDEST one (FIFO — never drops queued content to "catch up", since
+        `publish_mulaw`'s own pacing already absorbs momentary bursts via
+        the queue acting as a buffer, exactly like `stream_mulaw_bytes_over_
+        twilio`'s own pace_state does for the Twilio-facing send). Otherwise,
+        publishes a silent frame UNLESS a real frame was published within
+        the last `_AGENT_MIRROR_KEEPALIVE_GAP_THRESHOLD_S` — i.e. it is a
+        no-op during active speech and only fills the gaps between turns.
         """
         silence_frame = bytes([0xFF]) * MULAW_FRAME_BYTES
         try:
@@ -95,6 +149,25 @@ class TtsStreamMixin:
                     # Publisher torn down / not yet connected — stay alive but idle
                     # so the task doesn't need to be recreated on reconnect races;
                     # it is explicitly cancelled at call teardown regardless.
+                    continue
+
+                queue: asyncio.Queue | None = getattr(self, "_agent_mirror_queue", None)
+                real_frame: bytes | None = None
+                if queue is not None and not queue.empty():
+                    try:
+                        real_frame = queue.get_nowait()
+                    except asyncio.QueueEmpty:
+                        real_frame = None
+
+                if real_frame is not None:
+                    self._agent_mirror_last_real_frame_ts = time.monotonic()
+                    try:
+                        await pub.publish_mulaw(real_frame)
+                    except Exception as exc:
+                        logger.debug(
+                            "[LiveKitBridge] agent mirror real frame publish failed: %s",
+                            exc,
+                        )
                     continue
 
                 last_real = getattr(self, "_agent_mirror_last_real_frame_ts", 0.0)
@@ -115,19 +188,21 @@ class TtsStreamMixin:
             logger.debug("[LiveKitBridge] agent mirror keep-alive loop exited: %s", exc)
 
     def _start_agent_mirror_keepalive(self) -> None:
-        """Start the keep-alive task once the agent recording-mirror publisher is up."""
+        """Start the keep-alive/writer task once the agent recording-mirror publisher is up."""
         existing = getattr(self, "_lk_agent_keepalive_task", None)
         if existing and not existing.done():
             return
         self._agent_mirror_last_real_frame_ts = 0.0
+        self._agent_mirror_queue = asyncio.Queue(maxsize=_AGENT_MIRROR_QUEUE_MAXSIZE)
         self._lk_agent_keepalive_task = asyncio.create_task(
             self._agent_mirror_keepalive_loop()
         )
 
     async def _stop_agent_mirror_keepalive(self) -> None:
-        """Cancel the keep-alive task cleanly (call teardown / recording stop)."""
+        """Cancel the keep-alive/writer task cleanly (call teardown / recording stop)."""
         task = getattr(self, "_lk_agent_keepalive_task", None)
         self._lk_agent_keepalive_task = None
+        self._agent_mirror_queue = None
         if task and not task.done():
             task.cancel()
             try:
@@ -222,10 +297,34 @@ class TtsStreamMixin:
         pct = max(0.0, min(100.0, pct))
         return pct / 100.0
 
-    def _resolve_voice_volume(self) -> float:
+    def _apply_soft_duck(self, gain: float) -> float:
         """
-        Resolve TTS voice volume (linear gain) from agent settings with
-        provider-aware telephony baseline leveling.
+        Scale `gain` down while a soft-duck window is active (see
+        BidirectionalStreamHandler._on_stt_speech_started, set from
+        Deepgram's vad_events/SpeechStarted -- pure VAD onset, ahead of the
+        real confidence-gated barge-in decision). Twilio-only: the LiveKit
+        browser handler has no equivalent gain pipeline to hook into
+        (see livekit_browser_call_handler.py), so this is a no-op there via
+        the plain `getattr` default below.
+        """
+        duck_until = getattr(self, "_soft_duck_until_mono", 0.0)
+        if duck_until and time.monotonic() < duck_until:
+            duck_gain = getattr(self, "_soft_duck_gain", 0.35)
+            return gain * duck_gain
+        return gain
+
+    def _base_voice_gain_from_runtime(self, runtime) -> float:
+        """
+        Compute the (non-duck) base voice gain from an ALREADY-RESOLVED
+        ``ResolvedTtsRuntime``. Pure attribute reads -- cheap, no DB access.
+
+        Callers that have already called ``resolve_tts_runtime()`` earlier
+        in the same code path (e.g. `_stream_tts_chunk` resolves it once up
+        front to pick the provider) should reuse that result via this
+        method instead of calling `_resolve_voice_volume_base()`, which
+        would resolve the runtime a second time (and, for a BYO ElevenLabs
+        agent, decrypt the stored key a second time -- an extra Postgres
+        round-trip for no reason).
 
         - Google TTS outputs at nominal telephony level (~-18 dBFS RMS) -> baseline 1.0x.
         - ElevenLabs ulaw_8000 outputs at ~-25.7 to -26.3 dBFS RMS with -6.2 dBFS peak headroom.
@@ -233,16 +332,51 @@ class TtsStreamMixin:
           matching PSTN speech levels while maintaining safe peak headroom (-1.7 dBFS).
         - User-configured volume slider scales on top of the provider baseline.
         """
-        if not self.agent:
-            return 1.0
         try:
-            runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
             user_vol = float(runtime.settings_json.get("volume", 1.0))
             provider_slug = (runtime.adapter_slug or "").lower()
             baseline = 1.8 if provider_slug == "elevenlabs" else 1.0
             return max(0.0, user_vol * baseline)
         except Exception:
             return 1.0
+
+    def _resolve_voice_volume_base(self) -> float:
+        """
+        Resolve TTS voice volume (linear gain) from agent settings with
+        provider-aware telephony baseline leveling -- WITHOUT the soft-duck
+        adjustment (see _resolve_voice_volume() for that).
+
+        Deliberately NOT cheap enough to call at frame (20ms) granularity:
+        ``resolve_tts_runtime()`` can decrypt a BYO ElevenLabs key, which
+        hits Postgres (pgp_sym_decrypt). Callers that need duck-reactive
+        gain inside a frame-streaming loop should call this once per
+        chunk/utterance (or reuse an already-resolved runtime via
+        `_base_voice_gain_from_runtime()` if one is already in scope) and
+        re-apply only `_apply_soft_duck()` (cheap: attribute reads + a
+        monotonic-clock comparison) on every frame.
+        """
+        if not self.agent:
+            return 1.0
+        try:
+            runtime = resolve_tts_runtime(self.agent, db=getattr(self, "db", None))
+            return self._base_voice_gain_from_runtime(runtime)
+        except Exception:
+            return 1.0
+
+    def _resolve_voice_volume(self) -> float:
+        """
+        Resolve TTS voice volume (linear gain) from agent settings with
+        provider-aware telephony baseline leveling, then apply the current
+        soft-duck window (see _apply_soft_duck()) on top.
+
+        NOTE: this recomputes the (non-cheap, see _resolve_voice_volume_base)
+        base gain every call. Frame-streaming loops should NOT call this
+        per-frame -- instead resolve the base gain once per chunk and call
+        `self._apply_soft_duck(base_gain)` per frame so the duck window
+        reacts immediately mid-chunk without repeating the expensive
+        resolution (and possible BYO-key DB decrypt) at 50 Hz.
+        """
+        return self._apply_soft_duck(self._resolve_voice_volume_base())
 
     async def _stream_tts_chunk(
         self,
@@ -252,6 +386,7 @@ class TtsStreamMixin:
         prefetched_bytes: Any = None,
         pacing: "PacingHint | None" = None,
         previous_text: str | None = None,
+        humanization_decision: Any = None,
     ):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -273,6 +408,19 @@ class TtsStreamMixin:
         return an async iterator (e.g. it errored/returned None). The common
         path never reaches this: `_prefetch_tts_audio` reads the same value
         directly from the task dict.
+
+        `humanization_decision` (optional): the SAME HumanizationDecision
+        already computed once by TtsPipeline._process_chunk (via
+        analyze_response()), passed through so the humanization voice-
+        settings overlay (e.g. ElevenLabs stability) can be applied in the
+        same rare fallback path noted above for `previous_text` -- when
+        `_prefetch_tts_audio` did not already hand back synthesized audio,
+        this function performs its own live synthesis and must apply the
+        identical overlay `_prefetch_tts_audio` would have, or that turn's
+        tone/stability silently diverges from every other chunk. Never
+        recomputed here — passing None (humanization disabled/failed
+        upstream) is a valid, safe input (build_voice_settings_overlay
+        already tolerates it).
 
         Args:
             text: Text or SSML to convert to speech
@@ -356,6 +504,25 @@ class TtsStreamMixin:
                                 apply_micro_fade_out,
                             )
 
+                            # LiveKit recording mirror: this incremental
+                            # (async_stream_synthesize) streaming branch sends
+                            # frames directly to Twilio via send_frame below,
+                            # unlike the bulk-buffer path (generate_mulaw_tts +
+                            # stream_mulaw_bytes_over_twilio, further down in
+                            # this same function) which already mirrors every
+                            # frame it sends. This branch is the DOMINANT path
+                            # for any response of 2+ words (VOICE_TTS_STREAM_
+                            # MIN_WORDS), so without this it silently never
+                            # mirrors the majority of real agent speech into
+                            # the LiveKit recording egress -- confirmed via a
+                            # real S3 recording where several agent turns were
+                            # completely silent (ffprobe/volumedetect showed
+                            # near-noise-floor levels, -40 to -70dB, at exactly
+                            # those turns' timestamps) while short/simple
+                            # responses (which take the bulk path) had normal
+                            # speech levels.
+                            _recording_mirror = self._livekit_recording_mirror()
+
                             async def send_frame(
                                 frame: bytes, pace: bool = True, state: dict = None
                             ):
@@ -365,6 +532,11 @@ class TtsStreamMixin:
                                     return
                                 if self._is_background_audio_enabled():
                                     frame = self._background_audio.mix_tts_frame(frame)
+                                if _recording_mirror:
+                                    try:
+                                        await _recording_mirror(frame)
+                                    except Exception:  # noqa: S110 - best-effort recording mirror; must not disrupt playback
+                                        pass
                                 payload = base64.b64encode(frame).decode("utf-8")
                                 try:
                                     await self.websocket.send_json(
@@ -428,7 +600,18 @@ class TtsStreamMixin:
                                 elif sleep_dur < -0.03:
                                     state["next_send"] = time.perf_counter()
 
-                            voice_gain = self._resolve_voice_volume()
+                            # Resolve the (non-duck) base gain once per utterance, from
+                            # the `tts_runtime` already resolved above (avoids a second
+                            # resolve_tts_runtime() call / a second BYO-ElevenLabs-key
+                            # Postgres decrypt). The duck-reactive part is re-applied
+                            # fresh below, inside the `async for chunk_bytes in
+                            # audio_iter` loop, so a SpeechStarted event landing
+                            # mid-chunk immediately affects whichever provider chunks
+                            # are still to be sent for this utterance -- see
+                            # _apply_soft_duck() / _resolve_voice_volume().
+                            base_voice_gain = self._base_voice_gain_from_runtime(
+                                tts_runtime
+                            )
 
                             async def stream_mulaw_from_audio_iter(audio_iter):
                                 """
@@ -437,8 +620,13 @@ class TtsStreamMixin:
                                 - Optional jitter-buffer priming (first speak only)
                                 - Single crossfade bridge at chunk boundary (prev tail + next head)
                                 - Tail holdback (20ms) between chunks to avoid clicks/distortion
-                                - User-configurable voice gain applied per chunk (not on priming
-                                  / silence-drain frames, which stay at 0xFF).
+                                - User-configurable voice gain applied per provider chunk (not on
+                                  priming / silence-drain frames, which stay at 0xFF). The
+                                  soft-duck portion of this gain is re-resolved on every
+                                  iteration of the loop below (cheap: monotonic-clock check),
+                                  so a barge-in SpeechStarted event takes effect on the next
+                                  provider chunk still to arrive, not just on the next
+                                  full TTS-flush segment.
                                 """
                                 if self._is_background_audio_enabled():
                                     self._background_audio.set_user_level(
@@ -484,6 +672,13 @@ class TtsStreamMixin:
                                         return
                                     if not chunk_bytes:
                                         continue
+                                    # Re-resolve the duck-reactive gain on every provider
+                                    # chunk (cheap -- see _apply_soft_duck()) instead of
+                                    # reusing a value captured once before streaming
+                                    # started, so mid-utterance SpeechStarted events are
+                                    # audible immediately rather than only on the next
+                                    # TTS-flush segment.
+                                    voice_gain = self._apply_soft_duck(base_voice_gain)
                                     if voice_gain != 1.0:
                                         chunk_bytes = apply_volume_fade(
                                             chunk_bytes, voice_gain
@@ -692,6 +887,31 @@ class TtsStreamMixin:
                                         "output_format", "ulaw_8000"
                                     )
 
+                                # Fold in any humanization overlay (e.g. ElevenLabs
+                                # stability hint), exactly like _prefetch_tts_audio
+                                # does -- this is the rare fallback path where THIS
+                                # function performs live synthesis itself rather
+                                # than reusing _prefetch_tts_audio's already-
+                                # synthesized bytes, so without this the chunk's
+                                # tone/stability would silently diverge from every
+                                # other chunk in the turn (root cause of a real
+                                # production report: agent tone reading
+                                # inconsistent/unnatural on some responses).
+                                # Isolated try/except: a humanization failure must
+                                # never prevent this chunk's TTS request from going
+                                # out with normal settings.
+                                try:
+                                    provider_settings.update(
+                                        build_voice_settings_overlay(
+                                            tts_provider_slug, humanization_decision
+                                        )
+                                    )
+                                except Exception as exc:
+                                    logger.debug(
+                                        "[TTS] humanization overlay skipped (streaming fallback): %s",
+                                        exc,
+                                    )
+
                                 # Prefer async streaming for providers that support it (Rime, ElevenLabs).
                                 if hasattr(adapter, "async_stream_synthesize"):
                                     _cancel_ref = self._tts_cancel
@@ -788,6 +1008,21 @@ class TtsStreamMixin:
                                 self._prev_tts_tail = b""
                                 return
 
+                            # `prefetched_bytes` was an unconsumed/partially-
+                            # consumed async iterator (e.g. Hume's
+                            # async_stream_synthesize output) that streaming
+                            # just failed to fully drain -- it is NOT valid
+                            # batch audio and must never be reused as
+                            # `audio_bytes` below (that async_generator object
+                            # is truthy and has no len(), so the fade-in call
+                            # a few lines down would crash with "object of
+                            # type 'async_generator' has no len()" instead of
+                            # actually falling back). Force a real, fresh
+                            # non-streaming resynthesis via generate_mulaw_tts
+                            # instead of pretending the failed stream is bytes.
+                            if _is_prefetched_iter:
+                                _use_prefetched = False
+
                     # Generate TTS audio (Google TTS auto-detects SSML)
                     if self._tts_cancel.is_set() or not self.stream_sid:
                         self._prev_tts_tail = b""
@@ -845,9 +1080,23 @@ class TtsStreamMixin:
                         # User-configurable TTS voice gain (uniform across providers).
                         # Applied on speech bytes only; jitter priming + silence drain
                         # frames keep their 0xFF mulaw silence below.
-                        voice_gain = self._resolve_voice_volume()
-                        if to_stream and voice_gain != 1.0:
-                            to_stream = apply_volume_fade(to_stream, voice_gain)
+                        #
+                        # This whole buffer is pre-generated and handed to
+                        # stream_mulaw_bytes_over_twilio() to be paced out at 20ms/frame,
+                        # so baking a single gain value in here (before any real time has
+                        # elapsed) would freeze the soft-duck state as of NOW, before the
+                        # send loop even starts -- exactly the bug this fix addresses. So
+                        # we only bake in the non-duck base gain (provider baseline + user
+                        # volume slider -- static for the whole call, and the only part
+                        # worth resolving once since it can hit Postgres for a BYO
+                        # ElevenLabs key). The duck-reactive multiplier is re-resolved
+                        # fresh on every frame at actual send time via frame_gain_fn below.
+                        # Reuses the `tts_runtime` already resolved above in this same
+                        # function (avoids a second resolve_tts_runtime()/BYO-key-decrypt
+                        # call).
+                        base_voice_gain = self._base_voice_gain_from_runtime(tts_runtime)
+                        if to_stream and base_voice_gain != 1.0:
+                            to_stream = apply_volume_fade(to_stream, base_voice_gain)
 
                         # Mix with ambient bed only when explicitly enabled for office profile.
                         if self._is_background_audio_enabled():
@@ -878,6 +1127,11 @@ class TtsStreamMixin:
                             cancel=self._tts_cancel,
                             prime_frames=prime_frames,
                             mirror_mulaw=self._livekit_recording_mirror(),
+                            # Cheap per-frame duck multiplier (1.0 outside the duck
+                            # window) -- see _apply_soft_duck(). Resolved fresh at
+                            # actual send time so a SpeechStarted event landing
+                            # mid-buffer immediately ducks the frames still to be sent.
+                            frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                         )
                         self._twilio_buffer_primed = True
 
@@ -1221,12 +1475,17 @@ class TtsStreamMixin:
                         db=getattr(self, "db", None),
                     )
 
-                    # Apply user-configurable voice gain BEFORE crossfade split so
+                    # Apply the (non-duck) base voice gain BEFORE crossfade split so
                     # both prefix_main and the crossfaded suffix join are scaled
-                    # consistently across all providers.
-                    voice_gain = self._resolve_voice_volume()
-                    if prefix_audio and voice_gain != 1.0:
-                        prefix_audio = apply_volume_fade(prefix_audio, voice_gain)
+                    # consistently across all providers. The duck-reactive multiplier
+                    # is intentionally NOT baked in here -- both prefix_main and the
+                    # suffix/tail are streamed out later via stream_mulaw_bytes_over_twilio(
+                    # frame_gain_fn=...), which re-resolves it fresh per frame at actual
+                    # send time so it reacts to SpeechStarted events mid-buffer instead
+                    # of freezing the duck state as of now, before any audio has played.
+                    base_voice_gain = self._resolve_voice_volume_base()
+                    if prefix_audio and base_voice_gain != 1.0:
+                        prefix_audio = apply_volume_fade(prefix_audio, base_voice_gain)
 
                     # Hold back 50ms for crossfade with next chunk (smooth transitions)
                     overlap_bytes = 400  # 50ms at 8kHz
@@ -1258,6 +1517,7 @@ class TtsStreamMixin:
                             cancel=self._tts_cancel,
                             prime_frames=0 if self._twilio_buffer_primed else 3,
                             mirror_mulaw=self._livekit_recording_mirror(),
+                            frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                         )
                         self._twilio_buffer_primed = True
 
@@ -1268,8 +1528,10 @@ class TtsStreamMixin:
                         except Exception:
                             suffix_audio = b""
 
-                        if suffix_audio and voice_gain != 1.0:
-                            suffix_audio = apply_volume_fade(suffix_audio, voice_gain)
+                        if suffix_audio and base_voice_gain != 1.0:
+                            suffix_audio = apply_volume_fade(
+                                suffix_audio, base_voice_gain
+                            )
 
                         if not self._tts_cancel.is_set():
                             if suffix_audio:
@@ -1289,6 +1551,7 @@ class TtsStreamMixin:
                                     cancel=self._tts_cancel,
                                     prime_frames=0,
                                     mirror_mulaw=self._livekit_recording_mirror(),
+                                    frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                                 )
                             else:
                                 # No suffix - flush held tail
@@ -1301,6 +1564,7 @@ class TtsStreamMixin:
                                         cancel=self._tts_cancel,
                                         prime_frames=0,
                                         mirror_mulaw=self._livekit_recording_mirror(),
+                                        frame_gain_fn=lambda: self._apply_soft_duck(1.0),
                                     )
                 finally:
                     self.is_speaking = False

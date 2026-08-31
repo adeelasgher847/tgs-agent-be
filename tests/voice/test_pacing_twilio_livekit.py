@@ -373,6 +373,57 @@ async def test_twilio_batch_fallback_path_with_pacing_does_not_raise(monkeypatch
     assert h.websocket.send_json.await_count == 1 + 2
 
 
+@pytest.mark.asyncio
+async def test_twilio_streaming_fallback_applies_humanization_overlay(monkeypatch):
+    """
+    Root-cause regression: when _prefetch_tts_audio did NOT already hand back
+    synthesized audio (no prefetched_bytes given here, forcing this
+    function's own live-synthesis branch), the ElevenLabs stability overlay
+    from the turn's HumanizationDecision must still be applied -- previously
+    this branch built provider_settings from only the static
+    tts_runtime.settings_json, silently dropping the same stability value
+    _prefetch_tts_audio would have applied, so a turn's tone/stability could
+    diverge depending on which internal path happened to synthesize it.
+    """
+    from app.voice.humanization_engine import HumanizationDecision, PacingHint
+    from app.voice.turn_signals import UserMood
+
+    monkeypatch.setattr(settings, "VOICE_TTS_STREAM_MIN_WORDS", 2)
+    h = _twilio_handler()
+
+    captured: dict = {}
+
+    class _FakeAdapter:
+        async def async_stream_synthesize(self, text, voice_external_id, settings_json):
+            captured["settings_json"] = settings_json
+            yield bytes([0x10]) * MULAW_FRAME_BYTES
+
+    decision = HumanizationDecision(
+        text="A complete sentence with real content.",
+        mood=UserMood.NEUTRAL,
+        response_emotion="neutral",
+        pacing=PacingHint(),
+        acknowledgement=None,
+        filler=None,
+        tts_stability_hint=0.5,
+    )
+
+    with patch(
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(adapter_slug="elevenlabs"),
+    ), patch(
+        "app.voice.tts_stream_mixin.get_tts_adapter", return_value=_FakeAdapter()
+    ):
+        await h._stream_tts_chunk(
+            "A complete sentence with real content.",
+            is_final=False,
+            prefetched_bytes=None,
+            humanization_decision=decision,
+        )
+
+    assert captured.get("settings_json", {}).get("stability") == pytest.approx(0.5)
+
+
 # ---------------------------------------------------------------------------
 # LiveKit (LiveKitBrowserCallHandler)
 # ---------------------------------------------------------------------------

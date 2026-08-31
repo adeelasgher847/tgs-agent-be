@@ -16,6 +16,7 @@ import pytest
 
 from app.core.config import settings
 from app.voice.tts_pipeline import TtsPipeline
+from app.voice.tts_stream_mixin import TtsStreamMixin
 
 
 class _FakeHandler:
@@ -107,6 +108,57 @@ async def test_analyze_response_called_exactly_once_per_chunk_not_recomputed():
         await _queue_and_wait(pipeline, 0, text="A complete sentence here.", is_final=False)
 
     assert call_count["n"] == 1
+
+
+# --- humanization_decision kwarg: Twilio-only, never sent to the browser/
+# LiveKit transport's separate _stream_tts_chunk (which does not accept it) ---
+
+
+class _FakeTwilioShapedHandler(TtsStreamMixin):
+    """isinstance(_, TtsStreamMixin) must be True -- mirrors how
+    BidirectionalStreamHandler actually inherits TtsStreamMixin -- while
+    overriding _stream_tts_chunk itself so this test only exercises
+    TtsPipeline's kwarg-forwarding decision, not the mixin's real synthesis
+    internals (covered separately in tests/voice/test_pacing_twilio_livekit.py)."""
+
+    def __init__(self):
+        self._tts_cancel = asyncio.Event()
+        self._current_turn_user_text = ""
+        self._current_turn_stt_confidence = 0.0
+        self.stream_calls: list[Dict[str, Any]] = []
+
+    async def _prefetch_tts_audio(self, task: Dict[str, Any]):
+        return b"\xff" * 160
+
+    async def _stream_tts_chunk(self, text, **kwargs):
+        self.stream_calls.append({"text": text, **kwargs})
+
+
+@pytest.mark.asyncio
+async def test_humanization_decision_forwarded_to_twilio_shaped_handler():
+    handler = _FakeTwilioShapedHandler()
+    pipeline = TtsPipeline(handler)
+
+    await _queue_and_wait(pipeline, 0, text="A complete sentence here.", is_final=True)
+
+    assert len(handler.stream_calls) == 1
+    assert "humanization_decision" in handler.stream_calls[0]
+    assert handler.stream_calls[0]["humanization_decision"] is not None
+
+
+@pytest.mark.asyncio
+async def test_humanization_decision_not_forwarded_to_non_twilio_handler():
+    """Regression guard: LiveKitBrowserCallHandler's OWN, separate
+    _stream_tts_chunk does not accept humanization_decision -- forwarding it
+    unconditionally would TypeError on every chunk of every browser/demo
+    call. _FakeHandler here is not a TtsStreamMixin instance, mirroring that
+    transport's shape."""
+    handler = _FakeHandler()
+    pipeline = TtsPipeline(handler)
+
+    await _queue_and_wait(pipeline, 0, text="A complete sentence here.", is_final=True)
+
+    assert len(handler.stream_calls) == 1
 
 
 # 9 & 10. Pacing does not delay synthesis; queue_tts() remains non-blocking.

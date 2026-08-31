@@ -427,14 +427,11 @@ class AgentService:
         if not prompt_text:
             return
 
-        if not settings.PINECONE_API_KEY:
-            logger.info(
-                "Auto KB ingest skipped for agent_id=%s: PINECONE_API_KEY not configured",
-                agent.id,
-            )
-            return
-
-        # We need at least one embedding provider available.
+        # We need at least one embedding provider available. RAG is backed by
+        # pgvector on Postgres (see rag_service.py) -- there is no Pinecone
+        # dependency here; a stale PINECONE_API_KEY gate previously caused
+        # this to be skipped unconditionally on every tenant that (correctly)
+        # never configures Pinecone.
         if not settings.GEMINI_API_KEY and not settings.OPENAI_API_KEY:
             logger.info(
                 "Auto KB ingest skipped for agent_id=%s: no embedding provider key configured",
