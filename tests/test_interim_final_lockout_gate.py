@@ -12,6 +12,7 @@ import uuid
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core.config import settings
 from app.routers.bidirectional_stream import BidirectionalStreamHandler
 
 class DummyWebSocket:
@@ -539,6 +540,123 @@ async def test_case_f_slow_but_valid_interim_not_duplicated_under_latency():
         f"even when the interim is slower than the 2.5s fallback timeout, "
         f"got {len(calls)} calls: {calls} (duplicate-audio-under-latency regression)"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Configurable turn timeout (VOICE_TURN_TIMEOUT_SEC)
+#
+# `_complete_llm_turn_after_stt_final` used to hardcode
+# `asyncio.wait_for(self.generate_and_stream_response(...), timeout=12.0)`.
+# It now resolves the timeout from `settings.VOICE_TURN_TIMEOUT_SEC` (falling
+# back to 20.0, matching both the Settings field's own default in
+# app/core/config.py and the browser handler's fallback, so the two
+# transports share one real-world default). See the equivalent `_timeout`
+# resolution in
+# app/voice/livekit_browser_call_handler.py::_complete_llm_turn_after_stt_final.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_plain_final_handler() -> BidirectionalStreamHandler:
+    """A handler with no interim in-flight, ready to go straight through
+    `_complete_llm_turn_after_stt_final`'s Phase-2 generate-and-wait path."""
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler._enable_interim_llm = False
+    handler._add_to_transcript = AsyncMock()
+    handler._prefetch_rag_context = AsyncMock()
+    handler._run_speculative_tts_prefetch = AsyncMock()
+    handler._should_accept_final_transcript = MagicMock(return_value=True)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_uses_configured_setting_value(monkeypatch, caplog):
+    """When VOICE_TURN_TIMEOUT_SEC is overridden (e.g. to 0.05s), that value
+    -- not the old hardcoded 12.0 -- gates asyncio.wait_for."""
+    monkeypatch.setattr(settings, "VOICE_TURN_TIMEOUT_SEC", 0.05, raising=False)
+
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        # Longer than the configured 0.05s timeout, but far shorter than the
+        # old hardcoded 12.0s -- only fails/times out if the new setting is
+        # actually being honored.
+        await asyncio.sleep(0.3)
+        return "late answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    start = time.monotonic()
+    with caplog.at_level("ERROR"):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"expected wait_for to bail around 0.05s, took {elapsed:.2f}s"
+    assert any(
+        "generate_and_stream_response timed out" in r.message and "0.1s" in r.message
+        for r in caplog.records
+    ), f"expected timeout log reflecting the configured 0.05s value, got: {[r.message for r in caplog.records]}"
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_falls_back_to_twenty_seconds_when_falsy(monkeypatch):
+    """When VOICE_TURN_TIMEOUT_SEC is explicitly falsy (e.g. 0.0), the `or`
+    fallback kicks in and resolves to 20.0 -- verified here by patching
+    asyncio.wait_for directly (a real multi-second sleep is impractical in a
+    unit test) and asserting the timeout kwarg it was called with."""
+    monkeypatch.setattr(settings, "VOICE_TURN_TIMEOUT_SEC", 0.0, raising=False)
+
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        return "quick answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    captured_timeout = {}
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(aw, timeout=None):
+        captured_timeout["value"] = timeout
+        return await real_wait_for(aw, timeout=timeout)
+
+    with patch("app.routers.bidirectional_stream.asyncio.wait_for", side_effect=spy_wait_for):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+
+    assert captured_timeout.get("value") == 20.0
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_uses_real_default_setting_when_not_overridden():
+    """Regression guard: with settings.VOICE_TURN_TIMEOUT_SEC left completely
+    unpatched (its real Settings-field default), the resolved timeout must
+    equal that real default -- not a stale hardcoded literal that would
+    silently diverge from app/core/config.py's actual default over time."""
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        return "quick answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    captured_timeout = {}
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(aw, timeout=None):
+        captured_timeout["value"] = timeout
+        return await real_wait_for(aw, timeout=timeout)
+
+    with patch("app.routers.bidirectional_stream.asyncio.wait_for", side_effect=spy_wait_for):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+
+    assert captured_timeout.get("value") == settings.VOICE_TURN_TIMEOUT_SEC
 
 
 

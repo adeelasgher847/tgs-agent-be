@@ -1113,13 +1113,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         if self._flow_executor and await self._flow_on_transcript(transcript, confidence):
             return
 
+        _turn_timeout = float(getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 20.0) or 20.0)
         try:
             await asyncio.wait_for(
                 self.generate_and_stream_response(transcript, confidence, is_greeting=False),
-                timeout=12.0,
+                timeout=_turn_timeout,
             )
         except asyncio.TimeoutError:
-            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
+            logger.error("[LLM] generate_and_stream_response timed out (%.1fs) — aborting turn", _turn_timeout)
 
     async def _reject_with_reprompt(self) -> None:
         """F-01: Queue a varied re-prompt phrase instead of silence on STT rejection."""
