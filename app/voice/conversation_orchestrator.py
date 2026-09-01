@@ -16,6 +16,7 @@ _TRANSFER_PHRASES = [
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
+from app.utils.webhook_templating import render_template
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
@@ -341,10 +342,11 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -352,7 +354,7 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
+1. NO REPETITION: If the history shows you asked a question, move to the next point. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once acknowledged.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
 4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
@@ -414,6 +416,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # CUSTOM INSTRUCTIONS
 {effective_custom_prompt}
@@ -430,8 +433,9 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Do not restart your intake flow from the beginning mid-call.
+2. NO REPETITION: Do not repeat questions already asked. Move to the next point.
+3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -453,6 +457,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # MODEL INSTRUCTIONS
 {effective_model_prompt}
@@ -468,8 +473,9 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Do not restart your intake flow from the beginning mid-call.
+2. NO REPETITION: Do not repeat questions. Move to the next point.
+3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -726,6 +732,33 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             else:
                 system_prompt = system_prompt + "\n\n" + caller_memory_block
 
+        # Backend-owned contact intake ("already collected, do not re-ask")
+        # block — deterministic complement to the "NO CONFIRMATION LOOPS"
+        # grounding rule above. Empty string when nothing is confirmed yet,
+        # so calls that never trigger contact intake see no prompt change.
+        contact_intake_block = ""
+        if self._h.call_session:
+            try:
+                from app.services.call_session_contact_state import (
+                    build_contact_intake_prompt_block,
+                    get_contact_intake,
+                )
+
+                contact_intake_block = build_contact_intake_prompt_block(
+                    get_contact_intake(self._h.call_session)
+                )
+            except Exception as exc:
+                logger.debug("Contact intake prompt block build failed: %s", exc)
+
+        if contact_intake_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, contact_intake_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + contact_intake_block
+
         # F-08: Returning caller greeting differentiation
         if caller_memory_block and caller_memory_block.strip():
             returning_caller_instruction = (
@@ -767,6 +800,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     exc,
                 )
 
+        # System Webhooks: inject any {{key}} variables returned by the Pre-Inbound
+        # Call Webhook (see app/services/system_webhook_service.py). No-op (cheap,
+        # safe) when call_metadata has no webhook_variables — never raises.
+        try:
+            call_session = getattr(self._h, "call_session", None)
+            _webhook_vars = (
+                call_session.call_metadata.get("webhook_variables", {})
+                if call_session and call_session.call_metadata
+                else {}
+            )
+            if _webhook_vars:
+                system_prompt = render_template(system_prompt, _webhook_vars)
+        except Exception as exc:
+            logger.debug(
+                "System webhook variable injection (system prompt) failed: %s", exc
+            )
+
         return system_prompt
 
     async def generate_and_stream_response(
@@ -797,6 +847,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
                 if not greeting_text:
                     greeting_text = "hello how are you"
+
+                # System Webhooks: inject any {{key}} variables returned by the
+                # Pre-Inbound Call Webhook before this text reaches any hand-off
+                # (native Gemini/OpenAI Realtime session or TtsPipeline below).
+                try:
+                    call_session = getattr(self._h, "call_session", None)
+                    _webhook_vars = (
+                        call_session.call_metadata.get("webhook_variables", {})
+                        if call_session and call_session.call_metadata
+                        else {}
+                    )
+                    if _webhook_vars:
+                        greeting_text = render_template(greeting_text, _webhook_vars)
+                except Exception as exc:
+                    logger.debug(
+                        "System webhook variable injection (greeting) failed: %s", exc
+                    )
 
                 # Add greeting to transcript
                 await self._h._add_to_transcript("agent", greeting_text, "greeting")

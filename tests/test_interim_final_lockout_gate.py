@@ -49,8 +49,9 @@ async def test_case_a_interim_valid_no_duplicate():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     assert handler._turn_response_started is True
     assert handler._llm_response_task is not None
 
@@ -62,7 +63,7 @@ async def test_case_a_interim_valid_no_duplicate():
 
     # Verify: LLM was called ONCE (by interim) and NOT duplicated by speech_final
     assert len(llm_generated_texts) == 1
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
 
 @pytest.mark.asyncio
 async def test_case_b_interim_empty_final_generated():
@@ -83,7 +84,7 @@ async def test_case_b_interim_empty_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             # Interim produces empty/no response
             return ""
         return "Final response for interview scheduling."
@@ -94,8 +95,9 @@ async def test_case_b_interim_empty_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     await handler._llm_response_task
 
     # 2. Final arrives ("I want to schedule an interview.")
@@ -103,7 +105,7 @@ async def test_case_b_interim_empty_final_generated():
 
     # Verify: Final LLM was generated because interim produced empty response!
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
@@ -125,7 +127,7 @@ async def test_case_c_interim_failed_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             raise RuntimeError("Primary LLM network timeout")
         return "Final response for interview scheduling."
 
@@ -135,8 +137,9 @@ async def test_case_c_interim_failed_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     try:
         await handler._llm_response_task
     except Exception:
@@ -147,7 +150,7 @@ async def test_case_c_interim_failed_final_generated():
 
     # Verify: Final LLM was generated because interim failed!
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
@@ -169,7 +172,7 @@ async def test_case_d_interim_cancelled_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             await asyncio.sleep(1.0) # Long running task to be cancelled
             return "Should not reach here"
         return "Final response for interview scheduling."
@@ -180,8 +183,9 @@ async def test_case_d_interim_cancelled_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     await asyncio.sleep(0.01)  # Yield to let interim task start
 
     # Cancel the interim task
@@ -197,7 +201,7 @@ async def test_case_d_interim_cancelled_final_generated():
     # Verify: Final LLM was generated because interim was cancelled!
     assert "I want to schedule an interview." in llm_generated_texts
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
