@@ -581,6 +581,123 @@ class TestDynamicInboundCallRouting:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# handle_incoming_call — F-11 call-drop reconnect recognition
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestCallDropReconnectRecognition:
+    def _make_dropped_session(self, db, tenant_id, agent_id):
+        from datetime import datetime, timezone
+
+        from app.models.call_session import CallSession
+
+        user = _make_user(db)
+        cs = CallSession(
+            id=uuid.uuid4(),
+            user_id=user.id,
+            agent_id=agent_id,
+            tenant_id=tenant_id,
+            start_time=datetime.now(timezone.utc),
+            status="no_answer",
+            call_type="inbound",
+            twilio_call_sid="CA-dropped-1",
+        )
+        db.add(cs)
+        db.commit()
+        db.refresh(cs)
+        return cs
+
+    def test_dropped_session_found_sets_parent_call_id_and_metadata(self, db):
+        tenant = _make_tenant(db)
+        agent = _make_agent(db, tenant.id)
+        pn = _make_phone_number(db, tenant.id, agent.id)
+        dropped = self._make_dropped_session(db, tenant.id, agent.id)
+
+        with patch(
+            "app.routers.voice.call_session_service.find_recent_dropped_session",
+            return_value=dropped,
+        ):
+            resp = _run_incoming_call(
+                db, {"CallSid": "CA10", "From": "+15551230000", "To": pn.phone_number}
+            )
+
+        assert resp.status_code == 200
+
+        from app.models.call_session import CallSession
+
+        session = (
+            db.query(CallSession).filter(CallSession.twilio_call_sid == "CA10").first()
+        )
+        assert session is not None
+        assert session.parent_call_id == dropped.id
+        assert session.call_metadata["is_reconnect"] is True
+        assert session.call_metadata["reconnect_from_session_id"] == str(dropped.id)
+
+    def test_dropped_session_and_webhook_variables_merge_without_clobbering(self, db):
+        tenant = _make_tenant(db)
+        agent = _make_agent(db, tenant.id)
+        pn = _make_phone_number(db, tenant.id, agent.id)
+        _make_call_flow(
+            db,
+            tenant.id,
+            agent.id,
+            pre_inbound_webhook_url="https://example.com/pre-inbound",
+        )
+        dropped = self._make_dropped_session(db, tenant.id, agent.id)
+
+        with (
+            patch(
+                "app.routers.voice.call_session_service.find_recent_dropped_session",
+                return_value=dropped,
+            ),
+            patch(
+                "app.services.system_webhook_service.fetch_pre_inbound_webhook_variables",
+                new=AsyncMock(return_value={"account_tier": "gold"}),
+            ),
+        ):
+            resp = _run_incoming_call(
+                db, {"CallSid": "CA11", "From": "+15551230001", "To": pn.phone_number}
+            )
+
+        assert resp.status_code == 200
+
+        from app.models.call_session import CallSession
+
+        session = (
+            db.query(CallSession).filter(CallSession.twilio_call_sid == "CA11").first()
+        )
+        assert session.parent_call_id == dropped.id
+        assert session.call_metadata["is_reconnect"] is True
+        assert session.call_metadata["reconnect_from_session_id"] == str(dropped.id)
+        assert session.call_metadata["webhook_variables"] == {"account_tier": "gold"}
+
+    def test_no_dropped_session_leaves_parent_call_id_and_metadata_unset(self, db):
+        tenant = _make_tenant(db)
+        agent = _make_agent(db, tenant.id)
+        pn = _make_phone_number(db, tenant.id, agent.id)
+
+        with patch(
+            "app.routers.voice.call_session_service.find_recent_dropped_session",
+            return_value=None,
+        ):
+            resp = _run_incoming_call(
+                db, {"CallSid": "CA12", "From": "+15551230002", "To": pn.phone_number}
+            )
+
+        assert resp.status_code == 200
+
+        from app.models.call_session import CallSession
+
+        session = (
+            db.query(CallSession).filter(CallSession.twilio_call_sid == "CA12").first()
+        )
+        assert session is not None
+        assert session.parent_call_id is None
+        assert "is_reconnect" not in (session.call_metadata or {})
+        assert "reconnect_from_session_id" not in (session.call_metadata or {})
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # handle_call_events_webhook — Status Webhook "connect" dedup
 # ─────────────────────────────────────────────────────────────────────────────
 

@@ -2208,6 +2208,61 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
 
+        # F-11: Call-drop reconnect recognition
+        if (
+            self.call_session is not None
+            and isinstance(self.call_session.call_metadata, dict)
+            and self.call_session.call_metadata.get("is_reconnect")
+        ):
+            reconnect_instruction = (
+                "\n\nIMPORTANT — RECONNECTING CALLER (CALL DROP): This caller was "
+                "disconnected less than 5 minutes ago. Acknowledge the reconnection "
+                "warmly (e.g. \"Welcome back! Looks like we got cut off — let's pick "
+                "up right where we left off.\"). Do NOT use a generic introductory "
+                "greeting, re-introduce yourself, or ask questions that were already "
+                "answered in the previous interaction.\n"
+            )
+            # Best-effort: pull a brief snippet from the dropped session's transcript,
+            # if reachable — fails open, never blocks the turn.
+            if self.db:
+                try:
+                    reconnect_from_id = self.call_session.call_metadata.get(
+                        "reconnect_from_session_id"
+                    )
+                    dropped = (
+                        call_session_service.get_call_session_by_id_and_tenant(
+                            self.db,
+                            uuid.UUID(reconnect_from_id),
+                            self.call_session.tenant_id,
+                        )
+                        if reconnect_from_id
+                        else None
+                    )
+                    if dropped and dropped.call_transcript:
+                        raw = dropped.call_transcript
+                        dropped_history = (
+                            json.loads(raw) if isinstance(raw, str) else list(raw)
+                        )
+                        snippet_lines = []
+                        for msg in dropped_history[-4:]:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "unknown")
+                                content = msg.get("content") or msg.get("message", "")
+                                if content:
+                                    snippet_lines.append(f"{role.capitalize()}: {content}")
+                        if snippet_lines:
+                            reconnect_instruction += (
+                                "\nContext from the dropped call (for your reference only, "
+                                "do not read this verbatim):\n"
+                                + "\n".join(snippet_lines)
+                                + "\n"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "F-11 reconnect transcript snippet lookup failed: %s", exc
+                    )
+            system_prompt = system_prompt + reconnect_instruction
+
         # Prepend current date/time so the agent knows what "today", "tomorrow",
         # and "past slots" mean. Also injected into appointment booking flow.
         _now_local = datetime.now(timezone.utc)
@@ -2280,7 +2335,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     and (self.call_session.call_type or "").lower() == "outbound"
                     and self._jd_recruitment_screening_active()
                 )
-                if self.agent and inbound:
+                # F-11: Call-drop reconnect recognition — override the scripted
+                # greeting when voice_inbound (app/routers/voice.py) linked this
+                # call to a recent dropped session from the same caller.
+                is_reconnect = bool(
+                    inbound
+                    and self.call_session is not None
+                    and isinstance(self.call_session.call_metadata, dict)
+                    and self.call_session.call_metadata.get("is_reconnect")
+                )
+                if is_reconnect:
+                    greeting_text = (
+                        "Welcome back! Looks like we got cut off there — let's "
+                        "pick up right where we left off."
+                    )
+                elif self.agent and inbound:
                     if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
                     elif getattr(self.agent, "first_message", None):

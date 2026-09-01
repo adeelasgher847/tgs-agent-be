@@ -567,19 +567,43 @@ async def handle_incoming_call(
         # Attach the resolved call flow + any webhook-provided variables so both
         # live-call handlers (Twilio / LiveKit) can key off them (call_flow_id
         # for settings, call_metadata.webhook_variables for {{key}} injection).
+        # Also detect + link a call-drop reconnect (F-11) via parent_call_id +
+        # call_metadata. The dropped-session lookup itself lives inside this
+        # same try block so a query failure here fails open exactly like the
+        # rest of this block, instead of bubbling up and failing the call.
         try:
             if resolved_flow is not None:
                 call_session.call_flow_id = resolved_flow.id
+            metadata_updates: dict = {}
             if webhook_variables:
+                metadata_updates["webhook_variables"] = webhook_variables
+            dropped_session = call_session_service.find_recent_dropped_session(
+                db=db,
+                from_number=from_number,
+                tenant_id=phone_number.tenant_id,
+                within_seconds=300,
+            )
+            if dropped_session is not None:
+                call_session.parent_call_id = dropped_session.id
+                metadata_updates["is_reconnect"] = True
+                metadata_updates["reconnect_from_session_id"] = str(
+                    dropped_session.id
+                )
+                logger.info(
+                    "Detected call-drop reconnect: call_session=%s reconnect_from=%s",
+                    call_session.id,
+                    dropped_session.id,
+                )
+            if metadata_updates:
                 call_session.call_metadata = {
                     **(call_session.call_metadata or {}),
-                    "webhook_variables": webhook_variables,
+                    **metadata_updates,
                 }
-            if resolved_flow is not None or webhook_variables:
+            if resolved_flow is not None or webhook_variables or dropped_session is not None:
                 db.commit()
         except Exception as exc:  # defensive — never let this break inbound calls
             logger.warning(
-                "Failed to attach call_flow/webhook_variables to call_session %s: %s",
+                "Failed to attach call_flow/webhook_variables/reconnect data to call_session %s: %s",
                 call_session.id,
                 exc,
             )

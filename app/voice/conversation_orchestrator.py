@@ -3,6 +3,7 @@ import json
 import random
 import time
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
@@ -772,6 +773,67 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if returning_caller_instruction:
             system_prompt = system_prompt + returning_caller_instruction
 
+        # F-11: Call-drop reconnect recognition
+        _reconnect_call_session = self._h.call_session
+        is_reconnect = bool(
+            _reconnect_call_session
+            and _reconnect_call_session.call_metadata
+            and _reconnect_call_session.call_metadata.get("is_reconnect")
+        )
+        if is_reconnect:
+            reconnect_instruction = (
+                "\n\nIMPORTANT — RECONNECTING CALLER (CALL DROP): This caller was "
+                "disconnected less than 5 minutes ago. Acknowledge the reconnection "
+                "warmly (e.g. \"Welcome back! Looks like we got cut off — let's pick "
+                "up right where we left off.\"). Do NOT use a generic introductory "
+                "greeting, re-introduce yourself, or ask questions that were already "
+                "answered in the previous interaction.\n"
+            )
+            # Best-effort: pull a brief snippet from the dropped session's transcript,
+            # if the DB/parent session is reachable — fails open, never blocks the turn.
+            if self._h.db:
+                try:
+                    from app.services.call_session_service import (
+                        call_session_service as _css,
+                    )
+
+                    reconnect_from_id = _reconnect_call_session.call_metadata.get(
+                        "reconnect_from_session_id"
+                    )
+                    dropped = (
+                        _css.get_call_session_by_id_and_tenant(
+                            self._h.db,
+                            uuid.UUID(reconnect_from_id),
+                            _reconnect_call_session.tenant_id,
+                        )
+                        if reconnect_from_id
+                        else None
+                    )
+                    if dropped and dropped.call_transcript:
+                        raw = dropped.call_transcript
+                        dropped_history = (
+                            json.loads(raw) if isinstance(raw, str) else list(raw)
+                        )
+                        snippet_lines = []
+                        for msg in dropped_history[-4:]:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "unknown")
+                                content = msg.get("content") or msg.get("message", "")
+                                if content:
+                                    snippet_lines.append(f"{role.capitalize()}: {content}")
+                        if snippet_lines:
+                            reconnect_instruction += (
+                                "\nContext from the dropped call (for your reference only, "
+                                "do not read this verbatim):\n"
+                                + "\n".join(snippet_lines)
+                                + "\n"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "F-11 reconnect transcript snippet lookup failed: %s", exc
+                    )
+            system_prompt = system_prompt + reconnect_instruction
+
         # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
         # in the prompt with tenant-configured HubSpot contact field values.
         # Resolved once per call (Redis/DB-cached) and fails open on timeout/error.
@@ -837,16 +899,32 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default. Prefer greeting_message
-                # (current field) over the legacy first_message, matching the
-                # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
-                greeting_text = None
-                if self._h.agent:
-                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                # F-11: Call-drop reconnect recognition — override the scripted
+                # greeting entirely when this call was linked as a reconnect by
+                # voice_inbound (app/routers/voice.py). Fails open: any lookup
+                # issue here just falls through to the normal greeting logic.
+                _greeting_call_session = getattr(self._h, "call_session", None)
+                is_reconnect = bool(
+                    _greeting_call_session
+                    and _greeting_call_session.call_metadata
+                    and _greeting_call_session.call_metadata.get("is_reconnect")
+                )
+                if is_reconnect:
+                    greeting_text = (
+                        "Welcome back! Looks like we got cut off there — let's "
+                        "pick up right where we left off."
+                    )
+                else:
+                    # Get greeting from agent or use default. Prefer greeting_message
+                    # (current field) over the legacy first_message, matching the
+                    # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
+                    greeting_text = None
+                    if self._h.agent:
+                        greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                        if not greeting_text:
+                            greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
                     if not greeting_text:
-                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
-                if not greeting_text:
-                    greeting_text = "hello how are you"
+                        greeting_text = "hello how are you"
 
                 # System Webhooks: inject any {{key}} variables returned by the
                 # Pre-Inbound Call Webhook before this text reaches any hand-off

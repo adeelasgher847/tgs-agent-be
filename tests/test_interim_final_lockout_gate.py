@@ -659,6 +659,89 @@ async def test_turn_timeout_uses_real_default_setting_when_not_overridden():
     assert captured_timeout.get("value") == settings.VOICE_TURN_TIMEOUT_SEC
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# F-11: Call-drop reconnect recognition — Twilio path
+#
+# app/routers/voice.py::handle_incoming_call links a reconnected caller onto
+# the new CallSession (parent_call_id + call_metadata["is_reconnect"]).
+# BidirectionalStreamHandler (this file's target) is the handler that
+# actually serves Twilio calls, so it — not ConversationOrchestrator, which
+# only serves the LiveKit-browser demo-link transport — must read that flag
+# to ground the system prompt and override the scripted greeting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_reconnect_handler(is_reconnect: bool) -> BidirectionalStreamHandler:
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.call_session.call_type = "inbound"
+    handler.call_session.call_metadata = (
+        {"is_reconnect": True, "reconnect_from_session_id": str(uuid.uuid4())}
+        if is_reconnect
+        else {}
+    )
+    handler.agent = MagicMock()
+    handler.agent.greeting_message = "Hello! Welcome to Acme Support."
+    handler.agent.first_message = None
+    handler.agent.transfer_route = None
+    handler.agent.model = None
+    handler.db = None
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_includes_reconnect_instruction_when_flagged():
+    handler = _make_reconnect_handler(is_reconnect=True)
+
+    result = await handler._build_system_prompt_full("", 1.0)
+
+    assert "RECONNECTING CALLER" in result.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_omits_reconnect_instruction_when_not_flagged():
+    handler = _make_reconnect_handler(is_reconnect=False)
+
+    result = await handler._build_system_prompt_full("", 1.0)
+
+    assert "RECONNECTING CALLER" not in result.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_reconnect_greeting_overrides_static_greeting_on_twilio_path():
+    handler = _make_reconnect_handler(is_reconnect=True)
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+
+    await handler.generate_and_stream_response("", 1.0, is_greeting=True)
+
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert "cut off" in queued["text"].lower()
+    assert queued["text"] != handler.agent.greeting_message
+
+
+@pytest.mark.asyncio
+async def test_normal_greeting_used_when_not_reconnect_on_twilio_path():
+    handler = _make_reconnect_handler(is_reconnect=False)
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+
+    await handler.generate_and_stream_response("", 1.0, is_greeting=True)
+
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert queued["text"] == handler.agent.greeting_message
+
+
 
 
 
