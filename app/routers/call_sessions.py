@@ -105,15 +105,17 @@ async def get_call_session(
     Get a specific call session by session ID
     """
     try:
-        call_session = call_session_service.get_call_session_by_id(db, session_id)
-        
+        call_session = call_session_service.get_call_session_by_id_and_tenant(
+            db, session_id, user.current_tenant_id
+        )
+
         if not call_session:
             raise HTTPException(status_code=404, detail="Call session not found")
-        
-        # Check if user has access to this session (same tenant and same user)
-        if call_session.tenant_id != user.current_tenant_id or call_session.user_id != user.id:
+
+        # Ownership check: session must also belong to this user (not just the tenant).
+        if call_session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         call_session_response = CallSessionResponse(
             id=call_session.id,
             user_id=call_session.user_id,
@@ -161,15 +163,16 @@ async def get_call_session_stats(
     Get statistics for a specific call session
     """
     try:
-        call_session = call_session_service.get_call_session_by_id(db, session_id)
-        
+        call_session = call_session_service.get_call_session_by_id_and_tenant(
+            db, session_id, user.current_tenant_id
+        )
+
         if not call_session:
             raise HTTPException(status_code=404, detail="Call session not found")
-        
-        # Check if user has access to this session (same tenant and same user)
-        if call_session.tenant_id != user.current_tenant_id or call_session.user_id != user.id:
+
+        if call_session.user_id != user.id:
             raise HTTPException(status_code=403, detail="Access denied")
-        
+
         stats = call_session_service.get_call_session_stats(db, session_id)
         
         return create_success_response(

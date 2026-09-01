@@ -264,6 +264,7 @@ async def handle_incoming_call(
                 db.query(Agent)
                 .filter(
                     Agent.id == phone_number.assistant_id,
+                    Agent.tenant_id == phone_number.tenant_id,
                     ~Agent.is_deleted,
                 )
                 .first()
@@ -2289,7 +2290,10 @@ async def transfer_webhook_dial_cold(
     agent = (
         db.query(Agent)
         .options(joinedload(Agent.transfer_route))
-        .filter(Agent.id == call_session.agent_id)
+        .filter(
+            Agent.id == call_session.agent_id,
+            Agent.tenant_id == call_session.tenant_id,
+        )
         .first()
     )
     route = getattr(agent, "transfer_route", None) if agent else None
