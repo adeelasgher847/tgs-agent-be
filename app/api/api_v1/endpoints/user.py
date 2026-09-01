@@ -964,3 +964,74 @@ def get_tenant_members(
         members,
         f"Retrieved {len(members)} tenant members successfully"
     )
+
+
+
+@router.delete(
+    "/tenants/{tenant_id}",
+    response_model=SuccessResponse[dict],
+    summary="Soft delete a tenant",
+    description="Soft-delete a tenant created by or belonging to the current user.",
+)
+@router.delete(
+    "/tenant/{tenant_id}",
+    response_model=SuccessResponse[dict],
+    include_in_schema=False,
+)
+@router.delete(
+    "/my-tenants/{tenant_id}",
+    response_model=SuccessResponse[dict],
+    include_in_schema=False,
+)
+def soft_delete_user_tenant(
+    tenant_id: uuid.UUID,
+    current_user: User = Depends(get_current_user_jwt),
+    db: Session = Depends(get_db),
+):
+    """
+    Soft-delete a tenant/workspace created by or associated with the user.
+    Simple ID-based deletion without workspace headers or switching requirements.
+    """
+    tenant = db.query(Tenant).filter(
+        Tenant.id == tenant_id,
+        Tenant.deleted_at.is_(None),
+    ).first()
+
+    if not tenant:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tenant not found",
+        )
+
+    # Check that this tenant was created by or is associated with current_user
+    membership = db.execute(
+        user_tenant_association.select().where(
+            user_tenant_association.c.user_id == current_user.id,
+            user_tenant_association.c.tenant_id == tenant_id,
+        )
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You do not have permission to delete this tenant",
+        )
+
+    tenant.deleted_at = datetime.now(timezone.utc)
+
+    if current_user.current_tenant_id == tenant_id:
+        current_user.current_tenant_id = None
+
+    db.query(User).filter(User.current_tenant_id == tenant_id).update(
+        {User.current_tenant_id: None}, synchronize_session=False
+    )
+
+    db.commit()
+
+    return create_success_response(
+        {
+            "tenant_id": str(tenant_id),
+            "status": "deleted",
+        },
+        "Tenant soft-deleted successfully",
+    )

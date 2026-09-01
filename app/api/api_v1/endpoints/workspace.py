@@ -29,7 +29,7 @@ from app.core.config import settings
 from app.core.logger import logger
 from app.core.workspace import Workspace
 from app.models.tenant import Tenant
-from app.models.user import User
+from app.models.user import User, user_tenant_association
 from app.repositories.workspace_repository import WorkspaceRepository
 from app.schemas.base import SuccessResponse
 from app.schemas.integration import MakeSecretResponse, N8nSecretResponse
@@ -392,8 +392,26 @@ def soft_delete_workspace(
     repo: WorkspaceRepository = Depends(_repository),
     db: Session = Depends(get_db),
 ):
-    tenant_id = _workspace_id(principal)
-    _ensure_same_workspace(workspace_id, tenant_id)
+    if isinstance(principal, User):
+        # Check if this user is the creator of this workspace
+        membership = db.execute(
+            user_tenant_association.select().where(
+                user_tenant_association.c.user_id == principal.id,
+                user_tenant_association.c.tenant_id == workspace_id,
+            )
+        ).first()
+        
+        if membership and membership.is_creator:
+            # Creator can delete their own workspace regardless of current tenant
+            tenant_id = workspace_id
+        else:
+            # Non-creator must have matching current tenant
+            tenant_id = principal.current_tenant_id
+            _ensure_same_workspace(workspace_id, tenant_id)
+    else:
+        # API key must match the workspace context
+        tenant_id = _workspace_id(principal)
+        _ensure_same_workspace(workspace_id, tenant_id)
 
     try:
         tenant = repo.find_by_id(workspace_id)

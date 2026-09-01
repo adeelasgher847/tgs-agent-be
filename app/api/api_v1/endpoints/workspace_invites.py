@@ -1,8 +1,9 @@
 """
 Team invitation endpoints under /workspace prefix.
 
-POST /api/v1/workspace/invite         — admin only, JWT required
-GET  /api/v1/workspace/invitations    — admin only, JWT required
+POST   /api/v1/workspace/invite                      — admin only, JWT required
+GET    /api/v1/workspace/invitations                 — admin only, JWT required
+DELETE /api/v1/workspace/invitations/{invitation_id} — admin only, JWT required
 """
 from __future__ import annotations
 
@@ -143,4 +144,47 @@ def list_invitations(
     )
     out = [InviteOut.model_validate(i) for i in invites]
     return create_success_response(out, "Pending invitations retrieved")
+
+
+@router.delete(
+    "/invitations/{invitation_id}",
+    response_model=SuccessResponse[InviteOut],
+    summary="Delete invitation",
+    description="Soft-delete a pending invite for the current workspace.",
+)
+@router.delete(
+    "/invite/{invitation_id}",
+    response_model=SuccessResponse[InviteOut],
+    include_in_schema=False,
+)
+def delete_invitation(
+    invitation_id: uuid.UUID,
+    admin: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> SuccessResponse[InviteOut]:
+    tenant_id: uuid.UUID = admin.current_tenant_id
+
+    invite = (
+        db.query(Invite)
+        .filter(
+            Invite.id == invitation_id,
+            Invite.tenant_id == tenant_id,
+        )
+        .first()
+    )
+    if not invite:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Invitation not found",
+        )
+
+    invite.status = "deleted"
+    db.commit()
+    db.refresh(invite)
+
+    return create_success_response(
+        InviteOut.model_validate(invite),
+        "Invitation deleted successfully",
+    )
+
 

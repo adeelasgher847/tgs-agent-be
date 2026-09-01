@@ -336,6 +336,36 @@ paths:
                 $ref: '#/components/schemas/SuccessResponse_list_TenantMember__'
       security:
       - HTTPBearer: []
+  /api/v1/users/tenants/{tenant_id}:
+    delete:
+      tags:
+      - users
+      summary: Soft delete a tenant
+      description: Soft-delete a tenant created by or belonging to the current user.
+      operationId: soft_delete_user_tenant_api_v1_users_tenants__tenant_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: tenant_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Tenant Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_dict_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/api-keys/:
     get:
       tags:
@@ -818,6 +848,35 @@ paths:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_list_InviteOut__'
       security: *id001
+  /api/v1/workspace/invitations/{invitation_id}:
+    delete:
+      tags:
+      - Workspace Invitations
+      summary: Delete invitation
+      description: Soft-delete a pending invite for the current workspace.
+      operationId: delete_invitation_api_v1_workspace_invitations__invitation_id__delete
+      security: *id001
+      parameters:
+      - name: invitation_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Invitation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_InviteOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workspace/allowed-domains:
     get:
       tags:

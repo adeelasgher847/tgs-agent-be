@@ -1,4 +1,5 @@
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
@@ -107,7 +108,7 @@ def create_tenant(tenant_in: TenantCreate, current_user: User = Depends(get_curr
     stmt = update(user_tenant_association).where(
         (user_tenant_association.c.user_id == current_user.id) &
         (user_tenant_association.c.tenant_id == db_tenant.id)
-    ).values(role_id=admin_role.id, product_id=default_product_id)
+    ).values(role_id=admin_role.id, product_id=default_product_id, is_creator=True)
     
     db.execute(stmt)
     
@@ -174,8 +175,8 @@ def switch_tenant(
     Switch to a different tenant and return new JWT token with role information.
     Also updates the user's current_tenant_id in the database.
     """
-    # Get user's tenant IDs from database
-    user_tenant_ids = [tenant.id for tenant in current_user.tenants]
+    # Get user's tenant IDs from database (excluding soft-deleted)
+    user_tenant_ids = [tenant.id for tenant in current_user.tenants if tenant.deleted_at is None]
     
     # Check if user has access to the requested tenant
     if switch_data.tenant_id not in user_tenant_ids:
@@ -1057,3 +1058,4 @@ def upsert_auto_recharge_settings(
         AutoRechargeSettingsOut.model_validate(config),
         "Auto-recharge settings updated successfully"
     )
+

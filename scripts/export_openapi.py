@@ -103,7 +103,7 @@ def main() -> None:
             allow_unicode=True,
             sort_keys=False,
         )
-    print(f"Exported OpenAPI spec → {OUT_PATH}")
+    print(f"Exported OpenAPI spec -> {OUT_PATH}")
 
 
 if __name__ == "__main__":

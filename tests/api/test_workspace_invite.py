@@ -374,3 +374,143 @@ class TestRoleBasedInvitations:
         assert assoc.role_id == manager_role.id
 
 
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/workspace/invitations/{invitation_id} — soft delete
+# ---------------------------------------------------------------------------
+
+class TestSoftDeleteInvitation:
+    def test_soft_delete_invitation_success(self, authed_client, db, admin_user):
+        email = f"softdel-{uuid.uuid4().hex[:6]}@example.com"
+        invite = Invite(
+            email=email,
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            token=secrets.token_urlsafe(32),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+        db.refresh(invite)
+        invite_id = invite.id
+
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite_id}")
+        assert resp.status_code == 200, resp.text
+        data = resp.json()["data"]
+        assert data["id"] == str(invite_id)
+        assert data["status"] == "deleted"
+
+        # Verify record still exists in database and status is changed
+        db_invite = db.query(Invite).filter(Invite.id == invite_id).first()
+        assert db_invite is not None
+        assert db_invite.status == "deleted"
+
+    def test_soft_deleted_invite_excluded_from_list(self, authed_client, db, admin_user):
+        email = f"list-del-{uuid.uuid4().hex[:6]}@example.com"
+        invite = Invite(
+            email=email,
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            token=secrets.token_urlsafe(32),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+
+        # Delete it
+        del_resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite.id}")
+        assert del_resp.status_code == 200
+
+        # List invitations -> should not be present
+        list_resp = authed_client.get("/api/v1/workspace/invitations")
+        assert list_resp.status_code == 200
+        emails = [item["email"] for item in list_resp.json()["data"]]
+        assert email not in emails
+
+    def test_soft_deleted_invite_cannot_be_accepted(self, client, db, admin_user):
+        token = secrets.token_urlsafe(32)
+        email = f"accept-del-{uuid.uuid4().hex[:6]}@example.com"
+        invite = Invite(
+            email=email,
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            token=token,
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="deleted",
+        )
+        db.add(invite)
+        db.commit()
+
+        resp = client.post(f"/api/v1/accept-invite/accept-invite?token={token}&password=secret123")
+        assert resp.status_code in (400, 404), resp.text
+
+    def test_reinvite_after_soft_delete_allowed(self, authed_client, db, admin_user):
+        email = f"reinvite-{uuid.uuid4().hex[:6]}@example.com"
+        # First invite
+        resp1 = authed_client.post("/api/v1/workspace/invite", json={"email": email})
+        assert resp1.status_code == 201
+        invite_id = resp1.json()["data"]["id"]
+
+        # Soft delete it
+        del_resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite_id}")
+        assert del_resp.status_code == 200
+
+        # Re-invite should now succeed without 409 conflict
+        resp2 = authed_client.post("/api/v1/workspace/invite", json={"email": email})
+        assert resp2.status_code == 201, resp2.text
+
+    def test_delete_nonexistent_invitation_returns_404(self, authed_client):
+        random_id = uuid.uuid4()
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{random_id}")
+        assert resp.status_code == 404
+
+    def test_delete_invitation_other_workspace_returns_404(self, authed_client, db):
+        other_tenant = Tenant(
+            name=f"OtherTenant-{uuid.uuid4().hex[:6]}",
+            schema_name=f"s_{uuid.uuid4().hex[:6]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+
+        invite = Invite(
+            email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+            tenant_id=other_tenant.id,
+            invited_by=uuid.uuid4(),
+            token=secrets.token_urlsafe(32),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite.id}")
+        assert resp.status_code == 404
+
+    def test_soft_delete_alias_route(self, authed_client, db, admin_user):
+        email = f"alias-{uuid.uuid4().hex[:6]}@example.com"
+        invite = Invite(
+            email=email,
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            token=secrets.token_urlsafe(32),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+
+        resp = authed_client.delete(f"/api/v1/workspace/invite/{invite.id}")
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["status"] == "deleted"
+
+    def test_delete_invitation_visible_in_openapi(self, client):
+        schema = client.app.openapi()
+        path = schema["paths"].get("/api/v1/workspace/invitations/{invitation_id}")
+        assert path is not None
+        assert "delete" in path
+        assert "Workspace Invitations" in path["delete"]["tags"]
+
+
+
