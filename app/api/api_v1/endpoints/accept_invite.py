@@ -71,7 +71,7 @@ def accept_invite(
             hashed_password = get_password_hash(password)
             user.hashed_password = hashed_password
             password_reset = True
-            logger.info(f"Password reset for existing user {user.email} via invitation acceptance")
+            logger.info("Password reset for existing user %s via invitation acceptance", user.email)
         
         # Check if user is already in this tenant
         from sqlalchemy import text
