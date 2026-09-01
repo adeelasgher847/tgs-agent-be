@@ -1207,14 +1207,8 @@ class BidirectionalStreamHandler(
             # the value below. This timeout instead bounds a *hung*
             # generate_and_stream_response call (stuck LLM/TTS provider) so
             # it can't silently stall the WS handler; RAG retrieval here is
-            # already tightly time-boxed (RAG_RETRIEVAL_TIMEOUT_SEC=0.45s),
-            # so 60s of headroom was never needed for that path, and
-            # worst-case observed voice-turn LLM+TTS latency is rarely
-            # >20s. Lowered to 30.0s: enough margin over realistic worst
-            # case, while capping a truly-stuck call at half the previous
-            # (arbitrary) ceiling instead of leaving it at a full minute.
             _turn_timeout = float(
-                getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 30.0) or 30.0
+                getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 20.0) or 20.0
             )
             await asyncio.wait_for(
                 self.generate_and_stream_response(
