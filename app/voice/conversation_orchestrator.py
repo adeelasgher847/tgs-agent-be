@@ -13,6 +13,146 @@ _TRANSFER_PHRASES = [
     "I'll transfer you now — someone will be right with you.",
 ]
 
+# ---------------------------------------------------------------------------
+# Emotion detection — lightweight regex-based, zero latency, no LLM call.
+# Maps the caller's most recent turn to one of several emotional registers so
+# the agent can mirror the right tone rather than sounding uniformly upbeat.
+# ---------------------------------------------------------------------------
+_EMOTION_PATTERNS: list[tuple[str, re.Pattern]] = [
+    (
+        "frustrated",
+        re.compile(
+            r"\b(frustrated?|annoyed?|angry|furious|ridiculous|unacceptable|fed up|sick of|"
+            r"this is a joke|terrible|awful|worst|hate this|not working|doesn't work|"
+            r"keep having|every time|again and again|still broken|already told)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "upset_or_sad",
+        re.compile(
+            r"\b(upset|sad|disappointed|devastated|heartbroken|struggling|hard time|"
+            r"really difficult|can't cope|overwhelmed|lost|confused|not sure what to do|"
+            r"worried|scared|afraid|anxious|nervous)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "urgent",
+        re.compile(
+            r"\b(urgent|emergency|asap|right now|immediately|can't wait|need help now|"
+            r"time sensitive|critical|as soon as possible|hurry|quickly)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "excited_or_happy",
+        re.compile(
+            r"\b(excited|amazing|awesome|great news|love it|perfect|fantastic|wonderful|"
+            r"thrilled|so happy|can't wait|looking forward|yes please|absolutely|brilliant)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "grateful",
+        re.compile(
+            r"\b(thank you|thanks so much|really appreciate|grateful|appreciate your help|"
+            r"you're the best|so helpful|this is great)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "confused",
+        re.compile(
+            r"\b(confused|don't understand|not sure|what do you mean|can you explain|"
+            r"i'm lost|doesn't make sense|unclear|huh|what\??)\b",
+            re.IGNORECASE,
+        ),
+    ),
+    (
+        "joking_or_light",
+        re.compile(
+            r"\b(haha|lol|ha ha|funny|just kidding|jk|joking|laugh|hilarious|that's wild|"
+            r"no way|seriously\?|you're kidding)\b",
+            re.IGNORECASE,
+        ),
+    ),
+]
+
+# Tone coaching injected into the system prompt for each detected emotion.
+_EMOTION_TONE_COACHING: dict[str, str] = {
+    "frustrated": (
+        "\n\n# CALLER EMOTIONAL STATE: FRUSTRATED\n"
+        "The caller sounds frustrated or upset. Your tone MUST shift immediately:\n"
+        "- Lead with genuine empathy: 'I completely understand — I'm sorry about that.' or "
+        "'That's really frustrating, and I get it.'\n"
+        "- Speak calmly and slowly. No upbeat filler like 'Great!' or 'Absolutely!'.\n"
+        "- Acknowledge the problem first before jumping to solutions.\n"
+        "- If you can't fix it, own it: 'I'm sorry we put you in this position.'\n"
+        "- Never sound defensive or dismissive.\n"
+    ),
+    "upset_or_sad": (
+        "\n\n# CALLER EMOTIONAL STATE: UPSET OR DISTRESSED\n"
+        "The caller may be upset, sad, or anxious. Respond with warmth and care:\n"
+        "- Soften your voice register: slower pace, gentler phrasing.\n"
+        "- Acknowledge feelings first: 'I hear you — that sounds really hard.'\n"
+        "- Avoid rushed or transactional language. Give them space.\n"
+        "- If relevant, reassure: 'You've reached the right place — let's figure this out together.'\n"
+        "- Avoid any upbeat filler. No 'Perfect!' or 'Great!'.\n"
+    ),
+    "urgent": (
+        "\n\n# CALLER EMOTIONAL STATE: URGENT\n"
+        "The caller has indicated urgency. Match their pace and prioritise:\n"
+        "- Cut pleasantries. Respond quickly and directly.\n"
+        "- Acknowledge urgency immediately: 'Got it — let's take care of this right now.'\n"
+        "- Be decisive. If you need info, ask one focused question only.\n"
+        "- Avoid anything that adds friction or delay.\n"
+    ),
+    "excited_or_happy": (
+        "\n\n# CALLER EMOTIONAL STATE: EXCITED OR HAPPY\n"
+        "The caller is enthusiastic. Match their positive energy naturally:\n"
+        "- Allow warmth and genuine enthusiasm in your voice.\n"
+        "- You can smile through your words: 'Oh that's great to hear!', 'Love that!'\n"
+        "- Mirror their upbeat tone — but stay professional, not over-the-top.\n"
+        "- This is a moment for light energy, not stiff formality.\n"
+    ),
+    "grateful": (
+        "\n\n# CALLER EMOTIONAL STATE: GRATEFUL\n"
+        "The caller is expressing appreciation. Receive it warmly and authentically:\n"
+        "- Don't dismiss it with 'No problem' or 'Of course'. Acknowledge it: "
+        "'That really means a lot — I'm glad I could help.'\n"
+        "- You can show a hint of warmth/smile: 'It was my pleasure, truly.'\n"
+        "- Keep it brief and sincere; don't over-elaborate.\n"
+    ),
+    "confused": (
+        "\n\n# CALLER EMOTIONAL STATE: CONFUSED\n"
+        "The caller seems confused or lost. Slow down and guide them gently:\n"
+        "- Reassure first: 'No worries at all — let me walk you through it.'\n"
+        "- Use simpler language. Break things into one small step at a time.\n"
+        "- Check understanding: 'Does that make sense so far?'\n"
+        "- Be patient. Never sound impatient or rushed.\n"
+    ),
+    "joking_or_light": (
+        "\n\n# CALLER EMOTIONAL STATE: PLAYFUL / LIGHT-HEARTED\n"
+        "The caller is being playful or joking around. You can be human and warm:\n"
+        "- It's okay to laugh lightly or play along briefly: 'Ha, fair enough!'\n"
+        "- Keep a friendly, conversational tone — less formal.\n"
+        "- After the brief moment, steer naturally back to helping them.\n"
+        "- Don't be stiff or ignore their humour — that feels robotic.\n"
+    ),
+}
+
+
+def _detect_caller_emotion(user_text: str) -> str | None:
+    """Return the dominant emotional register for the caller's last turn, or None."""
+    if not user_text:
+        return None
+    for label, pattern in _EMOTION_PATTERNS:
+        if pattern.search(user_text):
+            return label
+    return None
+
+
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
@@ -341,6 +481,7 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
+- HUMAN & EMOTIONAL: You are warm, emotionally intelligent, and real — not a robot. Mirror the caller's emotional register. If they're excited, be warm and upbeat. If they're upset, be calm and empathetic. If they're joking, it's okay to laugh briefly. Never be a flat, monotone info-dispenser.
 - NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
@@ -766,6 +907,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     "HubSpot field mapping lookup failed; proceeding without substitution: %s",
                     exc,
                 )
+
+        # Emotional tone coaching — injected last so it sits closest to the
+        # conversation and isn't overwritten by any earlier block.
+        emotion = _detect_caller_emotion(user_text)
+        if emotion and emotion in _EMOTION_TONE_COACHING:
+            system_prompt = system_prompt + _EMOTION_TONE_COACHING[emotion]
 
         return system_prompt
 
