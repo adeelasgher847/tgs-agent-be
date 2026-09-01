@@ -36,16 +36,22 @@ _SKIP_EXACT = {
     "/api/v1/tenants/create",
 }
 
-# Prefix skips for webhooks, voice/streaming, and public checkout — not user auth routes.
+# Prefix skips for public checkout and auth flows — not Twilio webhooks (those get their own bucket).
 _SKIP_PREFIXES = (
     "/api/v1/api-keys/",
     "/api/v1/plans/public",
     "/api/v1/tenants/start-credit-checkout-session",
     "/api/v1/auth/",
     "/api/v1/billing/webhook",
+    "/api/v1/payments/stripe-webhook",
+)
+
+# Twilio webhook + media-stream paths that get their own per-IP bucket instead of being
+# skipped entirely. Limits are generous (default 120 req/60 s) to accommodate Twilio's
+# own retry behavior, but nonzero so a flood or tight callback loop is throttled.
+_TWILIO_WEBHOOK_PREFIXES = (
     "/api/v1/voice/",
     "/api/v1/stream/",
-    "/api/v1/payments/stripe-webhook",
 )
 
 # Unauthenticated POST endpoints targeted by bots (per-path, per-IP stricter limit).
@@ -77,6 +83,10 @@ def _should_skip(path: str) -> bool:
     if path in _SKIP_EXACT:
         return True
     return any(path.startswith(p) for p in _SKIP_PREFIXES)
+
+
+def _is_twilio_webhook(path: str) -> bool:
+    return any(path.startswith(p) for p in _TWILIO_WEBHOOK_PREFIXES)
 
 
 def _client_host(scope: Scope) -> str:
@@ -224,6 +234,28 @@ class RateLimitMiddleware:
             return
 
         if not settings.RATE_LIMIT_ENABLED:
+            await self.app(scope, receive, send)
+            return
+
+        # Twilio webhook / media-stream paths: generous per-IP bucket.
+        # Twilio IPs are predictable but NAT / proxy setups can share an IP, so
+        # use a 2× headroom over the webhook_rate_limit default (120/min) to
+        # avoid throttling legitimate concurrent calls from the same egress IP.
+        if _is_twilio_webhook(path):
+            twilio_key = f"twilio:{_client_host(scope)}"
+            allowed, retry_after = await _check_rate_limit(
+                twilio_key,
+                settings.WEBHOOK_RATE_LIMIT,
+                settings.WEBHOOK_RATE_WINDOW,
+            )
+            if not allowed:
+                logger.warning(
+                    "Rate limit: Twilio webhook path %s throttled for IP %s",
+                    path,
+                    _client_host(scope),
+                )
+                await self._send_rate_limited(scope, receive, send, retry_after)
+                return
             await self.app(scope, receive, send)
             return
 

@@ -934,7 +934,10 @@ class Settings(BaseSettings):
     LOGIN_RATE_WINDOW: int = 60  # seconds
 
     # Webhook rate limiting (requests per minute)
-    WEBHOOK_RATE_LIMIT: int = 100
+    # Twilio webhook + media-stream per-IP bucket (applied by RateLimitMiddleware to
+    # /api/v1/voice/* and /api/v1/stream/*). 120/min gives comfortable headroom over
+    # normal Twilio traffic patterns while blocking flood/loop attacks.
+    WEBHOOK_RATE_LIMIT: int = 120
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
 
     # General API rate limiting — global sliding-window middleware
