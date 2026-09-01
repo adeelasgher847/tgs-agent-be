@@ -102,6 +102,32 @@ class CreditService:
         self._call_start_times = {}  # {call_session_id: start_time}
         self._last_deduction_time = {}  # {call_session_id: last_deduction_timestamp}
         self._accumulated_seconds = {}  # {call_session_id: accumulated_seconds}
+        # Sum of Redis-metered per-tick deductions that have NOT yet been
+        # written to Postgres (Tenant.credits / CallSession.cost / CallLog.cost)
+        # for this call — settled in one shot by `_finalize_call_credits` via
+        # a single `deduct_credits(...)` call at end-of-call. Stays at 0.0 for
+        # calls that never used the Redis-metered path (e.g. Redis was down
+        # for the whole call and every tick used the DB-fallback path
+        # instead, which already writes straight to Postgres per-tick).
+        # NOTE (auto-recharge): `_meter_tick_deduction`'s Redis-success branch
+        # still calls `_maybe_trigger_wallet_auto_recharge` every tick (via
+        # `asyncio.to_thread`), same cadence as before this fix — so a tenant
+        # crossing below their auto-recharge threshold mid-call still gets a
+        # chance to be recharged before the call is force-ended for
+        # insufficient credits. `deduct_credits` itself (which ALSO calls
+        # auto-recharge internally) is now only invoked once, at end-of-call
+        # settlement, for the Redis-metered portion — that's fine since the
+        # tick-path call above already covers the "keep the call alive"
+        # requirement.
+        # NOTE (crash exposure): pre-fix, a crash mid-call could lose at most
+        # one ~10s tick's worth of unbilled usage (each tick committed to
+        # Postgres immediately). Post-fix, the Redis-metered portion of a
+        # call's cost lives only in Redis + this in-memory dict until
+        # `_finalize_call_credits` runs, so a process crash/restart mid-call
+        # can now lose the tenant's entire accumulated Redis-metered cost for
+        # that call (revenue loss, not double-charge — accepted tradeoff for
+        # taking per-tick Postgres writes off the live-call hot path).
+        self._pending_call_cost: dict[str, float] = {}
         # Strongly-referenced auto-recharge charge tasks, keyed by a unique
         # per-attempt id (config_id + claimed last_triggered_at timestamp) so
         # the underlying `asyncio.to_thread(...)` task is never silently
@@ -281,6 +307,19 @@ class CreditService:
             return tenant.parent_workspace_id
         return tenant_id
 
+    @staticmethod
+    def _redis_balance_key(billing_tenant_id: uuid.UUID) -> str:
+        """Redis key holding the real-time credit balance for a billing tenant
+        (see `_resolve_billing_tenant_id`), shared across all concurrent calls
+        billed against that tenant/wallet."""
+        return f"credit_balance:{billing_tenant_id}"
+
+    # Sliding TTL applied to the Redis balance key on every tick/seed so a
+    # long-running call never lets the key expire mid-call, while an idle
+    # key (no active calls) still eventually expires rather than growing
+    # stale forever.
+    REDIS_BALANCE_TTL_SECONDS = 3600
+
     def get_tenant_credits(self, db: Session, tenant_id: uuid.UUID) -> float:
         """
         Get current credit balance for a tenant
@@ -458,10 +497,17 @@ class CreditService:
         # Check if credits reached 0 after deduction
         credits_exhausted = new_credits == 0 and current_credits > 0
 
-        logger.info("✅ Deducted %.4f credits from tenant %s", amount, billing_tenant_id            + (f" (for sub-account {tenant_id})" if billing_tenant_id != tenant_id else "")
-            + f". Remaining: {float(tenant.credits):.4f} (updated in DB). "
-            f"Call: {call_session_id}. "
-            f"Description: {description}"
+        sub_account_note = (
+            f" (for sub-account {tenant_id})" if billing_tenant_id != tenant_id else ""
+        )
+        logger.info(
+            "✅ Deducted %.4f credits from tenant %s%s. Remaining: %.4f (updated in DB). Call: %s. Description: %s",
+            amount,
+            billing_tenant_id,
+            sub_account_note,
+            float(tenant.credits),
+            call_session_id,
+            description,
         )
         logger.info("💰 CREDIT DEDUCTION: Deducted %.4f credits | Remaining: %.4f | Call: %s", amount, float(tenant.credits), call_session_id        )
 
@@ -842,6 +888,40 @@ class CreditService:
         self._call_start_times[call_id_str] = call_start_time
         self._last_deduction_time[call_id_str] = call_start_time
         self._accumulated_seconds[call_id_str] = 0.0
+        self._pending_call_cost[call_id_str] = 0.0
+
+        # Seed the Redis real-time balance for this billing tenant, once, from
+        # the authoritative DB balance — NX so a concurrent call for the same
+        # billing tenant that already seeded/decremented the key is never
+        # clobbered back to a stale starting balance.
+        billing_tenant_id = tenant_id
+        try:
+            def _resolve_and_read_balance() -> tuple[uuid.UUID, float]:
+                resolved = self._resolve_billing_tenant_id(db, tenant_id)
+                return resolved, self.get_tenant_credits(db, resolved)
+
+            # Both calls above are synchronous `db.query()` calls — dispatched
+            # via `asyncio.to_thread` so call-start never blocks the shared
+            # event loop (this loop also carries other calls' concurrently
+            # streaming STT/TTS), the same class of bug this whole fix exists
+            # to eliminate from the per-tick path.
+            billing_tenant_id, current_credits = await asyncio.to_thread(
+                _resolve_and_read_balance
+            )
+
+            from app.utils.redis_client import get_redis
+
+            redis_client = get_redis()
+            if redis_client is not None:
+                key = self._redis_balance_key(billing_tenant_id)
+                await redis_client.set(
+                    key,
+                    current_credits,
+                    nx=True,
+                    ex=self.REDIS_BALANCE_TTL_SECONDS,
+                )
+        except Exception as exc:
+            logger.warning("Failed to seed Redis credit balance for tenant %s (call %s); will fall back to DB-metered billing for this call if Redis stays unavailable: %s", billing_tenant_id, call_session_id, exc            )
 
         logger.info("Starting credit monitor for call %s. Model: %s, Rate: %s credits/min, Surcharges: %s (Vapi-style per-second billing with float precision)", call_session_id, model_name, credits_per_minute, [s.key for s in surcharges] or 'none'        )
         logger.info("💰 CREDIT MONITORING STARTED: Call %s | Model: %s | Rate: %s credits/min | Float credits enabled", call_session_id, model_name, credits_per_minute        )
@@ -900,6 +980,118 @@ class CreditService:
             tts_provider_slug=tts_provider_slug,
             is_byo_elevenlabs=is_byo_elevenlabs,
             realtime_fallen_back=realtime_fallen_back,
+        )
+
+    async def _meter_tick_deduction(
+        self,
+        db: Session,
+        billing_tenant_id: uuid.UUID,
+        call_id_str: str,
+        amount: float,
+    ) -> tuple[bool, float]:
+        """
+        Apply one monitoring tick's credit deduction WITHOUT touching Postgres
+        (no `Tenant.credits`/`CallSession.cost`/`CallLog.cost` writes here) —
+        the actual DB settlement happens once, at end-of-call, in
+        `_finalize_call_credits`.
+
+        Preferred path: atomically decrement a Redis-backed real-time balance
+        (`INCRBYFLOAT key -amount`) for `billing_tenant_id`, refreshing the
+        key's TTL each tick (sliding expiry) so a long call never lets it
+        expire mid-call. `amount` is accumulated into
+        `self._pending_call_cost[call_id_str]` so `_finalize_call_credits` can
+        settle the whole call's Redis-metered cost in a single DB write.
+
+        Fallback path (Redis unconfigured/unreachable): deduct directly
+        against Postgres via the existing `deduct_credits()`, same as before
+        this change, but dispatched through `asyncio.to_thread` so the
+        (synchronous, commit-heavy) DB write never blocks the event loop —
+        this is the actual fix for the original freeze, independent of
+        whether Redis is available.
+
+        Returns (deduction_success, remaining_credits) — same shape/semantics
+        `deduct_credits()` has always returned, so the caller's existing
+        "force-end the call" check needs no changes.
+        """
+        try:
+            from app.utils.redis_client import get_redis
+
+            redis_client = get_redis()
+        except Exception as exc:
+            logger.warning("Failed to obtain Redis client for real-time credit metering (tenant %s); falling back to DB-metered billing for this tick: %s", billing_tenant_id, exc            )
+            redis_client = None
+
+        if redis_client is not None:
+            key = self._redis_balance_key(billing_tenant_id)
+            try:
+                # Never trust INCRBYFLOAT on a key that was never seeded —
+                # Redis auto-creates missing keys at 0, which would silently
+                # decrement a phantom zero balance (disconnected from the
+                # tenant's real DB balance) and wrongly force-end the call as
+                # "insufficient credits". This can happen if `start_credit_monitoring`'s
+                # seed attempt failed/raced. In that case fall through to the
+                # DB-metered fallback below for THIS tick's actual deduction,
+                # then seed Redis from the resulting POST-deduction balance
+                # (not a pre-deduction read, which would leave Redis one
+                # tick's worth of credits out of sync with Postgres for the
+                # rest of the call).
+                if await redis_client.exists(key):
+                    new_balance = await redis_client.incrbyfloat(key, -amount)
+                    await redis_client.expire(key, self.REDIS_BALANCE_TTL_SECONDS)
+                    self._pending_call_cost[call_id_str] = (
+                        self._pending_call_cost.get(call_id_str, 0.0) + amount
+                    )
+                    new_balance = float(new_balance)
+                    deduction_success = new_balance > 0
+                    # Real-time balance check, same cooldown-guarded trigger
+                    # `deduct_credits` fires on the DB-write path — without
+                    # this, a tenant on the Redis-metered path who crosses
+                    # below their auto-recharge threshold mid-call would only
+                    # get recharged AFTER the call has already been force-ended
+                    # for insufficient credits (deduct_credits is not called
+                    # again until end-of-call settlement).
+                    try:
+                        await asyncio.to_thread(
+                            self._maybe_trigger_wallet_auto_recharge,
+                            db,
+                            billing_tenant_id,
+                            new_balance,
+                        )
+                    except Exception as exc:
+                        logger.error("Wallet auto-recharge trigger check failed for tenant %s (call %s): %s", billing_tenant_id, call_id_str, exc, exc_info=True                        )
+                    return (deduction_success, new_balance)
+
+                logger.warning("Redis credit balance key missing for tenant %s (call %s); using DB deduction fallback for this tick and re-seeding Redis from the post-deduction balance.", billing_tenant_id, call_id_str                )
+                deduction_success, remaining_credits = await asyncio.to_thread(
+                    self.deduct_credits,
+                    db=db,
+                    tenant_id=billing_tenant_id,
+                    amount=amount,
+                    call_session_id=uuid.UUID(call_id_str),
+                    description="Real-time DB-fallback tick deduction (Redis balance key unseeded)",
+                )
+                await redis_client.set(
+                    key,
+                    remaining_credits,
+                    nx=True,
+                    ex=self.REDIS_BALANCE_TTL_SECONDS,
+                )
+                return (deduction_success, remaining_credits)
+            except Exception as exc:
+                logger.warning("Redis-backed credit metering failed for tenant %s (call %s); falling back to DB deduction for this tick: %s", billing_tenant_id, call_id_str, exc                )
+
+        # Fallback: Redis unavailable (unconfigured, unreachable, or the
+        # attempt above raised) — do NOT silently skip billing. Deduct
+        # directly against Postgres, same as pre-fix behavior, but off the
+        # event loop.
+        logger.warning("Redis-backed real-time credit metering unavailable for tenant %s; using direct DB deduction fallback (dispatched via asyncio.to_thread) for this tick.", billing_tenant_id        )
+        return await asyncio.to_thread(
+            self.deduct_credits,
+            db=db,
+            tenant_id=billing_tenant_id,
+            amount=amount,
+            call_session_id=uuid.UUID(call_id_str),
+            description="Real-time DB-fallback tick deduction (Redis unavailable)",
         )
 
     async def _monitor_and_deduct_credits(
@@ -1020,8 +1212,8 @@ class CreditService:
                     # remaining included-plan minutes ("free") and the portion beyond it
                     # ("billable") — a call must never be force-ended while fully within
                     # its free allowance, even at a zero credit balance.
-                    _, _, remaining_minutes = (
-                        BillingService.get_included_minutes_status(db, tenant_id)
+                    _, _, remaining_minutes = await asyncio.to_thread(
+                        BillingService.get_included_minutes_status, db, tenant_id
                     )
                     remaining_seconds = float(remaining_minutes) * 60.0
                     free_seconds = min(accumulated, remaining_seconds)
@@ -1042,8 +1234,11 @@ class CreditService:
 
                     total_deduction_float = credits_to_deduct_float + surcharge_float
 
+                    # Default remaining_credits is only ever consulted below when
+                    # total_deduction_float >= 0.01 (see the force-end check), so
+                    # no DB/Redis read is needed here for the common no-op tick.
                     deduction_success = True
-                    remaining_credits = self.get_tenant_credits(db, billing_tenant_id)
+                    remaining_credits = 1.0
 
                     if total_deduction_float >= 0.01:
                         description = (
@@ -1052,22 +1247,26 @@ class CreditService:
                         )
                         if surcharge_float > 0:
                             description += f" + {surcharge_desc}"
-                        # ✅ Deduct accumulated overage + active surcharge credits in one
-                        # combined deduction (updates DB immediately). Targets the
-                        # RESOLVED billing tenant (parent, if wallet sharing is on) —
-                        # never the calling tenant_id directly.
-                        deduction_success, remaining_credits = self.deduct_credits(
+
+                        (
+                            deduction_success,
+                            remaining_credits,
+                        ) = await self._meter_tick_deduction(
                             db=db,
-                            tenant_id=billing_tenant_id,
+                            billing_tenant_id=billing_tenant_id,
+                            call_id_str=call_id_str,
                             amount=total_deduction_float,
-                            call_session_id=call_session_id,
-                            description=description,
                         )
 
                     # Record the FULL accumulated minutes as usage regardless of whether
                     # anything was charged, so the included-minutes pool actually depletes.
+                    # This stays a per-tick, non-deferred write (unlike the balance
+                    # mutation above) since it tracks the tenant's shared
+                    # included-minutes allowance, which must stay accurate per-tick
+                    # for tenants running multiple concurrent calls.
                     try:
-                        BillingService.record_call_minutes(
+                        await asyncio.to_thread(
+                            BillingService.record_call_minutes,
                             db=db,
                             tenant_id=tenant_id,
                             call_id=call_session_id,
@@ -1099,9 +1298,18 @@ class CreditService:
                         call_session.ended_reason = "Insufficient credits"
 
                         if call_session.start_time:
-                            duration = (
-                                call_session.end_time - call_session.start_time
-                            ).total_seconds()
+                            # Defensive tz-normalization: real Postgres columns are
+                            # DateTime(timezone=True) and round-trip aware datetimes,
+                            # but SQLite-backed test sessions (and any naive value that
+                            # slips in) can hand back a naive start_time, which would
+                            # otherwise raise on subtraction against the aware end_time.
+                            start = call_session.start_time
+                            end = call_session.end_time
+                            if start.tzinfo is None:
+                                start = start.replace(tzinfo=timezone.utc)
+                            if end.tzinfo is None:
+                                end = end.replace(tzinfo=timezone.utc)
+                            duration = (end - start).total_seconds()
                             call_session.duration = int(duration)
 
                         # ✅ IMMEDIATE DATABASE UPDATE
@@ -1183,6 +1391,8 @@ class CreditService:
                 del self._last_deduction_time[call_id_str]
             if call_id_str in self._accumulated_seconds:
                 del self._accumulated_seconds[call_id_str]
+            if call_id_str in self._pending_call_cost:
+                del self._pending_call_cost[call_id_str]
 
             logger.info("Credit monitor stopped for call %s", call_session_id)
 
@@ -1230,55 +1440,95 @@ class CreditService:
         call_id_str = str(call_session_id)
         accumulated = self._accumulated_seconds.get(call_id_str, 0.0)
 
-        if accumulated > 0:
-            _, _, remaining_minutes = BillingService.get_included_minutes_status(
-                db, tenant_id
-            )
-            remaining_seconds = float(remaining_minutes) * 60.0
-            free_seconds = min(accumulated, remaining_seconds)
-            billable_seconds = max(0.0, accumulated - free_seconds)
+        # Sum of every prior tick's Redis-metered deduction that was never
+        # written to Postgres — settled here, in the single end-of-call
+        # write below, alongside any final partial-tick amount computed
+        # from `accumulated`. Stays 0.0 for calls that never used the
+        # Redis-metered path (e.g. Redis was down for the whole call, so
+        # every tick already wrote straight to Postgres via the DB-fallback
+        # path in `_meter_tick_deduction`) — finalize then behaves exactly
+        # as it did before this change, with no double-deduction.
+        pending_cost = self._pending_call_cost.get(call_id_str, 0.0)
 
-            # Calculate final credits for the billable (overage) portion only
-            final_credits = self.calculate_credits_for_duration(
-                billable_seconds, credits_per_minute
-            )
+        if accumulated > 0 or pending_cost > 0:
+            total_final = pending_cost
+            final_credits = 0.0
+            surcharge_final = 0.0
+            billable_seconds = 0.0
+            surcharge_desc = ""
 
-            # Active surcharges apply to the FULL accumulated seconds.
-            surcharge_final, surcharge_desc = self._describe_surcharges(
-                accumulated, surcharges
-            )
+            if accumulated > 0:
+                _, _, remaining_minutes = await asyncio.to_thread(
+                    BillingService.get_included_minutes_status, db, tenant_id
+                )
+                remaining_seconds = float(remaining_minutes) * 60.0
+                free_seconds = min(accumulated, remaining_seconds)
+                billable_seconds = max(0.0, accumulated - free_seconds)
 
-            total_final = final_credits + surcharge_final
-            credits_charged = Decimal("0")
+                # Calculate final credits for the billable (overage) portion only
+                final_credits = self.calculate_credits_for_duration(
+                    billable_seconds, credits_per_minute
+                )
+
+                # Active surcharges apply to the FULL accumulated seconds.
+                surcharge_final, surcharge_desc = self._describe_surcharges(
+                    accumulated, surcharges
+                )
+
+                total_final += final_credits + surcharge_final
 
             if total_final >= 0.01:  # Only deduct if at least 0.01 credits
-                description = f"Final call duration: {accumulated:.1f}s (billable {billable_seconds:.1f}s) - Model: {model_name}"
+                description = (
+                    f"Final call duration: {accumulated:.1f}s (billable {billable_seconds:.1f}s) - "
+                    f"Model: {model_name}"
+                )
                 if surcharge_final > 0:
                     description += f" + {surcharge_desc}"
-                success, remaining_credits = self.deduct_credits(
+                if pending_cost > 0:
+                    description += f" + {pending_cost:.4f} credits carried over from Redis-metered ticks this call"
+                # Single authoritative end-of-call settlement: exactly ONE
+                # DB write for the whole call's metered cost (prior
+                # Redis-metered ticks + this final partial tick), dispatched
+                # off the event loop.
+                success, remaining_credits = await asyncio.to_thread(
+                    self.deduct_credits,
                     db=db,
                     tenant_id=billing_tenant_id,
                     amount=total_final,
                     call_session_id=call_session_id,
                     description=description,
                 )
-                credits_charged = Decimal(str(total_final))
 
-                logger.info("Call %s: Final deduction of %.4f credits (base %.4f + surcharge %.4f) for %.1fs. Remaining: %.4f", call_session_id, total_final, final_credits, surcharge_final, accumulated, remaining_credits                )
+                logger.info("Call %s: Final deduction of %.4f credits (base %.4f + surcharge %.4f + %.4f carried over) for %.1fs. Remaining: %.4f", call_session_id, total_final, final_credits, surcharge_final, pending_cost, accumulated, remaining_credits                )
                 logger.info("💰 FINAL CREDIT DEDUCTION: %.4f credits for %.1fs | Remaining: %.4f | Call: %s", total_final, accumulated, remaining_credits, call_session_id                )
 
-            try:
-                BillingService.record_call_minutes(
-                    db=db,
-                    tenant_id=tenant_id,
-                    call_id=call_session_id,
-                    minutes=Decimal(str(accumulated)) / Decimal("60"),
-                    credits_charged=credits_charged,
+            if accumulated > 0:
+                # NOTE: credits_charged here intentionally reflects only this
+                # final tick's own charge (final_credits + surcharge_final),
+                # NOT `total_final` (which also includes `pending_cost`
+                # carried over from earlier Redis-metered ticks) — each of
+                # those earlier ticks already wrote its own UsageRecord with
+                # its own credits_charged when it happened, so folding
+                # `pending_cost` in here again would double-count it.
+                final_tick_credits_charged = (
+                    Decimal(str(final_credits + surcharge_final))
+                    if (final_credits + surcharge_final) >= 0.01
+                    else Decimal("0")
                 )
-            except Exception as exc:
-                logger.error("Failed to record final call minutes for %s: %s", call_session_id, exc                )
+                try:
+                    await asyncio.to_thread(
+                        BillingService.record_call_minutes,
+                        db=db,
+                        tenant_id=tenant_id,
+                        call_id=call_session_id,
+                        minutes=Decimal(str(accumulated)) / Decimal("60"),
+                        credits_charged=final_tick_credits_charged,
+                    )
+                except Exception as exc:
+                    logger.error("Failed to record final call minutes for %s: %s", call_session_id, exc                    )
 
             self._accumulated_seconds[call_id_str] = 0.0
+            self._pending_call_cost[call_id_str] = 0.0
 
     async def _end_twilio_call(self, twilio_call_sid: str):
         """
