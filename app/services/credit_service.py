@@ -409,16 +409,14 @@ class CreditService:
         billing_tenant_id = self._resolve_billing_tenant_id(db, tenant_id)
         tenant = db.query(Tenant).filter(Tenant.id == billing_tenant_id).first()
         if not tenant:
-            logger.error(f"Tenant {billing_tenant_id} not found")
+            logger.error("Tenant %s not found", billing_tenant_id)
             return (False, 0.0)
 
         current_credits = float(tenant.credits or 0)
 
         # Check if we have sufficient credits to deduct
         if current_credits <= 0:
-            logger.warning(
-                f"Insufficient credits for tenant {billing_tenant_id}: {current_credits} <= 0"
-            )
+            logger.warning("Insufficient credits for tenant %s: %s <= 0", billing_tenant_id, current_credits            )
             return (False, current_credits)
 
         # Deduct credits but never allow negative balance
@@ -449,8 +447,7 @@ class CreditService:
                         call_log.cost = current_log_cost + float(amount)
             except Exception as e:
                 # Do not block credit deduction if cost aggregation fails; just log it.
-                logger.error(
-                    f"Failed to track per-call credit cost for session {call_session_id}: {e}",
+                logger.error("Failed to track per-call credit cost for session %s: %s", call_session_id, e,
                     exc_info=True,
                 )
 
@@ -461,16 +458,12 @@ class CreditService:
         # Check if credits reached 0 after deduction
         credits_exhausted = new_credits == 0 and current_credits > 0
 
-        logger.info(
-            f"✅ Deducted {amount:.4f} credits from tenant {billing_tenant_id}"
-            + (f" (for sub-account {tenant_id})" if billing_tenant_id != tenant_id else "")
+        logger.info("✅ Deducted %.4f credits from tenant %s", amount, billing_tenant_id            + (f" (for sub-account {tenant_id})" if billing_tenant_id != tenant_id else "")
             + f". Remaining: {float(tenant.credits):.4f} (updated in DB). "
             f"Call: {call_session_id}. "
             f"Description: {description}"
         )
-        logger.info(
-            f"💰 CREDIT DEDUCTION: Deducted {amount:.4f} credits | Remaining: {float(tenant.credits):.4f} | Call: {call_session_id}"
-        )
+        logger.info("💰 CREDIT DEDUCTION: Deducted %.4f credits | Remaining: %.4f | Call: %s", amount, float(tenant.credits), call_session_id        )
 
         # Wallet auto-recharge: fire-and-forget, non-critical side effect. Must
         # never affect the deduction that just happened above (already
@@ -482,8 +475,7 @@ class CreditService:
                 db, billing_tenant_id, float(tenant.credits)
             )
         except Exception as exc:
-            logger.error(
-                f"Wallet auto-recharge trigger check failed for tenant {billing_tenant_id}: {exc}",
+            logger.error("Wallet auto-recharge trigger check failed for tenant %s: %s", billing_tenant_id, exc,
                 exc_info=True,
             )
 
@@ -575,12 +567,7 @@ class CreditService:
         # creating a second, distinct charge.
         idempotency_key = f"auto-recharge:{config_id}:{now.isoformat()}"
 
-        logger.warning(
-            f"💳 WALLET AUTO-RECHARGE TRIGGERED: tenant {tenant_id} balance "
-            f"{current_credits:.4f} < threshold {float(config.min_balance):.4f}; "
-            f"dispatching off-session charge of ${recharge_amount} "
-            f"(config {config_id}, idempotency_key={idempotency_key})."
-        )
+        logger.warning("💳 WALLET AUTO-RECHARGE TRIGGERED: tenant %s balance %.4f < threshold %.4f; dispatching off-session charge of $%s (config %s, idempotency_key=%s).", tenant_id, current_credits, float(config.min_balance), recharge_amount, config_id, idempotency_key        )
 
         # Keep the trigger check itself cheap/synchronous (just the DB read +
         # claim above); only the actual blocking Stripe network call is
@@ -614,12 +601,10 @@ class CreditService:
                 try:
                     exc = t.exception()
                 except asyncio.CancelledError:
-                    logger.warning(f"💳 AUTO-RECHARGE task cancelled (key={key}).")
+                    logger.warning("💳 AUTO-RECHARGE task cancelled (key=%s).", key)
                     return
                 if exc is not None:
-                    logger.error(
-                        f"💳 AUTO-RECHARGE task raised an unhandled exception "
-                        f"(key={key}): {exc}",
+                    logger.error("💳 AUTO-RECHARGE task raised an unhandled exception (key=%s): %s", key, exc,
                         exc_info=exc,
                     )
 
@@ -673,10 +658,7 @@ class CreditService:
             tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
             if not tenant or not tenant.stripe_customer_id:
                 error_detail = "tenant has no Stripe customer on file"
-                logger.error(
-                    f"💳 AUTO-RECHARGE FAILED: tenant {tenant_id} has no Stripe "
-                    f"customer on file; cannot charge for auto-recharge (config {config_id})."
-                )
+                logger.error("💳 AUTO-RECHARGE FAILED: tenant %s has no Stripe customer on file; cannot charge for auto-recharge (config %s).", tenant_id, config_id                )
                 self._record_trigger_outcome(
                     db, config_id, status="failed", error=error_detail
                 )
@@ -698,11 +680,7 @@ class CreditService:
                     idempotency_key=idempotency_key,
                 )
             except StripeAuthenticationRequiredError as exc:
-                logger.warning(
-                    f"⚠️ AUTO-RECHARGE AUTHENTICATION REQUIRED for tenant {tenant_id} "
-                    f"(config {config_id}, amount ${recharge_amount}): Card requires 3DS/SCA authentication. "
-                    f"Customer action required to re-authenticate card: {exc}"
-                )
+                logger.warning("⚠️ AUTO-RECHARGE AUTHENTICATION REQUIRED for tenant %s (config %s, amount $%s): Card requires 3DS/SCA authentication. Customer action required to re-authenticate card: %s", tenant_id, config_id, recharge_amount, exc                )
                 self._record_trigger_outcome(
                     db,
                     config_id,
@@ -712,9 +690,7 @@ class CreditService:
                 )
                 return
             except Exception as exc:
-                logger.error(
-                    f"💳 AUTO-RECHARGE CHARGE FAILED for tenant {tenant_id} "
-                    f"(config {config_id}, amount ${recharge_amount}): {exc}",
+                logger.error("💳 AUTO-RECHARGE CHARGE FAILED for tenant %s (config %s, amount $%s): %s", tenant_id, config_id, recharge_amount, exc,
                     exc_info=True,
                 )
                 self._record_trigger_outcome(
@@ -730,10 +706,7 @@ class CreditService:
             )
 
             if intent_status != "succeeded":
-                logger.error(
-                    f"💳 AUTO-RECHARGE CHARGE NOT SUCCEEDED for tenant {tenant_id} "
-                    f"(config {config_id}): PaymentIntent status={intent_status!r}. No credits granted."
-                )
+                logger.error("💳 AUTO-RECHARGE CHARGE NOT SUCCEEDED for tenant %s (config %s): PaymentIntent status=%r. No credits granted.", tenant_id, config_id, intent_status)
                 self._record_trigger_outcome(
                     db,
                     config_id,
@@ -762,14 +735,9 @@ class CreditService:
             )
             db.commit()
 
-            logger.warning(
-                f"💳 AUTO-RECHARGE SUCCEEDED: tenant {tenant_id} charged ${recharge_amount} "
-                f"off-session (PaymentIntent {intent_id}); credits now {float(new_balance):.4f}."
-            )
+            logger.warning("💳 AUTO-RECHARGE SUCCEEDED: tenant %s charged $%s off-session (PaymentIntent %s); credits now %.4f.", tenant_id, recharge_amount, intent_id, float(new_balance)            )
         except Exception as exc:
-            logger.error(
-                f"💳 AUTO-RECHARGE unexpected error for tenant {tenant_id} "
-                f"(config {config_id}): {exc}",
+            logger.error("💳 AUTO-RECHARGE unexpected error for tenant %s (config %s): %s", tenant_id, config_id, exc,
                 exc_info=True,
             )
             try:
@@ -784,9 +752,7 @@ class CreditService:
                     db, config_id, status="failed", error=str(exc)[:500]
                 )
             except Exception:
-                logger.error(
-                    f"💳 AUTO-RECHARGE also failed to persist trigger outcome for "
-                    f"config {config_id}",
+                logger.error("💳 AUTO-RECHARGE also failed to persist trigger outcome for config %s", config_id,
                     exc_info=True,
                 )
         finally:
@@ -839,14 +805,14 @@ class CreditService:
             agent_id: Agent UUID
         """
         if str(call_session_id) in self._active_monitors:
-            logger.warning(f"Credit monitor already active for call {call_session_id}")
+            logger.warning("Credit monitor already active for call %s", call_session_id)
             return
 
         # Agent/model lookup kept for logging context, and to resolve which
         # surcharges (if any) apply for the full duration of this call.
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
-            logger.error(f"Agent {agent_id} not found")
+            logger.error("Agent %s not found", agent_id)
             return
 
         model_name = agent.model.model_name if agent.model else "unknown"
@@ -863,10 +829,7 @@ class CreditService:
             tts_provider_slug = tts_runtime.adapter_slug
             is_byo_elevenlabs = tts_runtime.is_byo_elevenlabs
         except Exception as exc:
-            logger.warning(
-                f"Failed to resolve TTS runtime for agent {agent_id} while starting "
-                f"credit monitor (ElevenLabs surcharge check skipped): {exc}"
-            )
+            logger.warning("Failed to resolve TTS runtime for agent %s while starting credit monitor (ElevenLabs surcharge check skipped): %s", agent_id, exc            )
         surcharges = self.get_active_surcharges(
             model_name=model_name,
             tts_provider_slug=tts_provider_slug,
@@ -880,15 +843,8 @@ class CreditService:
         self._last_deduction_time[call_id_str] = call_start_time
         self._accumulated_seconds[call_id_str] = 0.0
 
-        logger.info(
-            f"Starting credit monitor for call {call_session_id}. "
-            f"Model: {model_name}, Rate: {credits_per_minute} credits/min, "
-            f"Surcharges: {[s.key for s in surcharges] or 'none'} "
-            f"(Vapi-style per-second billing with float precision)"
-        )
-        logger.info(
-            f"💰 CREDIT MONITORING STARTED: Call {call_session_id} | Model: {model_name} | Rate: {credits_per_minute} credits/min | Float credits enabled"
-        )
+        logger.info("Starting credit monitor for call %s. Model: %s, Rate: %s credits/min, Surcharges: %s (Vapi-style per-second billing with float precision)", call_session_id, model_name, credits_per_minute, [s.key for s in surcharges] or 'none'        )
+        logger.info("💰 CREDIT MONITORING STARTED: Call %s | Model: %s | Rate: %s credits/min | Float credits enabled", call_session_id, model_name, credits_per_minute        )
 
         # Create monitoring task (will create its own DB session for thread-safety).
         # NOTE: tts_provider_slug/is_byo_elevenlabs (not a fixed `surcharges` list)
@@ -937,10 +893,7 @@ class CreditService:
                 else:
                     realtime_fallen_back = bool(fallback_meta)
         except Exception as exc:
-            logger.warning(
-                f"Failed to read openai_realtime_fallback from call_metadata for "
-                f"call {call_session.id}: {exc}"
-            )
+            logger.warning("Failed to read openai_realtime_fallback from call_metadata for call %s: %s", call_session.id, exc            )
 
         return self.get_active_surcharges(
             model_name=model_name,
@@ -1012,9 +965,7 @@ class CreditService:
                 )
 
                 if not call_session:
-                    logger.info(
-                        f"Call session {call_session_id} not found, stopping monitor"
-                    )
+                    logger.info("Call session %s not found, stopping monitor", call_session_id)
                     break
 
                 # Re-derive active surcharges every tick (not cached from call-start)
@@ -1128,9 +1079,7 @@ class CreditService:
                             ),
                         )
                     except Exception as exc:
-                        logger.error(
-                            f"Failed to record call minutes for {call_session_id}: {exc}"
-                        )
+                        logger.error("Failed to record call minutes for %s: %s", call_session_id, exc                        )
 
                     self._accumulated_seconds[call_id_str] = 0.0
                     self._last_deduction_time[call_id_str] = current_time
@@ -1142,10 +1091,7 @@ class CreditService:
                         not deduction_success or remaining_credits <= 0
                     ):
                         # ✅ CREDITS FINISHED - END CALL IMMEDIATELY
-                        logger.warning(
-                            f"⛔ Credits finished for call {call_session_id}. "
-                            f"Remaining credits: {remaining_credits}. Ending call immediately."
-                        )
+                        logger.warning("⛔ Credits finished for call %s. Remaining credits: %s. Ending call immediately.", call_session_id, remaining_credits                        )
 
                         # Update call session status immediately
                         call_session.status = "completed"
@@ -1168,7 +1114,7 @@ class CreditService:
                                 "✅ Twilio call ended immediately due to insufficient credits"
                             )
                         except Exception as e:
-                            logger.error(f"Error ending Twilio call: {e}")
+                            logger.error("Error ending Twilio call: %s", e)
 
                         # Broadcast call ended event
                         try:
@@ -1187,22 +1133,17 @@ class CreditService:
                                 },
                             )
                         except Exception as e:
-                            logger.error(f"Error broadcasting call end event: {e}")
+                            logger.error("Error broadcasting call end event: %s", e)
 
                         # Stop monitoring immediately
                         break
 
-                    logger.info(
-                        f"Call {call_session_id}: {accumulated:.1f}s elapsed "
-                        f"({billable_seconds:.1f}s billable, {total_deduction_float:.4f} credits deducted "
-                        f"[base {credits_to_deduct_float:.4f} + surcharge {surcharge_float:.4f}]). "
-                        f"Remaining: {remaining_credits:.4f}"
-                    )
+                    logger.info("Call %s: %.1fs elapsed (%.1fs billable, %.4f credits deducted [base %.4f + surcharge %.4f]). Remaining: %.4f", call_session_id, accumulated, billable_seconds, total_deduction_float, credits_to_deduct_float, surcharge_float, remaining_credits                    )
 
         except asyncio.CancelledError:
-            logger.info(f"Credit monitor cancelled for call {call_session_id}")
+            logger.info("Credit monitor cancelled for call %s", call_session_id)
         except Exception as e:
-            logger.error(f"Error in credit monitoring for call {call_session_id}: {e}")
+            logger.error("Error in credit monitoring for call %s: %s", call_session_id, e)
             import traceback
 
             traceback.print_exc()
@@ -1228,7 +1169,7 @@ class CreditService:
                         billing_tenant_id=billing_tenant_id,
                     )
             except Exception as e:
-                logger.error(f"Error in final credit deduction: {e}")
+                logger.error("Error in final credit deduction: %s", e)
             finally:
                 # Close DB session (Vapi-style: proper cleanup)
                 db.close()
@@ -1243,7 +1184,7 @@ class CreditService:
             if call_id_str in self._accumulated_seconds:
                 del self._accumulated_seconds[call_id_str]
 
-            logger.info(f"Credit monitor stopped for call {call_session_id}")
+            logger.info("Credit monitor stopped for call %s", call_session_id)
 
     async def _finalize_call_credits(
         self,
@@ -1323,14 +1264,8 @@ class CreditService:
                 )
                 credits_charged = Decimal(str(total_final))
 
-                logger.info(
-                    f"Call {call_session_id}: Final deduction of {total_final:.4f} credits "
-                    f"(base {final_credits:.4f} + surcharge {surcharge_final:.4f}) "
-                    f"for {accumulated:.1f}s. Remaining: {remaining_credits:.4f}"
-                )
-                logger.info(
-                    f"💰 FINAL CREDIT DEDUCTION: {total_final:.4f} credits for {accumulated:.1f}s | Remaining: {remaining_credits:.4f} | Call: {call_session_id}"
-                )
+                logger.info("Call %s: Final deduction of %.4f credits (base %.4f + surcharge %.4f) for %.1fs. Remaining: %.4f", call_session_id, total_final, final_credits, surcharge_final, accumulated, remaining_credits                )
+                logger.info("💰 FINAL CREDIT DEDUCTION: %.4f credits for %.1fs | Remaining: %.4f | Call: %s", total_final, accumulated, remaining_credits, call_session_id                )
 
             try:
                 BillingService.record_call_minutes(
@@ -1341,9 +1276,7 @@ class CreditService:
                     credits_charged=credits_charged,
                 )
             except Exception as exc:
-                logger.error(
-                    f"Failed to record final call minutes for {call_session_id}: {exc}"
-                )
+                logger.error("Failed to record final call minutes for %s: %s", call_session_id, exc                )
 
             self._accumulated_seconds[call_id_str] = 0.0
 
@@ -1361,9 +1294,9 @@ class CreditService:
             from app.services.twilio_service import twilio_service
 
             twilio_service.end_call(twilio_call_sid)
-            logger.info(f"Successfully ended Twilio call {twilio_call_sid}")
+            logger.info("Successfully ended Twilio call %s", twilio_call_sid)
         except Exception as e:
-            logger.error(f"Error ending Twilio call {twilio_call_sid}: {e}")
+            logger.error("Error ending Twilio call %s: %s", twilio_call_sid, e)
 
     def stop_credit_monitoring(self, call_session_id: uuid.UUID):
         """
@@ -1377,7 +1310,7 @@ class CreditService:
             task = self._active_monitors[call_id_str]
             task.cancel()
             del self._active_monitors[call_id_str]
-            logger.info(f"Stopped credit monitor for call {call_session_id}")
+            logger.info("Stopped credit monitor for call %s", call_session_id)
 
     def get_active_monitors(self) -> Dict[str, Any]:
         """Get list of active credit monitors"""

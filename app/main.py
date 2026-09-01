@@ -24,6 +24,8 @@ def create_app() -> FastAPI:
     from app.api.v2.api import v2_router
     from app.routers.sso_auth import router as sso_auth_router
     from app.db.async_session import dispose_async_db, init_async_db
+    from app.api.docs_auth import verify_api_docs_basic
+    from fastapi import Depends
     from app.routers.api_docs import router as api_docs_router
     from app.routers.health import router as health_router
     from app.schemas.base import SuccessResponse
@@ -335,7 +337,9 @@ def create_app() -> FastAPI:
     # v2 Swagger — filtered to /api/v2/ routes only.
     # -------------------------------------------------------------------------
     @_app.get("/api/v2/openapi.json", include_in_schema=False)
-    async def v2_openapi_schema() -> dict:
+    async def v2_openapi_schema(
+        _auth: None = Depends(verify_api_docs_basic),
+    ) -> dict:
         from fastapi.openapi.utils import get_openapi as _get_openapi
 
         v2_routes = [r for r in _app.routes if getattr(r, "path", "").startswith("/api/v2/")]
@@ -346,7 +350,9 @@ def create_app() -> FastAPI:
         )
 
     @_app.get("/api/v2/docs", include_in_schema=False)
-    async def v2_swagger_ui():
+    async def v2_swagger_ui(
+        _auth: None = Depends(verify_api_docs_basic),
+    ):
         from fastapi.openapi.docs import get_swagger_ui_html
         from fastapi.responses import HTMLResponse
 

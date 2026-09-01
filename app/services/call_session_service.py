@@ -318,29 +318,49 @@ class CallSessionService:
         self, db: Session, session_id: uuid.UUID
     ) -> CallSession | None:
         """
-        Get call session by ID
+        Get call session by ID — INTERNAL USE ONLY (no tenant scope).
 
-        Args:
-            db: Database session
-            session_id: Session ID (UUID)
-
-        Returns:
-            CallSession object or None
+        Use this only in Twilio/system webhook paths where tenant_id is not yet
+        known (it is derived from the returned session). For user-facing API
+        handlers where tenant_id is already known, use
+        get_call_session_by_id_and_tenant() instead to enforce isolation.
+        Callers MUST verify call_session.tenant_id matches the authenticated
+        tenant before exposing any session data.
         """
         return db.query(CallSession).filter(CallSession.id == session_id).first()
+
+    def get_call_session_by_id_and_tenant(
+        self,
+        db: Session,
+        session_id: uuid.UUID,
+        tenant_id: uuid.UUID,
+    ) -> CallSession | None:
+        """
+        Get call session by ID scoped to a specific tenant.
+
+        Preferred over get_call_session_by_id() in any handler where the
+        tenant_id is already known (user-facing API, background jobs).
+        Returns None (not 404) when the session exists but belongs to a
+        different tenant — callers should treat None as not-found.
+        """
+        return (
+            db.query(CallSession)
+            .filter(
+                CallSession.id == session_id,
+                CallSession.tenant_id == tenant_id,
+            )
+            .first()
+        )
 
     def get_call_session_by_twilio_sid(
         self, db: Session, twilio_call_sid: str
     ) -> CallSession | None:
         """
-        Get call session by Twilio call SID
+        Get call session by Twilio call SID — INTERNAL USE ONLY (no tenant scope).
 
-        Args:
-            db: Database session
-            twilio_call_sid: Twilio call SID
-
-        Returns:
-            CallSession object or None
+        Twilio SIDs are unguessable (CA + 32 random hex chars) so this is safe
+        for the webhook path, but callers must still verify ownership before
+        making state changes if any tenant-scoped data is exposed.
         """
         return (
             db.query(CallSession)
@@ -892,6 +912,32 @@ class CallSessionService:
             await broadcast_transcript_update(call_session_id, transcript, new_messages)
         except Exception as e:
             logger.error(f"Error broadcasting transcript update: {e}")
+
+    def find_recent_dropped_session(
+        self,
+        db: Session,
+        from_number: str,
+        tenant_id: uuid.UUID,
+        within_seconds: int = 300,
+    ) -> "CallSession | None":
+        """
+        Find a recent incomplete or failed session from the same caller.
+        Used for call-drop reconnect recognition (F-11).
+        """
+        from datetime import datetime, timedelta
+
+        cutoff = datetime.utcnow() - timedelta(seconds=within_seconds)
+        return (
+            db.query(CallSession)
+            .filter(
+                CallSession.from_number == from_number,
+                CallSession.tenant_id == tenant_id,
+                CallSession.created_at >= cutoff,
+                CallSession.status.in_(["no_answer", "failed", "in_progress"]),
+            )
+            .order_by(CallSession.created_at.desc())
+            .first()
+        )
 
     async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
         """Broadcast call metadata update to WebSocket connections"""

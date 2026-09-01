@@ -836,6 +836,11 @@ class Settings(BaseSettings):
     # Pickup detector window and threshold (RMS frames over threshold) before STT starts.
     VOICE_PICKUP_SAMPLE_WINDOW: int = 6
     VOICE_PICKUP_MIN_NON_SILENT_FRAMES: int = 4
+    # Hard ceiling on a single LLM+TTS turn (seconds). Covers worst-case LLM
+    # latency including RAG retrieval. Values above 30s are not recommended for
+    # synchronous WebSocket call handlers — a stuck turn holds the handler for the
+    # full duration before the silence watchdog can fire.
+    VOICE_TURN_TIMEOUT_SEC: float = 20.0
     # Allow RAG prefetch to start earlier than interim-LLM gates.
     VOICE_RAG_PREFETCH_MIN_WORDS: int = 1
     VOICE_RAG_PREFETCH_MIN_CONFIDENCE: float = 0.05
@@ -934,7 +939,10 @@ class Settings(BaseSettings):
     LOGIN_RATE_WINDOW: int = 60  # seconds
 
     # Webhook rate limiting (requests per minute)
-    WEBHOOK_RATE_LIMIT: int = 100
+    # Twilio webhook + media-stream per-IP bucket (applied by RateLimitMiddleware to
+    # /api/v1/voice/* and /api/v1/stream/*). 120/min gives comfortable headroom over
+    # normal Twilio traffic patterns while blocking flood/loop attacks.
+    WEBHOOK_RATE_LIMIT: int = 120
     WEBHOOK_RATE_WINDOW: int = 60  # seconds
 
     # General API rate limiting — global sliding-window middleware

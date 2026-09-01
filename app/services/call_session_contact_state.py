@@ -42,6 +42,31 @@ _CEILING_UNRESOLVED = "__unresolved__"
 # original name.
 MAX_NAME_SPELL_FAILURES = MAX_FIELD_COLLECTION_FAILURES
 
+# F-04: Mid-call correction detection
+_CORRECTION_SIGNALS = re.compile(
+    r"\b(actually|wait|no|sorry|i\s+meant|my\s+name\s+is|it.?s\s+spelled|"
+    r"that.?s\s+wrong|let\s+me\s+correct)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_field_correction(text: str, intake: dict) -> str | None:
+    """Return field name if a correction signal targets a confirmed field."""
+    if not _CORRECTION_SIGNALS.search(text):
+        return None
+    text_lower = text.lower()
+    if intake.get("name_confident") and any(
+        w in text_lower for w in ["name", "called", "i am", "i'm", "it's"]
+    ):
+        return "name"
+    if intake.get("phone_confirmed") and any(
+        w in text_lower for w in ["number", "phone", "digit"]
+    ):
+        return "phone"
+    if intake.get("email_confirmed") and "email" in text_lower:
+        return "email"
+    return None
+
 _SPELL_NAME_AGENT = re.compile(
     r"\bspell\b.*\b(name|full\s*name|first\s*name|last\s*name)\b|\b(name|full\s*name)\b.*\bspell\b",
     flags=re.IGNORECASE,
@@ -322,6 +347,24 @@ def apply_transcript_turn(
             intake["name_confident"] = True
 
     if role == "client" and text:
+        # F-04: Mid-call correction detection — reset confirmed slot if caller corrects
+        corrected_field = _detect_field_correction(text, intake)
+        if corrected_field == "name":
+            intake["name"] = None
+            intake["name_confident"] = False
+            intake["awaiting_spell_field"] = "name"
+            intake["name_collection_failures"] = 0
+        elif corrected_field == "phone":
+            intake["phone"] = None
+            intake["phone_confirmed"] = False
+            intake["awaiting_spell_field"] = "phone"
+            intake["phone_collection_failures"] = 0
+        elif corrected_field == "email":
+            intake["email"] = None
+            intake["email_confirmed"] = False
+            intake["awaiting_spell_field"] = "email"
+            intake["email_collection_failures"] = 0
+
         prev = (preceding_agent_text or "").strip()
         awaiting = intake.get("awaiting_spell_field")
 

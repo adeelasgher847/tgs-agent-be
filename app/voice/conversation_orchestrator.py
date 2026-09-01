@@ -6,6 +6,13 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
+# F-05: Warm transfer phrase pool
+_TRANSFER_PHRASES = [
+    "Let me connect you with a specialist — just one moment.",
+    "I'm going to bring in someone who can help you further — hold just a second.",
+    "I'll transfer you now — someone will be right with you.",
+]
+
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
@@ -16,7 +23,7 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
-from app.utils.webhook_templating import render_template
+
 
 # ---------------------------------------------------------------------------
 # Configuration structures (tunable parameters for STT, TTS, and conversation)
@@ -193,11 +200,8 @@ class ConversationOrchestrator:
         """
         Send instant acknowledgement for longer queries while generating full response.
         Probability-based so we don't say "Got it" every time — more natural.
-        Disabled by default (VOICE_QUICK_ACK_PROBABILITY=0.0) in Sprint 1 to prevent
-        semantically incorrect fillers and TTS concurrency load.
+        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
         """
-        if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
-            return
         text = (user_text or "").strip()
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
             return
@@ -253,9 +257,7 @@ class ConversationOrchestrator:
         if self._h.call_session and self._h.call_session.call_transcript:
             try:
                 raw = self._h.call_session.call_transcript
-                conversation_history = (
-                    json.loads(raw) if isinstance(raw, str) else list(raw)
-                )
+                conversation_history = json.loads(raw) if isinstance(raw, str) else list(raw)
             except Exception:
                 conversation_history = []
 
@@ -281,9 +283,7 @@ class ConversationOrchestrator:
                             filtered.append((role, content))
 
                 # Use only the most recent HISTORY_MAX_MESSAGES to keep prompt within model limits
-                max_msgs = getattr(
-                    self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages
-                )
+                max_msgs = getattr(self._h, "HISTORY_MAX_MESSAGES", VOICE_TUNABLES.history_max_messages)
                 if len(filtered) > max_msgs:
                     filtered = filtered[-max_msgs:]
 
@@ -296,14 +296,8 @@ class ConversationOrchestrator:
                 history_text = ""
 
         # Build system prompt with agent personality + history
-        agent_name = (
-            self._h.agent.name
-            if self._h.agent and self._h.agent.name
-            else "AI Assistant"
-        )
-        agent_language = (
-            self._h.agent.language if self._h.agent and self._h.agent.language else "en"
-        )
+        agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
+        agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
         from app.core.agent_runtime import resolve_tts_runtime
 
         tts_provider_slug = (
@@ -313,9 +307,7 @@ class ConversationOrchestrator:
             if self._h.agent
             else ""
         )
-        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(
-            tts_provider_slug
-        )
+        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
         if elevenlabs_audio_tags_enabled:
             output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
                 get_elevenlabs_voice_prompt_rule_lines()
@@ -325,11 +317,11 @@ class ConversationOrchestrator:
                 "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
                 "Prosody is handled by the system."
             )
-            no_ssml_rule_base = "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+            no_ssml_rule_base = (
+                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+            )
             no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(
-            tts_provider_slug
-        )
+        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
         # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
         # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
         # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
@@ -349,11 +341,10 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
-{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -361,7 +352,7 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once acknowledged.
+1. NO REPETITION: If the history shows you asked a question, move to the next point.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
 4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
@@ -392,20 +383,14 @@ Continue the conversation based on the history above. Be {agent_name}."""
         flow_prompt_override = None
         call_flow = getattr(self._h, "call_flow", None)
         if call_flow:
-            if (
-                getattr(call_flow, "current_prompt", None)
-                and call_flow.current_prompt.prompt_text
-            ):
+            if getattr(call_flow, "current_prompt", None) and call_flow.current_prompt.prompt_text:
                 flow_prompt_override = call_flow.current_prompt.prompt_text
             elif call_flow.current_prompt_id and getattr(self._h, "db", None):
                 try:
                     from sqlalchemy import select
                     from app.models.prompt_version import PromptVersion
-
                     pv = self._h.db.execute(
-                        select(PromptVersion).where(
-                            PromptVersion.id == call_flow.current_prompt_id
-                        )
+                        select(PromptVersion).where(PromptVersion.id == call_flow.current_prompt_id)
                     ).scalar_one_or_none()
                     if pv and pv.prompt_text:
                         flow_prompt_override = pv.prompt_text
@@ -429,14 +414,13 @@ These rules override any conflicting custom instructions below. Never deviate fr
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # CUSTOM INSTRUCTIONS
 {effective_custom_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
@@ -446,18 +430,15 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, phone, email, address, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it. Do not restart from the beginning of your flow mid-call. If the caller corrects a previously given answer, acknowledge it and continue from the current step, not step one.
-2. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
+2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
-        elif (
-            self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt
-        ):
+        elif self._h.agent and self._h.agent.model and self._h.agent.model.system_prompt:
             effective_model_prompt = (
                 batch_prompt_override
                 or ab_prompt_override
@@ -472,14 +453,13 @@ These rules override any conflicting model instructions below. Never deviate fro
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
-5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # MODEL INSTRUCTIONS
 {effective_model_prompt}
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 
@@ -488,9 +468,8 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, phone, email, address, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it. Do not restart from the beginning of your flow mid-call. If the caller corrects a previously given answer, acknowledge it and continue from the current step, not step one.
-2. NO REPETITION: Do not repeat questions. Move to the next point.
-3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. NO REPETITION: Do not repeat questions. Move to the next point.
+2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -501,11 +480,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             system_prompt = base_prompt
 
         call_policy_block = agent_service.build_call_policy_block(
-            transfer_route=(
-                getattr(self._h.agent, "transfer_route", None)
-                if self._h.agent
-                else None
-            ),
+            transfer_route=getattr(self._h.agent, "transfer_route", None) if self._h.agent else None,
         )
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
@@ -589,9 +564,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         )
                         logger.debug("[RAG prefetch] awaited in-flight prefetch")
                 else:
-                    from app.services.kb_retrieval_service import (
-                        retrieve_kb_context_for_turn,
-                    )
+                    from app.services.kb_retrieval_service import retrieve_kb_context_for_turn
                     from app.utils.redis_client import get_redis
 
                     kb_context_block, kb_latency_ms = await asyncio.wait_for(
@@ -651,8 +624,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
             except Exception as exc:
                 logger.error(
-                    "HubSpot CRM context lookup failed; proceeding without context: %s",
-                    exc,
+                    "HubSpot CRM context lookup failed; proceeding without context: %s", exc
                 )
 
         if crm_context_block:
@@ -683,8 +655,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 )
             except Exception as exc:
                 logger.error(
-                    "Salesforce CRM context lookup failed; proceeding without context: %s",
-                    exc,
+                    "Salesforce CRM context lookup failed; proceeding without context: %s", exc
                 )
 
         if salesforce_context_block:
@@ -755,33 +726,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             else:
                 system_prompt = system_prompt + "\n\n" + caller_memory_block
 
-        # Backend-owned contact intake ("already collected, do not re-ask")
-        # block — deterministic complement to the "NO CONFIRMATION LOOPS"
-        # grounding rule above. Cheap in-memory read of call_metadata (no DB
-        # round trip). Empty string when nothing is confirmed yet, so calls
-        # that never trigger contact intake see no prompt change at all.
-        contact_intake_block = ""
-        if self._h.call_session:
-            try:
-                from app.services.call_session_contact_state import (
-                    build_contact_intake_prompt_block,
-                    get_contact_intake,
-                )
-
-                contact_intake_block = build_contact_intake_prompt_block(
-                    get_contact_intake(self._h.call_session)
-                )
-            except Exception as exc:
-                logger.debug("Contact intake prompt block build failed: %s", exc)
-
-        if contact_intake_block:
-            anchor = "# CONVERSATION STATE"
-            if anchor in system_prompt:
-                system_prompt = system_prompt.replace(
-                    anchor, contact_intake_block + "\n\n" + anchor, 1
-                )
-            else:
-                system_prompt = system_prompt + "\n\n" + contact_intake_block
+        # F-08: Returning caller greeting differentiation
+        if caller_memory_block and caller_memory_block.strip():
+            returning_caller_instruction = (
+                "\n\nIMPORTANT — RETURNING CALLER: This caller has contacted us before. "
+                "Open by warmly acknowledging you recognize them — use their name if known "
+                "and naturally reference their last interaction (e.g. 'Good to hear from you "
+                "again — last time you were asking about X'). Do NOT use a generic opening greeting.\n"
+            )
+        else:
+            returning_caller_instruction = ""
+        if returning_caller_instruction:
+            system_prompt = system_prompt + returning_caller_instruction
 
         # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
         # in the prompt with tenant-configured HubSpot contact field values.
@@ -811,23 +767,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     exc,
                 )
 
-        # System Webhooks: inject any {{key}} variables returned by the Pre-Inbound
-        # Call Webhook (see app/services/system_webhook_service.py). No-op (cheap,
-        # safe) when call_metadata has no webhook_variables — never raises.
-        try:
-            call_session = getattr(self._h, "call_session", None)
-            _webhook_vars = (
-                call_session.call_metadata.get("webhook_variables", {})
-                if call_session and call_session.call_metadata
-                else {}
-            )
-            if _webhook_vars:
-                system_prompt = render_template(system_prompt, _webhook_vars)
-        except Exception as exc:
-            logger.debug(
-                "System webhook variable injection (system prompt) failed: %s", exc
-            )
-
         return system_prompt
 
     async def generate_and_stream_response(
@@ -853,32 +792,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
                 greeting_text = None
                 if self._h.agent:
-                    greeting_text = (
-                        getattr(self._h.agent, "greeting_message", None) or ""
-                    ).strip() or None
+                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
                     if not greeting_text:
-                        greeting_text = (
-                            getattr(self._h.agent, "first_message", None) or ""
-                        ).strip() or None
+                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
                 if not greeting_text:
                     greeting_text = "hello how are you"
-
-                # System Webhooks: inject any {{key}} variables returned by the
-                # Pre-Inbound Call Webhook before this text reaches any hand-off
-                # (native Gemini/OpenAI Realtime session or TtsPipeline below).
-                try:
-                    call_session = getattr(self._h, "call_session", None)
-                    _webhook_vars = (
-                        call_session.call_metadata.get("webhook_variables", {})
-                        if call_session and call_session.call_metadata
-                        else {}
-                    )
-                    if _webhook_vars:
-                        greeting_text = render_template(greeting_text, _webhook_vars)
-                except Exception as exc:
-                    logger.debug(
-                        "System webhook variable injection (greeting) failed: %s", exc
-                    )
 
                 # Add greeting to transcript
                 await self._h._add_to_transcript("agent", greeting_text, "greeting")
@@ -898,8 +816,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, turn_complete=True)
                         except Exception as exc:
                             logger.warning(
-                                "[GeminiLive] failed to send greeting via live session: %s",
-                                exc,
+                                "[GeminiLive] failed to send greeting via live session: %s", exc
                             )
                     else:
                         logger.debug(
@@ -917,8 +834,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             await session.send_text(greeting_text, respond=True)
                         except Exception as exc:
                             logger.warning(
-                                "[OpenAIRealtime] failed to send greeting via live session: %s",
-                                exc,
+                                "[OpenAIRealtime] failed to send greeting via live session: %s", exc
                             )
                     else:
                         logger.debug(
@@ -945,9 +861,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
-            self._h._prev_tts_tail = (
-                b""  # Reset crossfade state so new response starts clean
-            )
+            self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
             # Reset ElevenLabs `previous_text` continuity tracking (Phase 4D-2).
             # Unconditional, every turn — NOT just on barge-in — because
             # cancel_current_and_clear_queue()'s reset only fires on an actual
@@ -956,33 +870,14 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # transports since this orchestrator is transport-agnostic.
             if self._h._tts_pipeline:
                 self._h._tts_pipeline.reset_previous_text_continuity()
-            self._h._twilio_buffer_primed = (
-                False  # Ensure micro-fade and buffer priming for new utterance
-            )
+            self._h._twilio_buffer_primed = False  # Ensure micro-fade and buffer priming for new utterance
 
-            # If quick ack is enabled (>0 probability), fire in background — never block prompt generation
-            if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) > 0.0:
-                asyncio.create_task(self.send_quick_acknowledgement(user_text))
-
-            _vm = getattr(self._h, "_voice_metrics", None)
-            if _vm:
-                _vm.transport = (
-                    "livekit_demo"
-                    if "LiveKit" in self._h.__class__.__name__
-                    else "telephony"
-                )
-                _agent = getattr(self._h, "agent", None)
-                _vm.agent_id = str(getattr(_agent, "id", "")) if _agent else None
-                _vm.mark_rag_start()
+            # Send quick acknowledgement for longer queries (instant from cache!)
+            await self.send_quick_acknowledgement(user_text)
 
             system_prompt = await self.build_system_prompt(user_text, confidence)
-            if _vm:
-                _vm.mark_prompt_ready()
 
-            from app.core.agent_runtime import (
-                llm_service_for_provider,
-                resolve_llm_runtime,
-            )
+            from app.core.agent_runtime import llm_service_for_provider, resolve_llm_runtime
 
             llm_runtime = resolve_llm_runtime(self._h.agent)
             model_name = llm_runtime.model_name
@@ -990,8 +885,6 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             temperature = llm_runtime.temperature
             max_tokens = llm_runtime.max_tokens
             llm_service = llm_service_for_provider(llm_runtime.provider_slug)
-            if _vm:
-                _vm.provider = llm_runtime.provider_slug
 
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
@@ -1005,16 +898,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
             logger.debug(
                 "[LLM] request sent: provider=%s model=%s user_text_len=%s",
-                llm_runtime.provider_slug,
-                model_name,
-                len(user_text or ""),
+                llm_runtime.provider_slug, model_name, len(user_text or ""),
             )
-            if _vm:
-                _vm.mark_llm_request()
 
-            async def try_stream(
-                service, model: str, api_key_override: str | None = None
-            ) -> str:
+            async def try_stream(service, model: str, api_key_override: str | None = None) -> str:
                 nonlocal chunk_counter
 
                 response_accum = ""
@@ -1027,12 +914,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
                         return ""
-                    out = text.replace("[END_CALL]", "").replace(
-                        "[SCREENING_QUALIFIED]", ""
-                    )
-                    out = re.sub(
-                        r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE
-                    )
+                    out = text.replace("[END_CALL]", "").replace("[SCREENING_QUALIFIED]", "")
+                    out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
                     out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
                     out = re.sub(r"\[CHECK_SLOTS:[^\]]*\]", "", out)
                     out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
@@ -1088,17 +971,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     flush_idx = _find_flush_index(tts_buffer)
                     now_ts = time.perf_counter()
-                    if (
-                        flush_idx is None
-                        and (now_ts - last_flush_ts) >= _tts_time_flush_s
-                    ):
+                    if flush_idx is None and (now_ts - last_flush_ts) >= _tts_time_flush_s:
                         flush_idx = _find_time_flush_index(tts_buffer)
 
-                    if (
-                        flush_idx is not None
-                        and not self._h._tts_cancel.is_set()
-                        and self._h._tts_pipeline
-                    ):
+                    if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                         to_speak = tts_buffer[:flush_idx].strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
                         if to_speak:
@@ -1124,11 +1000,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     transfer_after = True
                     end_call_after = False
                 final_text = _strip_control_tokens(tts_buffer).strip()
-                if (
-                    final_text
-                    and not self._h._tts_cancel.is_set()
-                    and self._h._tts_pipeline
-                ):
+                if final_text and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
                         {
@@ -1143,15 +1015,11 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
-                elif (
-                    transfer_after
-                    and not self._h._tts_cancel.is_set()
-                    and self._h._tts_pipeline
-                ):
+                elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
                         {
-                            "text": "One moment.",
+                            "text": random.choice(_TRANSFER_PHRASES),
                             "chunk_id": chunk_counter,
                             "use_ssml": self._h._use_ssml,
                             "is_final": True,
@@ -1166,37 +1034,20 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             final_text = ""
             try:
-                final_text = await try_stream(
-                    llm_service, model_name, api_key_override=api_key
-                )
+                final_text = await try_stream(llm_service, model_name, api_key_override=api_key)
                 logger.debug(
                     "[LLM] response received: chars=%s chunks_queued=%s",
-                    len(final_text or ""),
-                    chunk_counter,
+                    len(final_text or ""), chunk_counter,
                 )
             except Exception as e:
                 logger.error(f"LLM streaming failed: {e}", exc_info=True)
 
             if final_text:
-                transcript_text = (
-                    re.sub(
-                        r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
-                    )
-                    .replace("[END_CALL]", "")
-                    .strip()
-                )
+                transcript_text = re.sub(
+                    r"\[\s*TRANSFER_CALL\s*\]", "", final_text, flags=re.IGNORECASE
+                ).replace("[END_CALL]", "").strip()
                 if transcript_text:
-                    await self._h._add_to_transcript(
-                        "agent", transcript_text, "agent_response"
-                    )
-
-            if _vm:
-                _vm.mark_turn_complete()
-                _vm.log_turn_summary(
-                    logger,
-                    user_preview=user_text,
-                    session_hint=str(getattr(self._h, "call_session_id", "") or ""),
-                )
+                    await self._h._add_to_transcript("agent", transcript_text, "agent_response")
 
         except Exception as e:
             logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
@@ -1228,9 +1079,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Interim path: barge-in, early LLM start.
             await self.process_interim(text, confidence)
             # Reflect whether we decided to start an interim-driven response.
-            actions.start_llm_response = bool(
-                getattr(self._h, "_turn_response_started", False)
-            )
+            actions.start_llm_response = bool(getattr(self._h, "_turn_response_started", False))
             return actions
 
         # Full LLM path matches bidirectional _process_transcript (commit + no duplicate interim)
@@ -1241,3 +1090,4 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         actions.should_persist_history = True
 
         return actions
+

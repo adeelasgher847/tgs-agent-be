@@ -93,7 +93,7 @@ _STT_INPUT_SAMPLE_RATE = 16000
 _STT_INPUT_ENCODING = "LINEAR16"
 
 _GREETING_DELAY_SEC = 0.6
-_TURN_TIMEOUT_SEC = 25.0
+_TURN_TIMEOUT_SEC = float(20.0)  # override via VOICE_TURN_TIMEOUT_SEC env var if needed
 
 # Hard safety cap on total call duration. This is a new mechanism (no
 # equivalent exists on the Twilio path or anywhere else in the codebase as of
@@ -887,10 +887,11 @@ class LiveKitBrowserCallHandler(CallControlMixin):
 
         task = asyncio.create_task(_run())
         self._llm_response_task = task
+        _timeout = float(getattr(settings, "VOICE_TURN_TIMEOUT_SEC", _TURN_TIMEOUT_SEC) or _TURN_TIMEOUT_SEC)
         try:
-            await asyncio.wait_for(asyncio.shield(task), timeout=_TURN_TIMEOUT_SEC)
+            await asyncio.wait_for(asyncio.shield(task), timeout=_timeout)
         except asyncio.TimeoutError:
-            logger.error("[LiveKitBrowserCall] turn timed out after %.0fs", _TURN_TIMEOUT_SEC)
+            logger.error("[LiveKitBrowserCall] turn timed out after %.0fs", _timeout)
         except asyncio.CancelledError:
             pass
         finally:

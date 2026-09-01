@@ -92,7 +92,7 @@ class EmailService:
             """
             return self._send_email(to_email=email, subject=subject, html_body=body)
         except Exception as e:
-            logger.error(f"Error sending password reset email to {email}: {str(e)}")
+            logger.error("Error sending password reset email to %s: %s", email, e)
             return False
 
     def _send_email(
@@ -145,9 +145,9 @@ class EmailService:
             )
             status_code = response.get("ResponseMetadata", {}).get("HTTPStatusCode", 200)
             if 200 <= status_code < 300:
-                logger.info(f"Email sent successfully to {to_email}")
+                logger.info("Email sent successfully to %s", to_email)
                 return True
-            logger.error(f"Failed to send email to {to_email}. Status: {status_code}")
+            logger.error("Failed to send email to %s. Status: %s", to_email, status_code)
             return False
         except ClientError as e:
             error_code = e.response.get("Error", {}).get("Code", "Unknown")
@@ -164,7 +164,7 @@ class EmailService:
                 )
             return False
         except Exception as e:
-            logger.error(f"Unexpected error sending email via SES to {to_email}: {str(e)}")
+            logger.error("Unexpected error sending email via SES to %s: %s", to_email, e)
             return False
 
     def send_invite_email(self, email: str, invite_token: str, inviter_name: str, tenant_name: str) -> bool:
@@ -186,7 +186,7 @@ class EmailService:
             )
             return self._send_email(to_email=email, subject=subject, html_body=html_body)
         except Exception as e:
-            logger.error(f"Error sending invite email to {email}: {str(e)}")
+            logger.error("Error sending invite email to %s: %s", email, e)
             return False
 
     def send_data_export_ready_email(
@@ -211,7 +211,7 @@ class EmailService:
             """
             return self._send_email(to_email=email, subject=subject, html_body=body)
         except Exception as e:
-            logger.error(f"Error sending data export ready email to {email}: {str(e)}")
+            logger.error("Error sending data export ready email to %s: %s", email, e)
             return False
 
     def send_generic_email(
