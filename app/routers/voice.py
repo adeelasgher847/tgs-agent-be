@@ -217,6 +217,18 @@ async def handle_incoming_call(
                 "Sorry, this number is not configured for inbound service."
             )
 
+        # Reconnect detection: look for a recently dropped session from the
+        # same caller so we can open with a personalised reconnect greeting
+        # instead of the generic greeting_message.
+        _recent_dropped = None
+        if from_number:
+            try:
+                _recent_dropped = call_session_service.find_recent_dropped_session(
+                    db, from_number, phone_number.tenant_id, within_seconds=300
+                )
+            except Exception as _exc:
+                logger.warning("Reconnect detection failed: %s", _exc)
+
         if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
             is_valid_signature = False
             # Twilio signs form params as a dict — pass parsed fields, not raw body.
@@ -570,12 +582,27 @@ async def handle_incoming_call(
         try:
             if resolved_flow is not None:
                 call_session.call_flow_id = resolved_flow.id
+            extra_meta: dict = {}
             if webhook_variables:
+                extra_meta["webhook_variables"] = webhook_variables
+            if _recent_dropped is not None:
+                extra_meta["reconnect_greeting"] = (
+                    "Welcome back! It looks like we got disconnected a moment ago. "
+                    "No worries — I'm here and ready to continue where we left off. "
+                    "How can I help you?"
+                )
+                extra_meta["reconnect_from_session_id"] = str(_recent_dropped.id)
+                logger.info(
+                    "Reconnect detected for %s — prior session %s",
+                    from_number,
+                    _recent_dropped.id,
+                )
+            if extra_meta:
                 call_session.call_metadata = {
                     **(call_session.call_metadata or {}),
-                    "webhook_variables": webhook_variables,
+                    **extra_meta,
                 }
-            if resolved_flow is not None or webhook_variables:
+            if resolved_flow is not None or extra_meta:
                 db.commit()
         except Exception as exc:  # defensive — never let this break inbound calls
             logger.warning(

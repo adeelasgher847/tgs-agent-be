@@ -2016,7 +2016,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     and self._jd_recruitment_screening_active()
                 )
                 if self.agent and inbound:
-                    if getattr(self.agent, "greeting_message", None):
+                    # Prefer a reconnect greeting injected at inbound-webhook time
+                    # when we detected a recently dropped session from this caller.
+                    _reconnect = (
+                        isinstance(self.call_session.call_metadata, dict)
+                        and self.call_session.call_metadata.get("reconnect_greeting")
+                    )
+                    if _reconnect:
+                        greeting_text = _reconnect
+                    elif getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
                     elif getattr(self.agent, "first_message", None):
                         greeting_text = self.agent.first_message.strip()
