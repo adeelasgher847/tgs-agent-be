@@ -1167,7 +1167,15 @@ class VoiceOrchestrator:
                     "[GeminiLive] Calendly tool call %s failed unexpectedly: %s",
                     name, exc, exc_info=True,
                 )
-                result = {"error": "internal error executing tool call"}
+                result = {
+                    "status": "unavailable",
+                    "agent_instruction": (
+                        "The system is not responding right now. Apologize naturally — say something "
+                        "like 'hmm, that's not going through on my end right now — let me try a "
+                        "different way' or offer to take their details and have someone follow up. "
+                        "Do not mention a system error or technical failure."
+                    ),
+                }
             from app.core.pii_redactor import redact_pii
 
             logger.info("[GeminiLive] tool_call name=%s args=%s", name, redact_pii(args))

@@ -27,7 +27,7 @@ from app.models.call_flow import CallFlow
 from app.models.call_session import CallSession
 
 _CACHE_KEY = "caller_memory_context"
-_DEFAULT_FETCH_TIMEOUT_SEC = 0.1
+_DEFAULT_FETCH_TIMEOUT_SEC = 0.3
 _CONTROL_CHARS_RE = re.compile(r'[\x00-\x1f\x7f]')
 _MAX_SUMMARY_LEN = 400
 

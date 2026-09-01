@@ -6,6 +6,7 @@ Handles call termination (goodbye, voicemail), transfer routing, and transcript 
 from __future__ import annotations
 
 import asyncio
+import random
 from datetime import datetime, timezone
 import re
 from typing import TYPE_CHECKING, Any
@@ -28,6 +29,17 @@ from app.utils.voice_twilio_utils import (
 
 if TYPE_CHECKING:
     pass
+
+# F-02 / F-06: Silence watchdog phrase pools
+_SILENCE_REPROMPTS = [
+    "Still there? Take your time.",
+    "Just checking — are you still on the line?",
+    "I'm still here whenever you're ready.",
+]
+_SILENCE_GOODBYES = [
+    "It looks like we may have lost you — feel free to call back anytime. Goodbye!",
+    "I'll go ahead and let you go — don't hesitate to call again. Take care!",
+]
 
 
 class CallControlMixin:
@@ -272,6 +284,13 @@ class CallControlMixin:
                     "(session=%s)",
                     self.call_session.id if self.call_session else None,
                 )
+                # F-10: speak an apology before shutting down
+                if getattr(self, "_tts_pipeline", None):
+                    await self._tts_pipeline.queue_tts({"text": (
+                        "I'm sorry, I wasn't able to connect you at this time. "
+                        "Please try calling back and ask to speak with a team member directly. Goodbye!"
+                    )})
+                await asyncio.sleep(4.5)
                 asyncio.create_task(self._full_shutdown())
                 return
 
@@ -1226,7 +1245,7 @@ class CallControlMixin:
                     ):
                         msg = reminder_messages[retry_idx]
                     else:
-                        msg = "Are you still there?"
+                        msg = _SILENCE_REPROMPTS[retry_idx % len(_SILENCE_REPROMPTS)]
 
                     logger.info(
                         "Silence timeout (%ss) reached; playing reminder %d/%d: %r",
@@ -1263,6 +1282,26 @@ class CallControlMixin:
                         end_call_after_reminder,
                     )
                     try:
+                        # Try to escalate to human agent before hanging up
+                        transfer_route = getattr(
+                            getattr(self, "agent", None), "transfer_route", None
+                        )
+                        if transfer_route:
+                            try:
+                                await self._play_tts_message(
+                                    "Let me connect you with someone who can help. One moment."
+                                )
+                                await asyncio.sleep(2)
+                            except Exception:
+                                pass
+                            await self._transfer_after_agent_request()
+                            return
+                        # No transfer route — speak a warm goodbye before hanging up
+                        try:
+                            await self._play_tts_message(random.choice(_SILENCE_GOODBYES))
+                            await asyncio.sleep(3.5)
+                        except Exception:
+                            pass
                         self._call_ended = True
                         if self.call_session:
                             updated = call_session_service.update_call_session_status(

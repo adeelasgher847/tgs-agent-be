@@ -913,6 +913,32 @@ class CallSessionService:
         except Exception as e:
             logger.error(f"Error broadcasting transcript update: {e}")
 
+    def find_recent_dropped_session(
+        self,
+        db: Session,
+        from_number: str,
+        tenant_id: uuid.UUID,
+        within_seconds: int = 300,
+    ) -> "CallSession | None":
+        """
+        Find a recent incomplete or failed session from the same caller.
+        Used for call-drop reconnect recognition (F-11).
+        """
+        from datetime import datetime, timedelta
+
+        cutoff = datetime.utcnow() - timedelta(seconds=within_seconds)
+        return (
+            db.query(CallSession)
+            .filter(
+                CallSession.from_number == from_number,
+                CallSession.tenant_id == tenant_id,
+                CallSession.created_at >= cutoff,
+                CallSession.status.in_(["no_answer", "failed", "in_progress"]),
+            )
+            .order_by(CallSession.created_at.desc())
+            .first()
+        )
+
     async def _broadcast_metadata_update(self, call_session_id: str, metadata: dict):
         """Broadcast call metadata update to WebSocket connections"""
         try:
