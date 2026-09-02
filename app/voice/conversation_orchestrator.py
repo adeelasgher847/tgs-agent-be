@@ -7,13 +7,6 @@ import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
 
-# F-05: Warm transfer phrase pool
-_TRANSFER_PHRASES = [
-    "Let me connect you with a specialist — just one moment.",
-    "I'm going to bring in someone who can help you further — hold just a second.",
-    "I'll transfer you now — someone will be right with you.",
-]
-
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
@@ -26,6 +19,13 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
+
+# F-05: Warm transfer phrase pool
+_TRANSFER_PHRASES = [
+    "Let me connect you with a specialist — just one moment.",
+    "I'm going to bring in someone who can help you further — hold just a second.",
+    "I'll transfer you now — someone will be right with you.",
+]
 
 
 # ---------------------------------------------------------------------------
