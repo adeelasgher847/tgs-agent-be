@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.core.config import settings
 from app.services.livekit_recording_service import livekit_recording_service
 
 
@@ -86,6 +87,57 @@ async def test_start_room_recording_calls_egress_with_unwrapped_request():
     assert called_arg.room_name == f"room_{call_id}"
     assert called_arg.audio_only is True
     assert called_arg.file.filepath == gcs_path
+
+
+@pytest.mark.asyncio
+async def test_start_room_recording_uses_assume_role_not_static_credentials(monkeypatch):
+    """S3Upload must be built from LIVEKIT_S3_ASSUME_ROLE_ARN /
+    LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID and must never carry a static
+    access_key/secret — LiveKit's own AWS SDK performs STS AssumeRole (or
+    falls back to its own ambient credentials) rather than this app passing
+    static AWS keys through.
+    """
+    monkeypatch.setattr(settings, "S3_RECORDINGS_BUCKET", "fake-bucket")
+    monkeypatch.setattr(settings, "AWS_REGION_NAME", "us-east-1")
+    monkeypatch.setattr(
+        settings,
+        "LIVEKIT_S3_ASSUME_ROLE_ARN",
+        "arn:aws:iam::123456789012:role/livekit-s3-uploader",
+    )
+    monkeypatch.setattr(settings, "LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID", "ext-id-123")
+
+    call_id = uuid.uuid4()
+    workspace_id = uuid.uuid4()
+    gcs_path = "recordings/some-call.ogg"
+
+    fake_egress_info = MagicMock()
+    fake_egress_info.egress_id = "EG_abc123"
+    start_egress_mock = AsyncMock(return_value=fake_egress_info)
+    lk_api_cls = _make_lk_api_mock(start_egress_mock)
+
+    with (
+        patch.object(
+            livekit_recording_service,
+            "_get_credentials",
+            return_value=("wss://fake.livekit", "fake-key", "fake-secret"),
+        ),
+        patch("livekit.api.LiveKitAPI", lk_api_cls),
+    ):
+        await livekit_recording_service.start_room_recording(
+            call_id=call_id,
+            workspace_id=workspace_id,
+            gcs_path=gcs_path,
+        )
+
+    (called_arg,) = start_egress_mock.call_args.args
+    s3_upload = called_arg.file.s3
+
+    assert s3_upload.bucket == "fake-bucket"
+    assert s3_upload.region == "us-east-1"
+    assert s3_upload.assume_role_arn == "arn:aws:iam::123456789012:role/livekit-s3-uploader"
+    assert s3_upload.assume_role_external_id == "ext-id-123"
+    assert s3_upload.access_key == ""
+    assert s3_upload.secret == ""
 
 
 @pytest.mark.asyncio

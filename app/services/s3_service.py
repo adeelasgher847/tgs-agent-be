@@ -17,37 +17,17 @@ from app.core.logger import logger
 
 
 def _client_kwargs() -> dict:
-    """Build kwargs for a boto3 client, preferring explicit static credentials
-    but falling back to boto3's own Default Credential Provider Chain (ECS
-    task role, EC2 instance profile, IRSA, ~/.aws, etc.) when none are set.
+    """Build kwargs for boto3 clients, relying strictly on the AWS IAM Task
+    Role (ambient credentials from boto3's Default Credential Provider
+    Chain — ECS task role, EC2 instance profile, IRSA, etc.). No static
+    AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/AWS_SESSION_TOKEN are read or
+    passed here by design.
     """
     kwargs: dict = {}
 
     region_name = (settings.AWS_REGION_NAME or "").strip()
     if region_name:
         kwargs["region_name"] = region_name
-
-    access_key = (settings.AWS_ACCESS_KEY_ID or "").strip()
-    secret_key = (settings.AWS_SECRET_ACCESS_KEY or "").strip()
-    session_token = (settings.AWS_SESSION_TOKEN or "").strip()
-
-    if access_key and secret_key:
-        kwargs["aws_access_key_id"] = access_key
-        kwargs["aws_secret_access_key"] = secret_key
-        # A session token without base static keys is meaningless — only
-        # attach it when the static credential pair is also present.
-        if session_token:
-            kwargs["aws_session_token"] = session_token
-    elif access_key or secret_key:
-        # Only one of the pair is set — likely a config typo. Silently
-        # falling through to the ambient credential chain (task role / IRSA
-        # / ~/.aws) could resolve a different AWS identity than intended, so
-        # this is worth a log line even though it's not fatal.
-        logger.warning(
-            "AWS static credentials are only partially configured "
-            "(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must both be set) "
-            "— falling back to the default credential provider chain."
-        )
 
     return kwargs
 

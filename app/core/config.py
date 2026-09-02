@@ -340,12 +340,7 @@ class ServerSettings(BaseModel):
     # GCS knowledge base
     gcs_kb_bucket: str = Field(default="", validation_alias="GCS_KB_BUCKET")
     gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
-    # AWS S3 storage
-    aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: str = Field(
-        default="", validation_alias="AWS_SECRET_ACCESS_KEY"
-    )
-    aws_session_token: str = Field(default="", validation_alias="AWS_SESSION_TOKEN")
+    # AWS S3 storage — authentication via ambient IAM Task Role, no static keys.
     aws_region_name: str = Field(
         default="us-east-1", validation_alias="AWS_REGION_NAME"
     )
@@ -456,8 +451,9 @@ class Settings(BaseSettings):
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
     N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
-    # Email settings (AWS SES) — sender identity; delivery uses AWS_ACCESS_KEY_ID /
-    # AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME (shared with S3, declared below).
+    # Email settings (AWS SES) — sender identity; delivery relies on the ambient
+    # AWS IAM Task Role / Default Credential Provider Chain, region via
+    # AWS_REGION_NAME (shared with S3, declared below).
     AWS_SES_SENDER_EMAIL: str = ""
 
     # Password reset settings
@@ -1077,13 +1073,18 @@ class Settings(BaseSettings):
     GCS_KB_BUCKET: str = ""
     GCS_KB_PREFIX: str = "kb-files"
 
-    # AWS S3 storage (GCS → S3 migration)
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
-    AWS_SESSION_TOKEN: str = ""
+    # AWS S3 storage (GCS → S3 migration). Authentication is via the ambient
+    # AWS IAM Task Role / Default Credential Provider Chain — no static keys.
     AWS_REGION_NAME: str = "us-east-1"
     S3_RECORDINGS_BUCKET: str = ""
     S3_KB_BUCKET: str = ""
+
+    # LiveKit S3 egress — STS AssumeRole config for LiveKit's own AWS SDK to
+    # upload call recordings to S3 (the LiveKit server process, not this app,
+    # assumes the role). Optional: when LIVEKIT_S3_ASSUME_ROLE_ARN is unset,
+    # LiveKit falls back to whatever ambient credentials it has.
+    LIVEKIT_S3_ASSUME_ROLE_ARN: str = ""
+    LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID: str = ""
 
     # HIPAA — Google Cloud DLP + CMEK
     # GCP_PROJECT_ID is declared above (line ~245); no second declaration here.
@@ -1312,9 +1313,6 @@ class Settings(BaseSettings):
             gcs_recordings_prefix=self.GCS_RECORDINGS_PREFIX,
             gcs_kb_bucket=self.GCS_KB_BUCKET,
             gcs_kb_prefix=self.GCS_KB_PREFIX,
-            aws_access_key_id=self.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY,
-            aws_session_token=self.AWS_SESSION_TOKEN,
             aws_region_name=self.AWS_REGION_NAME,
             s3_recordings_bucket=self.S3_RECORDINGS_BUCKET,
             s3_kb_bucket=self.S3_KB_BUCKET,
