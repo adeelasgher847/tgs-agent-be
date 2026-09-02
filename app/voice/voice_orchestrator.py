@@ -367,6 +367,18 @@ class VoiceOrchestrator:
             # _feed_gemini_live_audio / _on_gemini_live_audio_chunk). The
             # pickup-detection/grace-period gating above is audio-format
             # agnostic (RMS over MULAW) and stays unchanged for both paths.
+            #
+            # KNOWN GAP: generate_and_stream_response() — where
+            # token_budget_service's daily-budget gate/recording live — is
+            # never called for turns on this fork (only for the one-time
+            # scripted greeting, which returns before reaching the gate).
+            # tenant.llm_token_budget_daily is therefore NOT enforced and no
+            # usage is recorded for Gemini Live calls. Deliberately out of
+            # scope for the initial per-tenant token budget framework: these
+            # models don't expose a separate prompt/response text to run the
+            # len(text)/3.8 estimate against, so budget enforcement for
+            # native-audio calls needs its own design (e.g. audio-duration-
+            # based estimation, or the session's own usage reporting if any).
             if self._is_gemini_live:
                 await self._feed_gemini_live_audio(h, audio_data)
                 return
@@ -377,6 +389,9 @@ class VoiceOrchestrator:
             # through with NO conversion (see _feed_openai_realtime_audio /
             # app.services.openai_realtime_service's module docstring) —
             # unlike Gemini Live, which forces a PCM16 resample round-trip.
+            #
+            # KNOWN GAP: same token_budget_service gap noted above for the
+            # Gemini Live fork applies here too — not enforced/recorded.
             if self._is_openai_realtime:
                 await self._feed_openai_realtime_audio(h, audio_data)
                 return

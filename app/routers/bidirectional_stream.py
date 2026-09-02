@@ -111,6 +111,7 @@ from app.core.logger import logger
 # Deepgram STT is used via SttPipeline (app/voice/stt_pipeline.py).
 
 from app.services.call_session_service import call_session_service
+from app.services.token_budget_service import token_budget_service
 from app.services.voice_screening_qualification_service import (
     is_jd_recruitment_voice_context,
     persist_voice_screening_status_signal,
@@ -2444,7 +2445,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._twilio_buffer_primed = False
 
                 return  # Done! No LLM needed for greeting
-            
+
+            if self.call_session and self.db:
+                try:
+                    within_budget, _usage, _limit = await token_budget_service.check_daily_budget(
+                        self.db, self.call_session.tenant_id
+                    )
+                except Exception as exc:
+                    logger.warning("Token budget check failed; failing open: %s", exc)
+                    within_budget = True
+                if not within_budget:
+                    refusal_text = (
+                        "This workspace has reached its daily AI usage limit. Please "
+                        "contact support or your administrator."
+                    )
+                    await self._add_to_transcript("agent", refusal_text, "system")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": refusal_text,
+                            "chunk_id": "budget_exceeded",
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                        })
+                    self._twilio_buffer_primed = False
+                    return
+
             # Reset TTS state for new response generation
             self._tts_cancel.clear()
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
@@ -2837,6 +2862,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
 
             if final_text:
+                if self.call_session:
+                    try:
+                        _estimated_tokens = int((len(system_prompt or "") + len(final_text or "")) / 3.8)
+                        if _estimated_tokens > 0:
+                            asyncio.create_task(
+                                token_budget_service.record_daily_tokens(
+                                    self.call_session.tenant_id, _estimated_tokens
+                                )
+                            )
+                    except Exception as exc:
+                        logger.debug("Token budget recording failed: %s", exc)
+
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = _RE_VOICE_END_CALL.sub(
                     "", self._strip_control_tokens_for_tts(final_text)

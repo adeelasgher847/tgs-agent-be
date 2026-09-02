@@ -18,7 +18,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from app.voice.conversation_orchestrator import ConversationOrchestrator
 from tests.voice.test_bracket_tag_prompt_consistency import _fake_livekit_handler
@@ -199,3 +199,128 @@ class TestReconnectGreetingOverride:
 
         assert greeting == "Hi there, thanks for calling!"
         assert greeting != RECONNECT_GREETING
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-tenant daily LLM token budget gate (app.services.token_budget_service)
+#
+# ConversationOrchestrator.generate_and_stream_response's non-greeting path
+# calls token_budget_service.check_daily_budget() right after the greeting
+# early-return, before building the system prompt / calling the LLM — mirrors
+# BidirectionalStreamHandler's equivalent gate (see the sibling coverage in
+# tests/test_interim_final_lockout_gate.py).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_budget_gate_orchestrator_handler():
+    h = _fake_livekit_handler(tts_slug="google")
+    h._voice_orchestrator = None  # bypass Gemini/OpenAI Realtime hand-off branches
+    # Budget gate only runs when both call_session and db are truthy.
+    h.db = MagicMock()
+    h.call_session = SimpleNamespace(
+        call_transcript=None,
+        call_metadata={},
+        tenant_id=uuid.uuid4(),
+    )
+    return h
+
+
+class TestConversationOrchestratorBudgetGate:
+    def test_budget_exceeded_blocks_turn_and_queues_refusal_without_llm(self):
+        h = _make_budget_gate_orchestrator_handler()
+        orchestrator = ConversationOrchestrator(h)
+        orchestrator.build_system_prompt = AsyncMock(
+            side_effect=AssertionError("LLM path must not be reached when budget is exceeded")
+        )
+
+        with patch(
+            "app.voice.conversation_orchestrator.token_budget_service.check_daily_budget",
+            new=AsyncMock(return_value=(False, 999999, 500000)),
+        ):
+            asyncio.run(
+                orchestrator.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+            )
+
+        orchestrator.build_system_prompt.assert_not_awaited()
+        h._tts_pipeline.queue_tts.assert_awaited_once()
+        queued = h._tts_pipeline.queue_tts.await_args.args[0]
+        assert "daily AI usage limit" in queued["text"]
+        assert queued["chunk_id"] == "budget_exceeded"
+
+        h._add_to_transcript.assert_awaited_once()
+        transcript_args = h._add_to_transcript.await_args.args
+        assert transcript_args[0] == "agent"
+        assert "daily AI usage limit" in transcript_args[1]
+
+    def test_budget_within_limit_proceeds_past_gate_to_llm_path(self):
+        h = _make_budget_gate_orchestrator_handler()
+        orchestrator = ConversationOrchestrator(h)
+        # Raising here is caught by generate_and_stream_response's own
+        # top-level except-Exception handler -- a clean, cheap "did we get
+        # past the gate?" signal without a heavy end-to-end LLM/TTS fixture.
+        orchestrator.build_system_prompt = AsyncMock(side_effect=RuntimeError("stop after gate"))
+
+        with patch(
+            "app.voice.conversation_orchestrator.token_budget_service.check_daily_budget",
+            new=AsyncMock(return_value=(True, 100, 500000)),
+        ):
+            asyncio.run(
+                orchestrator.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+            )
+
+        orchestrator.build_system_prompt.assert_awaited_once()
+        h._tts_pipeline.queue_tts.assert_not_awaited()
+
+
+class TestConversationOrchestratorTokenRecording:
+    def test_record_daily_tokens_invoked_after_successful_turn(self, monkeypatch):
+        """After a turn completes with non-empty response text,
+        token_budget_service.record_daily_tokens is fired (fire-and-forget)
+        with the call's tenant_id. Exhaustive coverage of the token-estimate
+        arithmetic itself lives in
+        tests/services/test_token_budget_service.py."""
+        h = _fake_livekit_handler(tts_slug="google")
+        h._voice_orchestrator = None
+        tenant_id = uuid.uuid4()
+        h.call_session = SimpleNamespace(
+            call_transcript=None,
+            call_metadata={},
+            tenant_id=tenant_id,
+        )
+        # db left None -> budget gate is skipped entirely (falsy `self._h.db`),
+        # isolating this test to the token-recording call site only.
+        h.db = None
+
+        async def _stub_stream(**kwargs):
+            yield "Sure, here is a short reply."
+
+        stub_service = MagicMock()
+        stub_service.stream_text = _stub_stream
+        monkeypatch.setattr(
+            "app.core.agent_runtime.llm_service_for_provider", lambda slug: stub_service
+        )
+
+        orchestrator = ConversationOrchestrator(h)
+
+        async def _run_and_drain_fire_and_forget_tasks():
+            await orchestrator.generate_and_stream_response(
+                "Hello there", 0.9, is_greeting=False
+            )
+            # record_daily_tokens is scheduled via asyncio.create_task
+            # (fire-and-forget) on THIS loop -- explicitly await it here
+            # rather than relying on asyncio.run()'s incidental shutdown
+            # behavior to let it complete before the loop closes.
+            pending = [t for t in asyncio.all_tasks() if t is not asyncio.current_task()]
+            if pending:
+                await asyncio.gather(*pending)
+
+        with patch(
+            "app.voice.conversation_orchestrator.token_budget_service.record_daily_tokens",
+            new=AsyncMock(return_value=0),
+        ) as mock_record:
+            asyncio.run(_run_and_drain_fire_and_forget_tasks())
+
+        mock_record.assert_called()
+        call_args = mock_record.call_args
+        assert call_args.args[0] == tenant_id
+        assert call_args.args[1] > 0

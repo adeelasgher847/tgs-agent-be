@@ -17,6 +17,7 @@ _TRANSFER_PHRASES = [
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
+from app.services.token_budget_service import token_budget_service
 from app.utils.webhook_templating import render_template
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
@@ -1004,6 +1005,30 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._h._twilio_buffer_primed = False
                 return  # Done! No LLM needed for greeting
 
+            if self._h.call_session and self._h.db:
+                try:
+                    within_budget, _usage, _limit = await token_budget_service.check_daily_budget(
+                        self._h.db, self._h.call_session.tenant_id
+                    )
+                except Exception as exc:
+                    logger.warning("Token budget check failed; failing open: %s", exc)
+                    within_budget = True
+                if not within_budget:
+                    refusal_text = (
+                        "This workspace has reached its daily AI usage limit. Please "
+                        "contact support or your administrator."
+                    )
+                    await self._h._add_to_transcript("agent", refusal_text, "system")
+                    if self._h._tts_pipeline:
+                        await self._h._tts_pipeline.queue_tts({
+                            "text": refusal_text,
+                            "chunk_id": "budget_exceeded",
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                        })
+                    self._h._twilio_buffer_primed = False
+                    return
+
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
@@ -1175,6 +1200,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
+                if self._h.call_session:
+                    try:
+                        _estimated_tokens = int(
+                            (len(system_prompt or "") + len(response_accum or "")) / 3.8
+                        )
+                        if _estimated_tokens > 0:
+                            asyncio.create_task(
+                                token_budget_service.record_daily_tokens(
+                                    self._h.call_session.tenant_id, _estimated_tokens
+                                )
+                            )
+                    except Exception as exc:
+                        logger.debug("Token budget recording failed: %s", exc)
                 return response_accum
 
             final_text = ""

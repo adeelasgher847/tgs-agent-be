@@ -742,6 +742,95 @@ async def test_normal_greeting_used_when_not_reconnect_on_twilio_path():
     assert queued["text"] == handler.agent.greeting_message
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-tenant daily LLM token budget gate (app.services.token_budget_service)
+#
+# generate_and_stream_response's non-greeting path calls
+# token_budget_service.check_daily_budget() right after the greeting
+# early-return, before building the system prompt / calling the LLM. This
+# reuses the `_make_reconnect_handler`-style fixture rather than the full
+# `db`-backed Postgres integration harness, since only the boolean gating
+# behavior (not the service's own Redis/DB logic — see
+# tests/services/test_token_budget_service.py) needs coverage here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_budget_gate_handler() -> BidirectionalStreamHandler:
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    # Budget gate only runs when both call_session and db are truthy.
+    handler.db = MagicMock()
+    handler.agent = MagicMock()
+    handler.agent.greeting_message = "Hello! Welcome."
+    handler.agent.first_message = None
+    handler.agent.transfer_route = None
+    handler.agent.model = None
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_blocks_turn_and_queues_refusal_without_llm():
+    handler = _make_budget_gate_handler()
+    handler._build_system_prompt_full = AsyncMock(
+        side_effect=AssertionError("LLM path must not be reached when budget is exceeded")
+    )
+
+    with patch(
+        "app.routers.bidirectional_stream.token_budget_service.check_daily_budget",
+        new=AsyncMock(return_value=(False, 999999, 500000)),
+    ):
+        await handler.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+
+    # Turn was short-circuited: refusal message queued via TTS, LLM never
+    # invoked.
+    handler._build_system_prompt_full.assert_not_awaited()
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert "daily AI usage limit" in queued["text"]
+    assert queued["chunk_id"] == "budget_exceeded"
+
+    handler._add_to_transcript.assert_awaited_once()
+    transcript_args = handler._add_to_transcript.await_args.args
+    assert transcript_args[0] == "agent"
+    assert "daily AI usage limit" in transcript_args[1]
+
+
+@pytest.mark.asyncio
+async def test_budget_within_limit_proceeds_past_gate_to_llm_path():
+    handler = _make_budget_gate_handler()
+
+    # Once the gate lets the turn through, generate_and_stream_response goes
+    # on to build the system prompt (the real LLM/TTS pipeline is
+    # intentionally not exercised here — see module docstring above; that's
+    # covered by the pre-existing turn-completion tests in this file).
+    # Raising here is caught by generate_and_stream_response's own top-level
+    # except-Exception handler, giving a clean, cheap "did we get past the
+    # gate?" signal without a heavy end-to-end LLM/TTS fixture.
+    handler._build_system_prompt_full = AsyncMock(side_effect=RuntimeError("stop after gate"))
+
+    with patch(
+        "app.routers.bidirectional_stream.token_budget_service.check_daily_budget",
+        new=AsyncMock(return_value=(True, 100, 500000)),
+    ):
+        await handler.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+
+    # Turn proceeded past the budget gate: system prompt building was
+    # reached (no regression — the gate did not block a within-budget turn).
+    handler._build_system_prompt_full.assert_awaited_once()
+    # No refusal message queued.
+    handler._tts_pipeline.queue_tts.assert_not_awaited()
+
+
 
 
 

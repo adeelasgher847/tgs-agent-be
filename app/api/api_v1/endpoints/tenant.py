@@ -742,6 +742,7 @@ def get_tenant_plan(
         subscription_status=subscription.status if subscription else None,
         current_period_end=subscription.current_period_end if subscription else None,
         cancel_at_period_end=subscription.cancel_at_period_end if subscription else False,
+        llm_token_budget_daily=tenant.llm_token_budget_daily,
     )
 
 
