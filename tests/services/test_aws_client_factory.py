@@ -59,6 +59,48 @@ def test_session_token_without_static_keys_is_dropped(monkeypatch):
     assert "aws_secret_access_key" not in kwargs
 
 
+def test_whitespace_only_keys_are_treated_as_absent(monkeypatch):
+    monkeypatch.setattr(settings, "AWS_ACCESS_KEY_ID", "   ")
+    monkeypatch.setattr(settings, "AWS_SECRET_ACCESS_KEY", "  ")
+    monkeypatch.setattr(settings, "AWS_SESSION_TOKEN", " ")
+    monkeypatch.setattr(settings, "AWS_REGION_NAME", "  ")
+
+    kwargs = s3_service._client_kwargs()
+
+    assert "aws_access_key_id" not in kwargs
+    assert "aws_secret_access_key" not in kwargs
+    assert "aws_session_token" not in kwargs
+    assert "region_name" not in kwargs
+
+
+def test_only_access_key_set_falls_back_and_warns(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "AWS_ACCESS_KEY_ID", "AKIAFAKE")
+    monkeypatch.setattr(settings, "AWS_SECRET_ACCESS_KEY", "")
+    monkeypatch.setattr(settings, "AWS_SESSION_TOKEN", "")
+    monkeypatch.setattr(settings, "AWS_REGION_NAME", "us-east-1")
+
+    with caplog.at_level("WARNING"):
+        kwargs = s3_service._client_kwargs()
+
+    assert "aws_access_key_id" not in kwargs
+    assert "aws_secret_access_key" not in kwargs
+    assert any("partially configured" in msg for msg in caplog.messages)
+
+
+def test_only_secret_key_set_falls_back_and_warns(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "AWS_ACCESS_KEY_ID", "")
+    monkeypatch.setattr(settings, "AWS_SECRET_ACCESS_KEY", "fake-secret")
+    monkeypatch.setattr(settings, "AWS_SESSION_TOKEN", "")
+    monkeypatch.setattr(settings, "AWS_REGION_NAME", "us-east-1")
+
+    with caplog.at_level("WARNING"):
+        kwargs = s3_service._client_kwargs()
+
+    assert "aws_access_key_id" not in kwargs
+    assert "aws_secret_access_key" not in kwargs
+    assert any("partially configured" in msg for msg in caplog.messages)
+
+
 def test_verify_aws_caller_identity_returns_identity_on_success(monkeypatch):
     monkeypatch.setattr(settings, "AWS_ACCESS_KEY_ID", "AKIAFAKE")
     monkeypatch.setattr(settings, "AWS_SECRET_ACCESS_KEY", "fake-secret")

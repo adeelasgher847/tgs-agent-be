@@ -1314,6 +1314,7 @@ class Settings(BaseSettings):
             gcs_kb_prefix=self.GCS_KB_PREFIX,
             aws_access_key_id=self.AWS_ACCESS_KEY_ID,
             aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY,
+            aws_session_token=self.AWS_SESSION_TOKEN,
             aws_region_name=self.AWS_REGION_NAME,
             s3_recordings_bucket=self.S3_RECORDINGS_BUCKET,
             s3_kb_bucket=self.S3_KB_BUCKET,

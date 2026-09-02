@@ -38,6 +38,16 @@ def _client_kwargs() -> dict:
         # attach it when the static credential pair is also present.
         if session_token:
             kwargs["aws_session_token"] = session_token
+    elif access_key or secret_key:
+        # Only one of the pair is set — likely a config typo. Silently
+        # falling through to the ambient credential chain (task role / IRSA
+        # / ~/.aws) could resolve a different AWS identity than intended, so
+        # this is worth a log line even though it's not fatal.
+        logger.warning(
+            "AWS static credentials are only partially configured "
+            "(AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY must both be set) "
+            "— falling back to the default credential provider chain."
+        )
 
     return kwargs
 
