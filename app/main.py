@@ -342,7 +342,15 @@ def create_app() -> FastAPI:
     ) -> dict:
         from fastapi.openapi.utils import get_openapi as _get_openapi
 
-        v2_routes = [r for r in _app.routes if getattr(r, "path", "").startswith("/api/v2/")]
+        v2_routes = [
+            r
+            for r in _app.routes
+            if getattr(r, "path", "").startswith("/api/v2/")
+            or getattr(r, "path", "") in {
+                "/api/v1/workspace/invitations",
+                "/api/v1/workspace/invitations/{invite_id}",
+            }
+        ]
         return _get_openapi(
             title="TGS API v2",
             version=settings.APP_VERSION,

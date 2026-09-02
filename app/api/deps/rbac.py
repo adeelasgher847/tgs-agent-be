@@ -190,6 +190,7 @@ def require_workspace_owner(
         user_tenant_association.select().where(
             user_tenant_association.c.user_id == user.id,
             user_tenant_association.c.tenant_id == user.current_tenant_id,
+            user_tenant_association.c.removed_at.is_(None),
         )
     ).first()
     if row is None:

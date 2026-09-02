@@ -14,7 +14,7 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
 from app.api.deps import get_db, require_admin
@@ -85,13 +85,13 @@ def admin_user(db, tenant) -> User:
     return _make_member(db, tenant.id, "admin", is_creator=True)
 
 
-def _client(db, admin_user) -> TestClient:
+def _client(db, admin_user, admin_override=None) -> TestClient:
     from app.api.v2.routers.workspace import v2_router
 
     mini = FastAPI()
     register_exception_handlers(mini)
     mini.include_router(v2_router, prefix="/workspace")
-    mini.dependency_overrides[require_admin] = lambda: admin_user
+    mini.dependency_overrides[require_admin] = admin_override or (lambda: admin_user)
     mini.dependency_overrides[get_db] = lambda: db
     return TestClient(mini, raise_server_exceptions=False)
 
@@ -103,7 +103,7 @@ def _role_id_for(db, user_id, tenant_id):
             user_tenant_association.c.tenant_id == tenant_id,
         )
     ).first()
-    return row.role_id
+    return row.role_id if row is not None else None
 
 
 class TestUpdateMemberRole:
@@ -181,3 +181,63 @@ class TestUpdateMemberRole:
         assert call_kwargs["action"] == "workspace.member_role_updated"
         assert call_kwargs["resource_id"] == target.id
         assert call_kwargs["new_value"] == {"role": "read_only"}
+
+
+class TestRemoveMember:
+    def test_admin_removes_member_from_workspace(self, db, tenant, admin_user):
+        target = _make_member(db, tenant.id, "read_only")
+        client = _client(db, admin_user)
+
+        resp = client.delete(f"/workspace/members/{target.id}")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["user_id"] == str(target.id)
+        assert db.query(User).filter(User.id == target.id).first() is not None
+        membership = db.execute(
+            user_tenant_association.select().where(
+                user_tenant_association.c.user_id == target.id,
+                user_tenant_association.c.tenant_id == tenant.id,
+            )
+        ).first()
+        assert membership is not None
+        assert membership.removed_at is not None
+
+        second_resp = client.delete(f"/workspace/members/{target.id}")
+        assert second_resp.status_code == 404
+
+    def test_unauthorized_member_removal_returns_403(self, db, tenant, admin_user):
+        target = _make_member(db, tenant.id, "read_only")
+        client = _client(
+            db,
+            admin_user,
+            admin_override=lambda: (_ for _ in ()).throw(
+                HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+            ),
+        )
+
+        resp = client.delete(f"/workspace/members/{target.id}")
+
+        assert resp.status_code == 403
+
+    def test_cross_tenant_member_removal_returns_404(self, db, tenant, admin_user):
+        other_tenant = Tenant(
+            name=f"other-member-{uuid.uuid4().hex[:8]}",
+            schema_name=f"s_{uuid.uuid4().hex[:8]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.commit()
+        target = _make_member(db, other_tenant.id, "read_only")
+        client = _client(db, admin_user)
+
+        resp = client.delete(f"/workspace/members/{target.id}")
+
+        assert resp.status_code == 404
+        assert _role_id_for(db, target.id, other_tenant.id) is not None
+
+    def test_nonexistent_member_removal_returns_404(self, db, tenant, admin_user):
+        client = _client(db, admin_user)
+
+        resp = client.delete(f"/workspace/members/{uuid.uuid4()}")
+
+        assert resp.status_code == 404

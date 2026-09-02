@@ -61,6 +61,7 @@ def get_display_role_details(
         .filter(
             user_tenant_association.c.user_id == user_id,
             user_tenant_association.c.tenant_id == tenant_id,
+            user_tenant_association.c.removed_at.is_(None),
         )
         .first()
     )
@@ -116,6 +117,7 @@ def get_membership_role_name(
         .filter(
             user_tenant_association.c.user_id == user_id,
             user_tenant_association.c.tenant_id == tenant_id,
+            user_tenant_association.c.removed_at.is_(None),
         )
         .first()
     )
@@ -167,7 +169,8 @@ def get_user_role_in_tenant(db: Session, user_id: uuid.UUID, tenant_id: uuid.UUI
         user_tenant_association, Role.id == user_tenant_association.c.role_id
     ).filter(
         user_tenant_association.c.user_id == user_id,
-        user_tenant_association.c.tenant_id == tenant_id
+        user_tenant_association.c.tenant_id == tenant_id,
+        user_tenant_association.c.removed_at.is_(None),
     ).first()
     
     return result
@@ -178,7 +181,8 @@ def get_user_product_in_tenant(db: Session, user_id: uuid.UUID, tenant_id: uuid.
         user_tenant_association, Product.id == user_tenant_association.c.product_id
     ).filter(
         user_tenant_association.c.user_id == user_id,
-        user_tenant_association.c.tenant_id == tenant_id
+        user_tenant_association.c.tenant_id == tenant_id,
+        user_tenant_association.c.removed_at.is_(None),
     ).first()
 
     return result
