@@ -508,7 +508,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            logger.error(f"Error getting checkout sessions: {str(e)}", exc_info=True)
+            logger.error("Error getting checkout sessions: %s", str(e), exc_info=True)
         
         # 2. Get all invoices
         try:
@@ -576,7 +576,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            logger.error(f"Error getting invoices: {str(e)}", exc_info=True)
+            logger.error("Error getting invoices: %s", str(e), exc_info=True)
         
         # Sort by creation date (newest first)
         payment_history.sort(key=lambda x: x["created"], reverse=True)

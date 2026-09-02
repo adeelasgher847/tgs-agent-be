@@ -850,8 +850,8 @@ class JiraService(BaseCRMService):
         required_fields = self._get_required_fields_for_creation(container_id)
         
         # Debug: Log field_map and required_fields
-        logger.debug(f"Field map: {field_map}")
-        logger.debug(f"Required fields: {required_fields}")
+        logger.debug("Field map: %s", field_map)
+        logger.debug("Required fields: %s", required_fields)
         
         # Step 2: Create issue with basic fields + required fields
         # Build description with all fields including status (similar to Trello/ClickUp)
@@ -944,7 +944,7 @@ class JiraService(BaseCRMService):
                                     # Text field - use direct string value
                                     basic_fields[email_sent_field_id] = "No"
             except Exception as e:
-                logger.warning(f"Exception checking email_sent field type: {str(e)}")
+                logger.warning("Exception checking email_sent field type: %s", str(e))
                 # Default: assume text field and use direct string
                 basic_fields[email_sent_field_id] = "No"
             
@@ -1046,7 +1046,7 @@ class JiraService(BaseCRMService):
                                         default_value = required_fields[req_field_id]
                                         basic_fields[req_field_id] = default_value
                 except Exception as e:
-                    logger.warning(f"Failed to match field {req_field_id} by name: {str(e)}")
+                    logger.warning("Failed to match field %s by name: %s", req_field_id, str(e))
                     # Final fallback: use default value
                     default_value = required_fields[req_field_id]
                     basic_fields[req_field_id] = default_value
@@ -1098,7 +1098,7 @@ class JiraService(BaseCRMService):
                     custom_fields_to_update[email_sent_field_id] = {"value": email_sent_value}
         
         # Debug: Log what fields we're setting
-        logger.debug(f"Basic fields before POST: {json.dumps(basic_fields, indent=2)}")
+        logger.debug("Basic fields before POST: %s", json.dumps(basic_fields, indent=2))
         
         basic_payload = {"fields": basic_fields}
         
@@ -1188,7 +1188,7 @@ class JiraService(BaseCRMService):
                 }
                 
                 # Log the error for debugging
-                logger.error(f"Failed to create Jira issue: {json.dumps(error_detail, indent=2)}")
+                logger.error("Failed to create Jira issue: %s", json.dumps(error_detail, indent=2))
                 
                 return None
                 

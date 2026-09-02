@@ -38,7 +38,7 @@ async def handle_call_events_webhook(
     """
     logger.info("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
     logger.info("=== Call Events Webhook Started ===")
-    logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("Timestamp: %s", datetime.now(timezone.utc).isoformat())
     from app.core.pii_redactor import prepare_request_log_context
 
     logger.info(

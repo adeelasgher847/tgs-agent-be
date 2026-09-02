@@ -1063,8 +1063,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
             )
             logger.info(
-                f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
-                f"for response to: '{user_text[:20]}...'"
+                "🧠 Calling LLM (%s) for response to: '%s...'", llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service', user_text[:20]
             )
             logger.debug(
                 "[LLM] request sent: provider=%s model=%s user_text_len=%s",
@@ -1223,7 +1222,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     len(final_text or ""), chunk_counter,
                 )
             except Exception as e:
-                logger.error(f"LLM streaming failed: {e}", exc_info=True)
+                logger.error("LLM streaming failed: %s", e, exc_info=True)
 
             if final_text:
                 transcript_text = re.sub(
@@ -1233,7 +1232,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     await self._h._add_to_transcript("agent", transcript_text, "agent_response")
 
         except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
 
     # ---- High-level entrypoint ----------------------------------------------
 

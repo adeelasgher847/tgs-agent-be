@@ -63,7 +63,7 @@ class TenantStatusMiddleware:
             
         except Exception as e:
             # If there's an error in tenant status middleware, log it but don't block the request
-            logger.error(f"Tenant status middleware error: {str(e)}", exc_info=True)
+            logger.error("Tenant status middleware error: %s", str(e), exc_info=True)
             await self.app(scope, receive, send)
 
 def check_tenant_status(db: Session, tenant_id: uuid.UUID) -> dict:
@@ -80,7 +80,7 @@ def check_tenant_status(db: Session, tenant_id: uuid.UUID) -> dict:
         else:
             return {"status": tenant.status, "active": False}
     except Exception as e:
-        logger.error(f"Error checking tenant status: {str(e)}", exc_info=True)
+        logger.error("Error checking tenant status: %s", str(e), exc_info=True)
         return {"status": "error", "active": False}
 
 def require_active_tenant(func: Callable) -> Callable:

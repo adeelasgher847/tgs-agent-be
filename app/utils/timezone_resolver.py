@@ -32,15 +32,15 @@ def resolve_timezone_from_city(city: str, country: str | None = None) -> str | N
 
         coords = geolocator.geocode(location_str)
         if not coords:
-            logger.warning(f"Timezone resolver: no coordinates for '{location_str}'")
+            logger.warning("Timezone resolver: no coordinates for '%s'", location_str)
             return None
 
         tz_name = tf.timezone_at(lng=coords.longitude, lat=coords.latitude)
         if tz_name:
-            logger.info(f"Timezone resolver: '{location_str}' -> {tz_name}")
+            logger.info("Timezone resolver: '%s' -> %s", location_str, tz_name)
         return tz_name
     except Exception as e:
-        logger.warning(f"Timezone resolver failed for '{city}' / '{country}': {e}")
+        logger.warning("Timezone resolver failed for '%s' / '%s': %s", city, country, e)
         return None
 
 

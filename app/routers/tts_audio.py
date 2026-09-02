@@ -69,12 +69,12 @@ async def serve_google_tts_audio(
         # Check cache first
         if cache_key in audio_cache:
             voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
-            logger.info(f"✅ Serving cached Google TTS audio ({voice_label}): '{text[:50]}...'")
+            logger.info("✅ Serving cached Google TTS audio (%s): '%s...'", voice_label, text[:50])
             audio_content = audio_cache[cache_key]
         else:
             # Generate new audio
             voice_label = "Chirp 3: HD" if chirp3_hd else "Neural2"
-            logger.info(f"🎤 Generating Google TTS audio ({voice_label}): '{text[:50]}...' (lang={lang}, voice={voice})")
+            logger.info("🎤 Generating Google TTS audio (%s): '%s...' (lang=%s, voice=%s)", voice_label, text[:50], lang, voice)
             
             # Optimized speaking rate for natural conversation (slightly slower for clarity)
             rate = 0.95  # Slightly slower and more natural
@@ -97,7 +97,7 @@ async def serve_google_tts_audio(
                 logger.info("🗑️ Removed oldest cache entry (cache full)")
             
             audio_cache[cache_key] = audio_content
-            logger.info(f"💾 Cached Google TTS audio ({len(audio_content)} bytes)")
+            logger.info("💾 Cached Google TTS audio (%s bytes)", len(audio_content))
         
         # Return audio with appropriate media type
         media_types = {
@@ -126,7 +126,7 @@ async def serve_google_tts_audio(
         )
         
     except Exception as e:
-        logger.error(f"❌ Error generating Google TTS audio: {e}", exc_info=True)
+        logger.error("❌ Error generating Google TTS audio: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"TTS generation failed: {str(e)}")
 
 

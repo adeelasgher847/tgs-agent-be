@@ -63,10 +63,10 @@ class VoiceAgentManager:
                 
                 agent_name = agent_obj.name
                 agent_voice = get_agent_voice(agent_obj)
-                logger.info(f"🎤 Using agent voice: {agent_voice} for agent: {agent_name}")
+                logger.info("🎤 Using agent voice: %s for agent: %s", agent_voice, agent_name)
                     
             except Exception as e:
-                logger.error(f"⚠️ Error processing agent object: {e}")
+                logger.error("⚠️ Error processing agent object: %s", e)
         
         # Agent-specific greeting - natural and conversational
         response.say("Hello! How can I help you today?", voice=agent_voice)

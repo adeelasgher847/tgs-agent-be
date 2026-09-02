@@ -51,7 +51,7 @@ class TtsOnlySession:
                     self.call_session.tenant_id,
                 )
         except Exception as e:
-            logger.error(f"Error loading session data for tts-only: {e}")
+            logger.error("Error loading session data for tts-only: %s", e)
 
     async def _play_tts_text(self, text: str, lang: str | None, voice: str | None) -> None:
         if not text or not self.stream_sid:
@@ -136,5 +136,5 @@ class TtsOnlySession:
                     break
 
         except Exception as e:
-            logger.error(f"Unexpected error in TTS-only WebSocket: {e}", exc_info=True)
+            logger.error("Unexpected error in TTS-only WebSocket: %s", e, exc_info=True)
 

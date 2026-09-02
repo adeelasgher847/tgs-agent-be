@@ -54,7 +54,7 @@ async def test_openai_text_generation(
             try:
                 api_key = decrypt_api_key(model.api_key)
             except Exception as e:
-                logger.error(f"Failed to decrypt model API key: {e}", exc_info=True)
+                logger.error("Failed to decrypt model API key: %s", e, exc_info=True)
                 # If decryption fails, use global key
                 pass
         
@@ -122,7 +122,7 @@ async def test_openai_chat_completion(
             try:
                 api_key = decrypt_api_key(model.api_key)
             except Exception as e:
-                logger.error(f"Failed to decrypt model API key: {e}", exc_info=True)
+                logger.error("Failed to decrypt model API key: %s", e, exc_info=True)
                 # If decryption fails, use global key
                 pass
         

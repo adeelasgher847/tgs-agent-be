@@ -237,7 +237,7 @@ class TtsStreamMixin:
             # WebSocket already closed (hangup) — nothing to clear.
             pass
         except Exception as e:
-            logger.warning(f"Failed to send Twilio 'clear' event: {e}")
+            logger.warning("Failed to send Twilio 'clear' event: %s", e)
 
     async def _start_background_audio_with_delay(self):
         """Start background loop after call stabilizes (dev-branch behavior)."""
@@ -248,7 +248,7 @@ class TtsStreamMixin:
             await self._background_audio.start_loop_if_enabled(delay_seconds=3.0)
         except Exception as e:
             logger.error(
-                f"Error in _start_background_audio_with_delay: {e}", exc_info=True
+                "Error in _start_background_audio_with_delay: %s", e, exc_info=True
             )
 
     def _is_background_audio_enabled(self) -> bool:
@@ -1000,7 +1000,7 @@ class TtsStreamMixin:
                             return  # streaming path complete
                         except Exception as e:
                             logger.warning(
-                                f"⚠️ Streaming TTS failed, falling back to non-streaming: {e}"
+                                "⚠️ Streaming TTS failed, falling back to non-streaming: %s", e
                             )
 
                             # If call ended / barge-in occurred, never fall back to batch TTS.
@@ -1197,7 +1197,7 @@ class TtsStreamMixin:
                     self._is_tts_playing = False
 
         except Exception as e:
-            logger.error(f"Error in _stream_tts_chunk: {e}", exc_info=True)
+            logger.error("Error in _stream_tts_chunk: %s", e, exc_info=True)
 
     async def _stream_live_audio_chunk(self, mulaw_bytes: bytes) -> None:
         """
@@ -1570,7 +1570,7 @@ class TtsStreamMixin:
                     self.is_speaking = False
 
         except Exception as e:
-            logger.error(f"Error in stream_tts_response: {e}", exc_info=True)
+            logger.error("Error in stream_tts_response: %s", e, exc_info=True)
 
     def _split_into_sentences(self, text: str) -> list:
         """
@@ -1597,7 +1597,7 @@ class TtsStreamMixin:
             )
 
         except Exception as e:
-            logger.error(f"Error in send_audio_to_twilio: {e}")
+            logger.error("Error in send_audio_to_twilio: %s", e)
 
     async def _send_in_progress_status(self, transcript: str, confidence: float):
         """Send in-progress status when confident word is detected"""
@@ -1683,15 +1683,15 @@ class TtsStreamMixin:
                             )
                         )
                 except Exception as e:
-                    logger.debug(f"Could not start credit monitoring: {e}")
+                    logger.debug("Could not start credit monitoring: %s", e)
 
             except Exception as e:
-                logger.error(f"Error in _send_in_progress_status inner loop: {e}")
+                logger.error("Error in _send_in_progress_status inner loop: %s", e)
 
             except Exception as e:
                 logger.error(
-                    f"Error updating call status in _send_in_progress_status: {e}"
+                    "Error updating call status in _send_in_progress_status: %s", e
                 )
 
         except Exception as e:
-            logger.error(f"Error in _send_in_progress_status: {e}", exc_info=True)
+            logger.error("Error in _send_in_progress_status: %s", e, exc_info=True)

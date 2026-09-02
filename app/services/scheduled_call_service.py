@@ -142,7 +142,7 @@ class ScheduledCallService:
             # Update existing record if it's missing new fields (for backward compatibility)
             # Or if it contains invalid data like "="
             if board_record.crm_container_id == "=":
-                logger.warning(f"⚠️ Invalid container ID '=' detected for user {user_id}. Clearing it to trigger auto-fix.")
+                logger.warning("⚠️ Invalid container ID '=' detected for user %s. Clearing it to trigger auto-fix.", user_id)
                 board_record.crm_container_id = None
                 
             if not board_record.crm_container_id or not board_record.crm_type:
@@ -160,7 +160,7 @@ class ScheduledCallService:
                 
                 # If still no container_id, create a new container automatically (auto-fix)
                 if not board_record.crm_container_id:
-                    logger.warning(f"⚠️ Container ID missing for user {user_id}. Auto-creating new container...")
+                    logger.warning("⚠️ Container ID missing for user %s. Auto-creating new container...", user_id)
                     user = db.query(User).filter(User.id == user_id).first()
                     if not user:
                         raise HTTPException(status_code=404, detail="User not found")
@@ -209,7 +209,7 @@ class ScheduledCallService:
                             board_record.crm_container_url = crm_service.build_container_url(board_record.crm_container_id)
                         board_record.crm_type = crm_config.crm_type
                         board_record.tenant_crm_config_id = crm_config_id
-                        logger.info(f"✅ Auto-created {crm_config.crm_type} container: {board_record.crm_container_id}")
+                        logger.info("✅ Auto-created %s container: %s", crm_config.crm_type, board_record.crm_container_id)
                     except HTTPException:
                         # Re-raise HTTPExceptions as-is
                         raise
@@ -220,7 +220,7 @@ class ScheduledCallService:
                             error_msg = error_msg
                         else:
                             error_msg = f"Failed to auto-create {crm_config.crm_type} container: {error_msg}"
-                        logger.error(f"❌ {error_msg}")
+                        logger.error("❌ %s", error_msg)
                         # Re-raise with more context
                         raise HTTPException(
                             status_code=500,
@@ -368,9 +368,9 @@ class ScheduledCallService:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(settings.N8N_WEBHOOK_URL, json=payload, headers=headers)
                 response.raise_for_status()
-                logger.info(f"✅ n8n webhook sent for schedule_id: {schedule_id}")
+                logger.info("✅ n8n webhook sent for schedule_id: %s", schedule_id)
         except Exception as e:
-            logger.error(f"⚠️ Failed to send n8n webhook for schedule_id {schedule_id}: {e}", exc_info=True)
+            logger.error("⚠️ Failed to send n8n webhook for schedule_id %s: %s", schedule_id, e, exc_info=True)
             # Don't fail the entire operation if webhook fails
 
     @staticmethod
@@ -416,7 +416,7 @@ class ScheduledCallService:
         
         # Generate unique batch_id for this CSV upload
         batch_id = str(uuid.uuid4())
-        logger.info(f"📦 Generated batch_id: {batch_id} for CSV upload")
+        logger.info("📦 Generated batch_id: %s for CSV upload", batch_id)
         
         # Verify agent once before processing all rows
         agent = db.query(Agent).filter(
@@ -531,7 +531,7 @@ class ScheduledCallService:
                     
                     if result:
                         successful_rows += 1
-                        logger.info(f"✅ Row {row_num}: Added to {board_record.crm_type} - {row['phone_number']}")
+                        logger.info("✅ Row %s: Added to %s - %s", row_num, board_record.crm_type, row['phone_number'])
                     else:
                         errors.append(f"Row {row_num}: Failed to create {board_record.crm_type} item")
                         failed_rows += 1
@@ -735,13 +735,13 @@ class ScheduledCallService:
 
             if not local_date or not local_time:
                 logger.warning(
-                    f"⚠️ scheduled_call_request present but missing local_date/local_time for session {call_session.id}"
+                    "⚠️ scheduled_call_request present but missing local_date/local_time for session %s", call_session.id
                 )
                 return None
 
             if not phone_number:
                 logger.warning(
-                    f"⚠️ scheduled_call_request present but no phone_number for session {call_session.id}"
+                    "⚠️ scheduled_call_request present but no phone_number for session %s", call_session.id
                 )
                 return None
 
@@ -751,14 +751,14 @@ class ScheduledCallService:
                 resolved_tz = resolve_timezone_from_city(city or "", country)
             if not resolved_tz:
                 logger.warning(
-                    f"⚠️ scheduled_call_request missing timezone and city for session {call_session.id}"
+                    "⚠️ scheduled_call_request missing timezone and city for session %s", call_session.id
                 )
                 return None
 
             try:
                 tz = ZoneInfo(resolved_tz)
             except Exception as e:
-                logger.error(f"❌ Invalid timezone '{tz_name}' in scheduled_call_request: {e}")
+                logger.error("❌ Invalid timezone '%s' in scheduled_call_request: %s", tz_name, e)
                 return None
 
             # Build timezone-aware local datetime and convert to UTC
@@ -771,8 +771,7 @@ class ScheduledCallService:
                 local_dt = datetime.fromisoformat(f"{local_date}T{time_str}")
             except ValueError:
                 logger.error(
-                    f"❌ Unable to parse local datetime from '{local_date} {local_time}' "
-                    f"for session {call_session.id}"
+                    "❌ Unable to parse local datetime from '%s %s' for session %s", local_date, local_time, call_session.id
                 )
                 return None
 
@@ -787,8 +786,7 @@ class ScheduledCallService:
             board_record = ScheduledCallService.get_board_for_user(db, call_session.user_id)
             if not board_record or not board_record.tenant_crm_config_id:
                 logger.warning(
-                    f"⚠️ No CRM board/config linked for user {call_session.user_id} – "
-                    f"cannot create scheduled call from session {call_session.id}"
+                    "⚠️ No CRM board/config linked for user %s – cannot create scheduled call from session %s", call_session.user_id, call_session.id
                 )
                 return None
 
@@ -806,8 +804,7 @@ class ScheduledCallService:
             )
 
             logger.info(
-                f"✅ Auto-created scheduled call in CRM from session {call_session.id} at "
-                f"{scheduled_time_utc.isoformat()} UTC"
+                "✅ Auto-created scheduled call in CRM from session %s at %s UTC", call_session.id, scheduled_time_utc.isoformat()
             )
             return result
 
@@ -815,7 +812,7 @@ class ScheduledCallService:
             raise
         except Exception as e:
             logger.error(
-                f"❌ Error creating scheduled call from session {call_session.id}: {e}",
+                "❌ Error creating scheduled call from session %s: %s", call_session.id, e,
                 exc_info=True,
             )
             return None
@@ -855,7 +852,7 @@ class ScheduledCallService:
             if model and model.api_key:
                 api_key = decrypt_api_key(model.api_key)
         except Exception as e:
-            logger.error(f"Schedule extraction: failed to get API key for {model_name}: {e}")
+            logger.error("Schedule extraction: failed to get API key for %s: %s", model_name, e)
             return None
         if not api_key:
             return None
@@ -887,7 +884,7 @@ Output ONLY valid JSON, no markdown or explanation."""
                 return None
             return parsed
         except Exception as e:
-            logger.warning(f"Schedule extraction from transcript failed: {e}")
+            logger.warning("Schedule extraction from transcript failed: %s", e)
             return None
 
     @staticmethod
@@ -1040,7 +1037,7 @@ Output ONLY valid JSON, no markdown or explanation."""
             phone_number_id=phone_number_id,
         )
         logger.info(
-            f"✅ Created scheduled call in CRM from session {call_session_id} at {scheduled_time_utc.isoformat()} UTC"
+            "✅ Created scheduled call in CRM from session %s at %s UTC", call_session_id, scheduled_time_utc.isoformat()
         )
         return result
 

@@ -99,7 +99,7 @@ class BackgroundAudioManager:
                 self.state.length = bg_audio_len
                 self.state.enabled = True
         except Exception as e:
-            logger.warning(f"[BG] Failed to load background audio: {e}")
+            logger.warning("[BG] Failed to load background audio: %s", e)
 
     async def _stream_loop(self) -> None:
         if not self.state.mulaw_bytes or self.state.length == 0:
@@ -162,7 +162,7 @@ class BackgroundAudioManager:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"[BG] Error in background audio loop: {e}")
+            logger.error("[BG] Error in background audio loop: %s", e)
 
     async def start_loop_if_enabled(self, delay_seconds: float = 3.0) -> None:
         try:
@@ -173,7 +173,7 @@ class BackgroundAudioManager:
                 return
             self.state.task = asyncio.create_task(self._stream_loop())
         except Exception as e:
-            logger.error(f"[BG] Error starting background audio loop: {e}", exc_info=True)
+            logger.error("[BG] Error starting background audio loop: %s", e, exc_info=True)
 
     async def stop_loop(self) -> None:
         try:

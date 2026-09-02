@@ -68,16 +68,16 @@ class GoogleTTSService:
                         temp_path = f.name
                     
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = temp_path
-                    logger.info(f"✅ Google TTS: Using credentials from JSON content (temp file: {temp_path})")
+                    logger.info("✅ Google TTS: Using credentials from JSON content (temp file: %s)", temp_path)
                 except Exception as e:
-                    logger.error(f"⚠️ Google TTS: Error creating temp file for JSON credentials: {e}")
+                    logger.error("⚠️ Google TTS: Error creating temp file for JSON credentials: %s", e)
             else:
                 # It's a file path - check if file exists
                 if os.path.exists(creds):
                     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds
-                    logger.info(f"✅ Google TTS: Using credentials from file: {creds}")
+                    logger.info("✅ Google TTS: Using credentials from file: %s", creds)
                 else:
-                    logger.warning(f"⚠️ Google TTS: Credentials file not found: {creds}")
+                    logger.warning("⚠️ Google TTS: Credentials file not found: %s", creds)
     
     def get_client(self):
         """Get Google Cloud TTS client"""
@@ -88,7 +88,7 @@ class GoogleTTSService:
                 self._client = texttospeech.TextToSpeechClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech client initialized")
             except Exception as e:
-                logger.error(f"⚠️ Failed to initialize Google TTS client: {e}")
+                logger.error("⚠️ Failed to initialize Google TTS client: %s", e)
                 logger.warning("⚠️ Text-to-Speech will not be available without proper credentials")
         
         return self._client
@@ -102,7 +102,7 @@ class GoogleTTSService:
                 self._async_client = texttospeech_v1.TextToSpeechAsyncClient(client_options=client_options)
                 logger.info("✅ Google Cloud Text-to-Speech ASYNC client initialized")
             except Exception as e:
-                logger.error(f"⚠️ Failed to initialize Google TTS async client: {e}")
+                logger.error("⚠️ Failed to initialize Google TTS async client: %s", e)
                 logger.warning("⚠️ Streaming TTS will not be available without proper credentials")
         return self._async_client
     

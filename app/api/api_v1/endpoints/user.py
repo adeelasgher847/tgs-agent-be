@@ -233,13 +233,13 @@ def google_login(
     _: None = Depends(enforce_login_rate_limit),
 ):
     try:
-        logger.debug(f'Google token received: {req.google_token}')
+        logger.debug("Google token received: %s", req.google_token)
         idinfo = google_id_token.verify_oauth2_token(
             req.google_token,
             GoogleRequest(),
             settings.GOOGLE_CLIENT_ID
         )
-        logger.debug(f"Google ID Info: {idinfo}")
+        logger.debug("Google ID Info: %s", idinfo)
         # Fields we care about from Google
         sub = idinfo.get("sub")  # stable Google user id
         email = idinfo.get("email")
@@ -254,7 +254,7 @@ def google_login(
                 detail="Google token missing required fields"
             )
     except Exception as e:
-        logger.error(f"Google token decode error: {e}", exc_info=True)
+        logger.error("Google token decode error: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid Google token"
@@ -448,8 +448,7 @@ def refresh_tokens(req: RefreshRequest, db: Session = Depends(get_db)):
     # Replay detection: token was already used (rotated) or explicitly revoked
     if rt.revoked or rt.replaced_by_token is not None:
         logger.warning(
-            f"Replay attack detected: refresh token already consumed for user_id={rt.user_id}. "
-            "Revoking all active tokens."
+            "Replay attack detected: refresh token already consumed for user_id=%s. Revoking all active tokens.", rt.user_id
         )
         try:
             db.query(RefreshToken).filter(

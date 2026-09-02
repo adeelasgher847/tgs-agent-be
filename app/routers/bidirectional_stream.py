@@ -674,7 +674,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
             self._flow_init()
         except Exception as e:
-            logger.error(f"Error loading session data: {e}", exc_info=True)
+            logger.error("Error loading session data: %s", e, exc_info=True)
 
     def _jd_recruitment_screening_active(self) -> bool:
         """JD-backed recruitment screening only — skips booking/general outbound calls."""
@@ -816,7 +816,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._voice_orchestrator.on_audio_chunk(audio_data)
 
         except Exception as e:
-            logger.error(f"Error handling media message: {e}", exc_info=True)
+            logger.error("Error handling media message: %s", e, exc_info=True)
 
     def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
@@ -1380,7 +1380,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
 
         except Exception as e:
-            logger.error(f"Error processing transcript: {e}", exc_info=True)
+            logger.error("Error processing transcript: %s", e, exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
@@ -1535,7 +1535,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
-            logger.error(f"Error processing interim: {e}")
+            logger.error("Error processing interim: %s", e)
     
     async def _send_quick_acknowledgement(self, user_text: str):
         """
@@ -2509,7 +2509,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
             )
             _time_flush_target_words = 3 if low_latency_fastpath else 4
-            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
+            logger.info("🧠 Calling LLM (%s) for response to: '%s...'", llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service', user_text[:20])
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
@@ -2789,7 +2789,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
             except Exception as e:
-                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
+                logger.warning("⚠️ Primary LLM failed (%s): %s. Attempting fallback...", model_name, e)
                 if _is_gemini_agent:
                     # Gemini agents: canned fallback only, no cross-provider attempt
                     logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")
@@ -2815,7 +2815,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         else:
                             final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
                     except Exception as e:
-                        logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
+                        logger.warning("⚠️ Secondary LLM fallback failed: %s. Attempting VoiceLoggingService fallback...", e)
                         try:
                             final_text = await VoiceLoggingService.generate_agent_response(
                                 speech_text=user_text,
@@ -2842,7 +2842,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         self._deferred_conversation_memory_update(turn_context, user_text)
                                     )
                         except Exception as e:
-                            logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
+                            logger.warning("⚠️ VoiceLoggingService fallback failed: %s. Using ultimate fallback.", e)
                             self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                             _fallback_msg = _legacy_fallback or self._pick_llm_fallback("general", self._consecutive_llm_failures)
                             final_text = _fallback_msg
@@ -2935,7 +2935,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
 
     async def _deferred_conversation_memory_update(
         self, turn_context: TurnContext, user_text: str
@@ -3027,7 +3027,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Wait for first media packet (user actually picks up - VAPI-style)
 
         except Exception as e:
-            logger.error(f"Error in handle_start_message: {e}", exc_info=True)
+            logger.error("Error in handle_start_message: %s", e, exc_info=True)
     
     async def _handle_user_pickup(self):
         """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
@@ -3071,7 +3071,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 asyncio.create_task(self._schedule_outbound_screening_intro_after_delay())
         
         except Exception as e:
-            logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+            logger.error("Error in _handle_user_pickup: %s", e, exc_info=True)
 
     async def _schedule_outbound_screening_intro_after_delay(self) -> None:
         """Brief delay after pickup, then scripted recruitment intro via same path as inbound greeting."""
@@ -3272,7 +3272,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             await self._full_shutdown()
         except Exception as e:
-            logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
+            logger.error("Error in handle_stop_message: %s", e, exc_info=True)
 
 
 async def _receive_or_stop(
@@ -3333,7 +3333,7 @@ async def bidirectional_stream_websocket(
     try:
         await websocket.accept()
     except Exception as e:
-        logger.error(f"Failed to accept bidirectional WebSocket: {e}")
+        logger.error("Failed to accept bidirectional WebSocket: %s", e)
         return
     
     # Get database session
@@ -3355,7 +3355,7 @@ async def bidirectional_stream_websocket(
 
             if data is None:
                 # Internal end-call path triggered _full_shutdown + set _stop_event
-                logger.info(f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket")
+                logger.info("🛑 Internal stop event fired for session %s — closing WebSocket", callSessionId)
                 break
 
             message = json.loads(data)
@@ -3378,10 +3378,10 @@ async def bidirectional_stream_websocket(
                 pass  # Synchronization marks
     
     except WebSocketDisconnect:
-        logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 Bidirectional WebSocket disconnected for session %s", callSessionId)
     
     except Exception as e:
-        logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in bidirectional WebSocket: %s", e, exc_info=True)
     
     finally:
         # Ensure all pipelines are fully shut down (idempotent — safe if already done)
@@ -3389,7 +3389,7 @@ async def bidirectional_stream_websocket(
             try:
                 await handler._full_shutdown()
             except Exception as e:
-                logger.debug(f"Pipeline cleanup in finally: {e}")
+                logger.debug("Pipeline cleanup in finally: %s", e)
 
         # Explicitly close the WebSocket so Twilio gets an immediate close frame
         # instead of waiting for the TCP connection to time out.
@@ -3429,8 +3429,8 @@ async def tts_only_websocket(
     try:
         await session.run()
     except WebSocketDisconnect:
-        logger.info(f"🔌 TTS-ONLY WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 TTS-ONLY WebSocket disconnected for session %s", callSessionId)
     except Exception as e:
-        logger.error(f"Unexpected error in TTS-ONLY WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in TTS-ONLY WebSocket: %s", e, exc_info=True)
     finally:
         db.close()
