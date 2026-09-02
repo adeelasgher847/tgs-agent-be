@@ -804,6 +804,18 @@ def remove_member(
             detail="User is not a member of this workspace",
         )
 
+    if membership.is_creator:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove the workspace creator",
+        )
+
+    if user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove yourself from the workspace",
+        )
+
     db.execute(
         user_tenant_association.update().where(
             user_tenant_association.c.user_id == user_id,
@@ -811,6 +823,7 @@ def remove_member(
         ).values(removed_at=datetime.now(timezone.utc))
     )
     db.commit()
+    rbac_cache_service.invalidate(user_id, tenant_id)
 
     log_audit_event(
         db,

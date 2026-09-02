@@ -14,10 +14,10 @@ import uuid
 from unittest.mock import patch
 
 import pytest
-from fastapi import FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 
-from app.api.deps import get_db, require_admin
+from app.api.deps import get_db, require_admin, require_readonly, require_tenant
 from app.core.exception_handlers import register_exception_handlers
 from app.models.role import Role
 from app.models.tenant import Tenant
@@ -188,9 +188,13 @@ class TestRemoveMember:
         target = _make_member(db, tenant.id, "read_only")
         client = _client(db, admin_user)
 
-        resp = client.delete(f"/workspace/members/{target.id}")
+        with patch(
+            "app.api.v2.routers.workspace.rbac_cache_service.invalidate"
+        ) as mock_invalidate:
+            resp = client.delete(f"/workspace/members/{target.id}")
 
         assert resp.status_code == 200, resp.text
+        mock_invalidate.assert_called_once_with(target.id, tenant.id)
         assert resp.json()["data"]["user_id"] == str(target.id)
         assert db.query(User).filter(User.id == target.id).first() is not None
         membership = db.execute(
@@ -204,6 +208,63 @@ class TestRemoveMember:
 
         second_resp = client.delete(f"/workspace/members/{target.id}")
         assert second_resp.status_code == 404
+
+    def test_workspace_creator_cannot_be_removed(self, db, tenant, admin_user):
+        actor = _make_member(db, tenant.id, "admin")
+        client = _client(db, actor)
+
+        resp = client.delete(f"/workspace/members/{admin_user.id}")
+
+        assert resp.status_code == 400, resp.text
+        membership = db.execute(
+            user_tenant_association.select().where(
+                user_tenant_association.c.user_id == admin_user.id,
+                user_tenant_association.c.tenant_id == tenant.id,
+            )
+        ).first()
+        assert membership is not None
+        assert membership.removed_at is None
+
+    def test_admin_cannot_remove_themselves(self, db, tenant, admin_user):
+        client = _client(db, admin_user)
+
+        resp = client.delete(f"/workspace/members/{admin_user.id}")
+
+        assert resp.status_code == 400, resp.text
+        membership = db.execute(
+            user_tenant_association.select().where(
+                user_tenant_association.c.user_id == admin_user.id,
+                user_tenant_association.c.tenant_id == tenant.id,
+            )
+        ).first()
+        assert membership is not None
+        assert membership.removed_at is None
+
+    def test_removal_invalidates_real_rbac_cache(self, db, tenant, admin_user):
+        target = _make_member(db, tenant.id, "read_only")
+        from app.api.v2.routers.workspace import v2_router
+
+        client_app = FastAPI()
+        register_exception_handlers(client_app)
+        client_app.include_router(v2_router, prefix="/workspace")
+        client_app.dependency_overrides[require_admin] = lambda: admin_user
+        client_app.dependency_overrides[require_tenant] = lambda: target
+        client_app.dependency_overrides[get_db] = lambda: db
+
+        @client_app.get("/protected")
+        def protected_endpoint(user=Depends(require_readonly)):
+            return {"user_id": str(user.id)}
+
+        client = TestClient(client_app, raise_server_exceptions=False)
+
+        cached_response = client.get("/protected")
+        assert cached_response.status_code == 200, cached_response.text
+
+        remove_response = client.delete(f"/workspace/members/{target.id}")
+        assert remove_response.status_code == 200, remove_response.text
+
+        denied_response = client.get("/protected")
+        assert denied_response.status_code == 403, denied_response.text
 
     def test_unauthorized_member_removal_returns_403(self, db, tenant, admin_user):
         target = _make_member(db, tenant.id, "read_only")
