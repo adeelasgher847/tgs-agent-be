@@ -345,6 +345,7 @@ class ServerSettings(BaseModel):
     aws_secret_access_key: str = Field(
         default="", validation_alias="AWS_SECRET_ACCESS_KEY"
     )
+    aws_session_token: str = Field(default="", validation_alias="AWS_SESSION_TOKEN")
     aws_region_name: str = Field(
         default="us-east-1", validation_alias="AWS_REGION_NAME"
     )
@@ -1079,6 +1080,7 @@ class Settings(BaseSettings):
     # AWS S3 storage (GCS → S3 migration)
     AWS_ACCESS_KEY_ID: str = ""
     AWS_SECRET_ACCESS_KEY: str = ""
+    AWS_SESSION_TOKEN: str = ""
     AWS_REGION_NAME: str = "us-east-1"
     S3_RECORDINGS_BUCKET: str = ""
     S3_KB_BUCKET: str = ""
