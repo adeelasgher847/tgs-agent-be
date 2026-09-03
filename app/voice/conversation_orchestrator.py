@@ -190,6 +190,15 @@ class ConversationOrchestrator:
     def __init__(self, handler: Any):
         self._h = handler
 
+        # V-07 History Summarization Pipeline state.
+        # _history_summary holds the rolling compressed summary of conversation turns
+        # that have been dropped from the active sliding window.  It is prepended to the
+        # history block in build_system_prompt so the agent retains full-call memory.
+        # _last_summarized_turn_index tracks the exclusive end of the already-summarized
+        # range so turns are never compressed twice.
+        self._history_summary: str = ""
+        self._last_summarized_turn_index: int = 0
+
     # ---- Interim processing / barge-in gating -------------------------
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
@@ -296,8 +305,21 @@ class ConversationOrchestrator:
                     history_lines.append(f"{role.capitalize()}: {content}")
 
                 history_text = "\n".join(history_lines)
+
             except Exception:
                 history_text = ""
+
+        # V-07: Prepend rolling summary of dropped turns so the agent retains context
+        # from earlier in the call (caller name, problem, location, etc.) that has
+        # already scrolled out of the active window.  Applied unconditionally outside the
+        # transcript-parse guard so it survives both empty-transcript and parse-error paths.
+        if self._history_summary:
+            summary_block = (
+                f"<earlier_conversation_summary>\n"
+                f"{self._history_summary.strip()}\n"
+                f"</earlier_conversation_summary>\n\n"
+            )
+            history_text = summary_block + history_text
 
         # Build system prompt with agent personality + history
         agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
@@ -1108,6 +1130,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 last_flush_ts = time.perf_counter()
+                # V-07: fired once after the first TTS chunk is queued so summarization
+                # is detached from (and never on) the hot path.
+                _deferred_fired = False
 
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
@@ -1189,6 +1214,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             _vm = getattr(self._h, "_voice_metrics", None)
                             if _vm:
                                 _vm.mark_first_tts_queued()
+                            # V-07: fire background summarization once, after first TTS chunk.
+                            if not _deferred_fired:
+                                _deferred_fired = True
+                                asyncio.create_task(
+                                    self._deferred_conversation_memory_update(user_text)
+                                )
                             last_flush_ts = now_ts
 
                 # Flush any remaining buffer as final
@@ -1213,6 +1244,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
+                    # V-07: fire background summarization if it hasn't fired already
+                    # (covers short responses that bypass the mid-stream sentence-boundary path).
+                    if not _deferred_fired:
+                        _deferred_fired = True
+                        asyncio.create_task(
+                            self._deferred_conversation_memory_update(user_text)
+                        )
                 elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
@@ -1228,6 +1266,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
+                    # V-07: fire for transfer-phrase path too.
+                    if not _deferred_fired:
+                        _deferred_fired = True
+                        asyncio.create_task(
+                            self._deferred_conversation_memory_update(user_text)
+                        )
                 if self._h.call_session:
                     try:
                         _estimated_tokens = int(
@@ -1288,6 +1332,68 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
         except Exception as e:
             logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
+
+    # ---- V-07 History Summarization Pipeline --------------------------------
+
+    async def _deferred_conversation_memory_update(self, user_text: str = "") -> None:
+        """
+        Non-blocking hook for background history summarization.  Must be called via
+        ``asyncio.create_task(...)`` after the first TTS chunk has been queued — it is
+        always out-of-band and never adds latency to the STT -> LLM -> TTS hot path.
+
+        Mirrors BidirectionalStreamHandler._deferred_conversation_memory_update exactly
+        but uses the conversation_history_cache on the handler (self._h) rather than
+        a locally owned cache, and tracks summarization state on self.
+        """
+        try:
+            from app.core.config import settings as _settings
+
+            _summarization_enabled = getattr(_settings, "VOICE_HISTORY_SUMMARIZATION_ENABLED", True)
+            if not _summarization_enabled:
+                return
+
+            # Resolve the history cache from the handler (shared mutable list).
+            _cache: list[tuple[str, str]] = getattr(self._h, "_conversation_history_cache", [])
+            _max_msgs: int = getattr(self._h, "HISTORY_MAX_MESSAGES", 50)
+            _chunk_size: int = getattr(_settings, "VOICE_HISTORY_SUMMARY_CHUNK_SIZE", 10)
+            _total_turns: int = len(_cache)
+
+            if _total_turns <= _max_msgs:
+                return
+
+            _drop_boundary: int = _total_turns - _max_msgs
+            _unsummarized_count: int = _drop_boundary - self._last_summarized_turn_index
+            if _unsummarized_count < _chunk_size:
+                return
+
+            _turns_to_compress: list[tuple[str, str]] = list(
+                _cache[self._last_summarized_turn_index : _drop_boundary]
+            )
+            _current_summary: str = self._history_summary
+            _new_index: int = _drop_boundary
+
+            async def _background_summarize() -> None:
+                try:
+                    from app.services.history_summarization_service import compress_history
+
+                    updated_summary = await compress_history(
+                        existing_summary=_current_summary,
+                        new_turns=_turns_to_compress,
+                    )
+                    self._history_summary = updated_summary
+                    self._last_summarized_turn_index = _new_index
+                    logger.debug(
+                        "[V-07] Orchestrator history summary updated: index=%d summary_len=%d",
+                        _new_index,
+                        len(updated_summary),
+                    )
+                except Exception as _bg_exc:  # pragma: no cover - defensive
+                    logger.debug("[V-07] Orchestrator background summarization failed: %s", _bg_exc)
+
+            asyncio.create_task(_background_summarize())
+
+        except Exception as _exc:
+            logger.debug("[V-07] Orchestrator summarization scheduling failed: %s", _exc)
 
     # ---- High-level entrypoint ----------------------------------------------
 

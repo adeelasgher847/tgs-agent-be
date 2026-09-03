@@ -826,6 +826,13 @@ class Settings(BaseSettings):
     VOICE_SOFT_DUCK_MS: int = 400
     VOICE_SOFT_DUCK_GAIN: float = 0.35
     VOICE_HISTORY_MAX_MESSAGES: int = 50
+    # V-07: History Summarization Pipeline — compresses dropped turns with a mini-LLM
+    # instead of silently slicing them away.  The summary is injected at the top of the
+    # history block so the agent retains full-call memory without growing the prompt.
+    VOICE_HISTORY_SUMMARIZATION_ENABLED: bool = True
+    # Minimum number of unsummarized dropped turns before triggering a compression task.
+    # Batching avoids calling the mini-LLM on every single new turn (cost/latency opt).
+    VOICE_HISTORY_SUMMARY_CHUNK_SIZE: int = 10
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.

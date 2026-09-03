@@ -557,6 +557,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # Entries are (role, content) tuples matching the transcript filter rules.
         self._conversation_history_cache: list[tuple[str, str]] = []
 
+        # V-07 History Summarization Pipeline state.
+        # _history_summary holds the rolling compressed summary of turns that have been
+        # dropped from the active sliding window.  It is injected into build_system_prompt
+        # as an <earlier_conversation_summary> block so the agent retains full-call memory.
+        # _last_summarized_turn_index tracks the exclusive end of the range already fed to
+        # compress_history so we never re-summarize the same turns twice.
+        self._history_summary: str = ""
+        self._last_summarized_turn_index: int = 0
+
         # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
         self._voice_transcript_lock = asyncio.Lock()
         # One completion at a time (interim/final regen policy, task awaits). Matches product
@@ -1943,15 +1952,35 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 history_text = "\n".join(
                     f"{role.capitalize()}: {content}" for role, content in filtered
                 )
+
             except Exception:
                 history_text = ""
 
-        if _use_vertex_llm:
-            history_text = (
-                "(Prior conversation turns are provided separately — "
-                "maintain continuity; do not re-ask answered questions.)"
+        # V-07: Prepend rolling summary of dropped turns so the agent retains context
+        # from earlier in the call (caller name, problem, location, etc.) that has
+        # already scrolled out of the active window.  Applied unconditionally here so it
+        # works for normal calls, cache-empty/error paths, and the Vertex override below.
+        _v07_summary_block = ""
+        if self._history_summary:
+            _v07_summary_block = (
+                f"<earlier_conversation_summary>\n"
+                f"{self._history_summary.strip()}\n"
+                f"</earlier_conversation_summary>\n\n"
             )
-        
+
+        if _use_vertex_llm:
+            # Vertex calls provide turns natively — replace the recent-turns text with a
+            # short note.  Summary of dropped turns is still appended below since the
+            # native Vertex history only covers the active window.
+            history_text = (
+                "Prior conversation turns are provided separately — "
+                "maintain continuity; do not re-ask answered questions."
+            )
+
+        # Apply the summary block once, after any Vertex override.
+        if _v07_summary_block:
+            history_text = _v07_summary_block + history_text
+
         booking_memory_block = self._build_booking_memory_block()
 
         # Build system prompt with agent personality + history
@@ -2978,7 +3007,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
     ) -> None:
         """
         Non-blocking hook after first TTS is queued. Extend with embeddings or summaries
-        without adding latency to STT → LLM → TTS.
+        without adding latency to STT -> LLM -> TTS.
+
+        V-07: Also triggers background history summarization when the conversation history
+        has grown past the active window and enough unsummarized dropped turns have
+        accumulated.  Summarization always runs as a **detached** asyncio.Task so this
+        hook returns immediately and never blocks the hot path.
         """
         try:
             logger.debug(
@@ -2990,7 +3024,73 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("deferred conversation memory update failed: %s", e, exc_info=True)
-    
+
+        # ── V-07: History Summarization Pipeline ─────────────────────────────
+        # Runs completely out-of-band as a detached background task — zero impact
+        # on the STT -> LLM -> TTS hot path.
+        try:
+            from app.core.config import settings as _settings  # local import to avoid circulars
+
+            _summarization_enabled = getattr(_settings, "VOICE_HISTORY_SUMMARIZATION_ENABLED", True)
+            if not _summarization_enabled:
+                return
+
+            _max_msgs: int = getattr(self, "HISTORY_MAX_MESSAGES", 50)
+            _chunk_size: int = getattr(_settings, "VOICE_HISTORY_SUMMARY_CHUNK_SIZE", 10)
+            _total_turns: int = len(self._conversation_history_cache)
+
+            if _total_turns <= _max_msgs:
+                # History hasn't grown past the active window yet — nothing dropped.
+                return
+
+            # Index of the first turn that is currently OUTSIDE the active window
+            # (i.e., the last turn dropped by the sliding-window slice).
+            _drop_boundary: int = _total_turns - _max_msgs
+
+            # How many newly dropped turns haven't been summarized yet?
+            _unsummarized_count: int = _drop_boundary - self._last_summarized_turn_index
+            if _unsummarized_count < _chunk_size:
+                # Not enough new dropped turns to justify a mini-LLM call yet; wait for
+                # the next turn.
+                return
+
+            # Snapshot the turns to summarize (avoids holding a reference to the
+            # live list inside the background task).
+            _turns_to_compress: list[tuple[str, str]] = list(
+                self._conversation_history_cache[
+                    self._last_summarized_turn_index : _drop_boundary
+                ]
+            )
+            _current_summary: str = self._history_summary
+            _new_index: int = _drop_boundary
+
+            async def _background_summarize() -> None:
+                """Detached task: runs compress_history and updates handler state."""
+                try:
+                    from app.services.history_summarization_service import compress_history
+
+                    updated_summary = await compress_history(
+                        existing_summary=_current_summary,
+                        new_turns=_turns_to_compress,
+                    )
+                    # Write back to handler state atomically (GIL makes str assignment safe).
+                    self._history_summary = updated_summary
+                    self._last_summarized_turn_index = _new_index
+                    logger.debug(
+                        "[V-07] History summary updated: index=%d summary_len=%d",
+                        _new_index,
+                        len(updated_summary),
+                    )
+                except Exception as _bg_exc:  # pragma: no cover - defensive
+                    # Never let a background summarization failure affect the call.
+                    logger.debug("[V-07] Background summarization task failed: %s", _bg_exc)
+
+            asyncio.create_task(_background_summarize())
+
+        except Exception as _exc:
+            # Defensive: the deferred hook must never raise.
+            logger.debug("[V-07] History summarization scheduling failed: %s", _exc)
+
     # ── Booking and calendar token methods live in app/voice/booking_mixin.py ──
 
     # ── TTS streaming methods live in app/voice/tts_stream_mixin.py ──
