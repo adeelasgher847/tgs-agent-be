@@ -19,6 +19,7 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
+from app.services.llm_circuit_breaker import llm_circuit_breaker
 
 # F-05: Warm transfer phrase pool
 _TRANSFER_PHRASES = [
@@ -1056,6 +1057,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             max_tokens = llm_runtime.max_tokens
             llm_service = llm_service_for_provider(llm_runtime.provider_slug)
 
+            # A-05: distributed circuit breaker — trips OPEN across all calls/workers
+            # after consecutive failures, so a doomed provider isn't retried per-turn.
+            # Keyed by the actual resolved provider slug (openai/gemini/groq), not a
+            # binary gemini/else split — collapsing Groq into "openai" would let an
+            # OpenAI outage fast-fail healthy Groq tenants and vice versa.
+            _primary_provider = (llm_runtime.provider_slug or "openai").lower()
+            _attempted_primary = True
+            if not await llm_circuit_breaker.can_execute(_primary_provider):
+                logger.warning(
+                    "[CircuitBreaker] %s circuit is OPEN — fast-failing to secondary provider without dead air",
+                    _primary_provider,
+                )
+                from app.services.openai_service import openai_service
+                from app.services.vertex_gemini_service import vertex_gemini_service
+
+                # Swap to whichever of the two providers this transport fully
+                # supports isn't the tripped one. Mirrors bidirectional_stream.py's
+                # existing non-gemini fallback swap (only "openai" primaries route
+                # to gemini; gemini and groq primaries both route to openai).
+                if _primary_provider == "openai":
+                    llm_service = vertex_gemini_service
+                    model_name = "gemini-2.5-flash"
+                else:
+                    llm_service = openai_service
+                    model_name = "gpt-3.5-turbo"
+                api_key = None
+                _attempted_primary = False
+
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
@@ -1217,12 +1246,38 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             final_text = ""
             try:
                 final_text = await try_stream(llm_service, model_name, api_key_override=api_key)
+                if _attempted_primary:
+                    await llm_circuit_breaker.record_success(_primary_provider)
                 logger.debug(
                     "[LLM] response received: chars=%s chunks_queued=%s",
                     len(final_text or ""), chunk_counter,
                 )
             except Exception as e:
                 logger.error("LLM streaming failed: %s", e, exc_info=True)
+                if _attempted_primary:
+                    await llm_circuit_breaker.record_failure(_primary_provider, e)
+                # A-05: without this, an LLM failure here (primary or the
+                # breaker's own secondary swap) leaves the caller with pure
+                # silence — mirror bidirectional_stream.py's ultimate
+                # fallback and speak a canned message instead of going quiet.
+                fallback_text = (
+                    getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", None)
+                    or "I am sorry, I did not catch that. Could you please repeat that?"
+                )
+                if not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                    chunk_counter += 1
+                    await self._h._tts_pipeline.queue_tts(
+                        {
+                            "text": fallback_text,
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                        }
+                    )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                final_text = fallback_text
 
             if final_text:
                 transcript_text = re.sub(

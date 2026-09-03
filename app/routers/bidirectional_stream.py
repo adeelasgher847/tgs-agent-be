@@ -120,6 +120,7 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.openai_service import openai_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
+from app.services.llm_circuit_breaker import llm_circuit_breaker
 from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
@@ -241,6 +242,14 @@ class _SystemPromptBuildResult:
     vertex_kb_context: str | None
     llm_runtime: Any
     rag_trace: Any
+
+
+class _PrimaryLlmCircuitOpen(Exception):
+    """Sentinel raised internally when the LLM circuit breaker has the
+    primary provider's circuit OPEN, so generate_and_stream_response's
+    existing exception-driven fallback logic routes straight to the
+    secondary provider (or canned fallback for Gemini agents) without ever
+    attempting the doomed primary call — avoids dead air."""
 
 
 class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
@@ -2730,10 +2739,26 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
             # F-03: Use varied fallback pool; keep legacy env var as override
             _legacy_fallback = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", None)
+            # A-05: distributed circuit breaker — trips OPEN across all calls/workers
+            # after consecutive failures, so a doomed provider isn't retried per-turn.
+            # Keyed by the actual resolved provider slug (openai/gemini/groq), not the
+            # binary gemini/else split — collapsing Groq into "openai" would let an
+            # OpenAI outage fast-fail healthy Groq tenants and vice versa.
+            _primary_provider = (_provider_slug or "openai").lower()
+            _breaker_open = not await llm_circuit_breaker.can_execute(_primary_provider)
+            if _breaker_open:
+                logger.warning(
+                    "[CircuitBreaker] %s circuit is OPEN — fast-failing to secondary provider without dead air",
+                    _primary_provider,
+                )
             try:
                 from app.services.vertex_gemini_service import VertexGeminiService as _VertexGeminiServiceCls
 
-                if self._calendly_enabled() and isinstance(llm_service, _VertexGeminiServiceCls):
+                if (
+                    not _breaker_open
+                    and self._calendly_enabled()
+                    and isinstance(llm_service, _VertexGeminiServiceCls)
+                ):
                     # Calendly-enabled agents resolve availability/booking via Gemini
                     # native function calling — bypass the legacy try_stream() +
                     # [CHECK_SLOTS:...]/[BOOK_APPOINTMENT:...] regex-token pipeline.
@@ -2746,6 +2771,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     chunk_counter += 1
                     if final_text and self._tts_pipeline and not self._tts_cancel.is_set():
                         safe_tts_text = self._prepare_tts_text(final_text)
@@ -2763,7 +2789,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
                 else:
+                    if _breaker_open:
+                        raise _PrimaryLlmCircuitOpen(_primary_provider)
                     final_text = await try_stream(llm_service, model_name, api_key)
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     self._consecutive_llm_failures = 0  # F-03: reset on success
             except VertexLlmError as vertex_err:
                 # Vertex-specific errors (quota, timeout, content filter) — canned fallback only.
@@ -2773,6 +2802,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     vertex_err.error_type,
                     model_name,
                 )
+                await llm_circuit_breaker.record_failure(_primary_provider, vertex_err)
                 self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                 _etype = "timeout" if "timeout" in str(vertex_err.error_type).lower() else "quota" if "quota" in str(vertex_err.error_type).lower() else "general"
                 _fallback_msg = _legacy_fallback or self._pick_llm_fallback(_etype, self._consecutive_llm_failures)
@@ -2789,7 +2819,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
             except Exception as e:
-                logger.warning("⚠️ Primary LLM failed (%s): %s. Attempting fallback...", model_name, e)
+                if isinstance(e, _PrimaryLlmCircuitOpen):
+                    # Already logged when the breaker was checked; don't count
+                    # this as a fresh failure — it wasn't an actual call attempt.
+                    pass
+                else:
+                    logger.warning("⚠️ Primary LLM failed (%s): %s. Attempting fallback...", model_name, e)
+                    await llm_circuit_breaker.record_failure(_primary_provider, e)
                 if _is_gemini_agent:
                     # Gemini agents: canned fallback only, no cross-provider attempt
                     logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")

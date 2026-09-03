@@ -126,6 +126,16 @@ class LlmSettings(BaseModel):
         default="I am sorry, I did not catch that",
         validation_alias="VOICE_LLM_FALLBACK_MESSAGE",
     )
+    # Redis-backed LLM provider circuit breaker (voice hot path)
+    circuit_breaker_enabled: bool = Field(
+        default=True, validation_alias="LLM_CIRCUIT_BREAKER_ENABLED"
+    )
+    circuit_breaker_failure_threshold: int = Field(
+        default=3, validation_alias="LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD"
+    )
+    circuit_breaker_cooldown_sec: int = Field(
+        default=30, validation_alias="LLM_CIRCUIT_BREAKER_COOLDOWN_SEC"
+    )
     # Deepgram STT
     deepgram_api_key: str = Field(default="", validation_alias="DEEPGRAM_API_KEY")
     deepgram_stt_model: str = Field(
@@ -599,6 +609,11 @@ class Settings(BaseSettings):
     VOICE_LLM_DEFAULT_TEMPERATURE: float = 0.3
     # Canned fallback spoken when the Vertex LLM errors (quota, timeout, filter)
     VOICE_LLM_FALLBACK_MESSAGE: str = "I am sorry, I did not catch that"
+    # Redis-backed circuit breaker for LLM provider calls in the voice hot path
+    # (fast-fails to the secondary provider instead of waiting out VOICE_TURN_TIMEOUT_SEC).
+    LLM_CIRCUIT_BREAKER_ENABLED: bool = True
+    LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 3
+    LLM_CIRCUIT_BREAKER_COOLDOWN_SEC: int = 30
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
     # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
     GOOGLE_STT_SAMPLE_RATE: int = 8000
@@ -1217,6 +1232,9 @@ class Settings(BaseSettings):
             history_max_turns=self.VOICE_LLM_HISTORY_MAX_TURNS,
             default_temperature=self.VOICE_LLM_DEFAULT_TEMPERATURE,
             fallback_message=self.VOICE_LLM_FALLBACK_MESSAGE,
+            circuit_breaker_enabled=self.LLM_CIRCUIT_BREAKER_ENABLED,
+            circuit_breaker_failure_threshold=self.LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            circuit_breaker_cooldown_sec=self.LLM_CIRCUIT_BREAKER_COOLDOWN_SEC,
             deepgram_api_key=self.DEEPGRAM_API_KEY,
             deepgram_stt_model=self.DEEPGRAM_STT_MODEL,
             deepgram_stt_language=self.DEEPGRAM_STT_LANGUAGE,
