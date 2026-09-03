@@ -454,6 +454,8 @@ def _fake_handler_for_real_prompt_build(*, llm_model: str) -> Handler:
     h._cached_inbound_kb_block = ""
     h._jd_recruitment_screening_active = lambda: False
     h._send_quick_acknowledgement = AsyncMock()
+    h._history_summary = ""
+    h._last_summarized_turn_index = 0
     return h
 
 
