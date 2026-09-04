@@ -126,6 +126,16 @@ class LlmSettings(BaseModel):
         default="I am sorry, I did not catch that",
         validation_alias="VOICE_LLM_FALLBACK_MESSAGE",
     )
+    # Redis-backed LLM provider circuit breaker (voice hot path)
+    circuit_breaker_enabled: bool = Field(
+        default=True, validation_alias="LLM_CIRCUIT_BREAKER_ENABLED"
+    )
+    circuit_breaker_failure_threshold: int = Field(
+        default=3, validation_alias="LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD"
+    )
+    circuit_breaker_cooldown_sec: int = Field(
+        default=30, validation_alias="LLM_CIRCUIT_BREAKER_COOLDOWN_SEC"
+    )
     # Deepgram STT
     deepgram_api_key: str = Field(default="", validation_alias="DEEPGRAM_API_KEY")
     deepgram_stt_model: str = Field(
@@ -340,11 +350,7 @@ class ServerSettings(BaseModel):
     # GCS knowledge base
     gcs_kb_bucket: str = Field(default="", validation_alias="GCS_KB_BUCKET")
     gcs_kb_prefix: str = Field(default="kb-files", validation_alias="GCS_KB_PREFIX")
-    # AWS S3 storage
-    aws_access_key_id: str = Field(default="", validation_alias="AWS_ACCESS_KEY_ID")
-    aws_secret_access_key: str = Field(
-        default="", validation_alias="AWS_SECRET_ACCESS_KEY"
-    )
+    # AWS S3 storage — authentication via ambient IAM Task Role, no static keys.
     aws_region_name: str = Field(
         default="us-east-1", validation_alias="AWS_REGION_NAME"
     )
@@ -455,8 +461,9 @@ class Settings(BaseSettings):
     WEBHOOK_BASE_URL: str = "https://tgs-agent-be.onrender.com"
     N8N_WEBHOOK_URL: str = ""  # n8n webhook URL for scheduled calls
     N8N_WEBHOOK_SECRET: str = ""  # Secret for verifying n8n webhook requests
-    # Email settings (AWS SES) — sender identity; delivery uses AWS_ACCESS_KEY_ID /
-    # AWS_SECRET_ACCESS_KEY / AWS_REGION_NAME (shared with S3, declared below).
+    # Email settings (AWS SES) — sender identity; delivery relies on the ambient
+    # AWS IAM Task Role / Default Credential Provider Chain, region via
+    # AWS_REGION_NAME (shared with S3, declared below).
     AWS_SES_SENDER_EMAIL: str = ""
 
     # Password reset settings
@@ -602,6 +609,11 @@ class Settings(BaseSettings):
     VOICE_LLM_DEFAULT_TEMPERATURE: float = 0.3
     # Canned fallback spoken when the Vertex LLM errors (quota, timeout, filter)
     VOICE_LLM_FALLBACK_MESSAGE: str = "I am sorry, I did not catch that"
+    # Redis-backed circuit breaker for LLM provider calls in the voice hot path
+    # (fast-fails to the secondary provider instead of waiting out VOICE_TURN_TIMEOUT_SEC).
+    LLM_CIRCUIT_BREAKER_ENABLED: bool = True
+    LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD: int = 3
+    LLM_CIRCUIT_BREAKER_COOLDOWN_SEC: int = 30
     GOOGLE_STT_LANGUAGE_CODE: str = "en-US"  # Default language
     # Deprecated fallback; prefer STT_SAMPLE_RATE for provider-neutral STT settings.
     GOOGLE_STT_SAMPLE_RATE: int = 8000
@@ -814,6 +826,13 @@ class Settings(BaseSettings):
     VOICE_SOFT_DUCK_MS: int = 400
     VOICE_SOFT_DUCK_GAIN: float = 0.35
     VOICE_HISTORY_MAX_MESSAGES: int = 50
+    # V-07: History Summarization Pipeline — compresses dropped turns with a mini-LLM
+    # instead of silently slicing them away.  The summary is injected at the top of the
+    # history block so the agent retains full-call memory without growing the prompt.
+    VOICE_HISTORY_SUMMARIZATION_ENABLED: bool = True
+    # Minimum number of unsummarized dropped turns before triggering a compression task.
+    # Batching avoids calling the mini-LLM on every single new turn (cost/latency opt).
+    VOICE_HISTORY_SUMMARY_CHUNK_SIZE: int = 10
     VOICE_TTS_FLUSH_MIN_WORDS: int = 4
     # Smaller max keeps per-chunk synthesis short (~300ms for ElevenLabs) so the
     # playback gate chain never backs up — eliminates "arr arr" / mid-chunk silence.
@@ -1076,12 +1095,18 @@ class Settings(BaseSettings):
     GCS_KB_BUCKET: str = ""
     GCS_KB_PREFIX: str = "kb-files"
 
-    # AWS S3 storage (GCS → S3 migration)
-    AWS_ACCESS_KEY_ID: str = ""
-    AWS_SECRET_ACCESS_KEY: str = ""
+    # AWS S3 storage (GCS → S3 migration). Authentication is via the ambient
+    # AWS IAM Task Role / Default Credential Provider Chain — no static keys.
     AWS_REGION_NAME: str = "us-east-1"
     S3_RECORDINGS_BUCKET: str = ""
     S3_KB_BUCKET: str = ""
+
+    # LiveKit S3 egress — STS AssumeRole config for LiveKit's own AWS SDK to
+    # upload call recordings to S3 (the LiveKit server process, not this app,
+    # assumes the role). Optional: when LIVEKIT_S3_ASSUME_ROLE_ARN is unset,
+    # LiveKit falls back to whatever ambient credentials it has.
+    LIVEKIT_S3_ASSUME_ROLE_ARN: str = ""
+    LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID: str = ""
 
     # HIPAA — Google Cloud DLP + CMEK
     # GCP_PROJECT_ID is declared above (line ~245); no second declaration here.
@@ -1214,6 +1239,9 @@ class Settings(BaseSettings):
             history_max_turns=self.VOICE_LLM_HISTORY_MAX_TURNS,
             default_temperature=self.VOICE_LLM_DEFAULT_TEMPERATURE,
             fallback_message=self.VOICE_LLM_FALLBACK_MESSAGE,
+            circuit_breaker_enabled=self.LLM_CIRCUIT_BREAKER_ENABLED,
+            circuit_breaker_failure_threshold=self.LLM_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
+            circuit_breaker_cooldown_sec=self.LLM_CIRCUIT_BREAKER_COOLDOWN_SEC,
             deepgram_api_key=self.DEEPGRAM_API_KEY,
             deepgram_stt_model=self.DEEPGRAM_STT_MODEL,
             deepgram_stt_language=self.DEEPGRAM_STT_LANGUAGE,
@@ -1310,8 +1338,6 @@ class Settings(BaseSettings):
             gcs_recordings_prefix=self.GCS_RECORDINGS_PREFIX,
             gcs_kb_bucket=self.GCS_KB_BUCKET,
             gcs_kb_prefix=self.GCS_KB_PREFIX,
-            aws_access_key_id=self.AWS_ACCESS_KEY_ID,
-            aws_secret_access_key=self.AWS_SECRET_ACCESS_KEY,
             aws_region_name=self.AWS_REGION_NAME,
             s3_recordings_bucket=self.S3_RECORDINGS_BUCKET,
             s3_kb_bucket=self.S3_KB_BUCKET,

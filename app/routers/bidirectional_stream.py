@@ -111,6 +111,7 @@ from app.core.logger import logger
 # Deepgram STT is used via SttPipeline (app/voice/stt_pipeline.py).
 
 from app.services.call_session_service import call_session_service
+from app.services.token_budget_service import token_budget_service
 from app.services.voice_screening_qualification_service import (
     is_jd_recruitment_voice_context,
     persist_voice_screening_status_signal,
@@ -119,6 +120,7 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.openai_service import openai_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
+from app.services.llm_circuit_breaker import llm_circuit_breaker
 from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
@@ -240,6 +242,14 @@ class _SystemPromptBuildResult:
     vertex_kb_context: str | None
     llm_runtime: Any
     rag_trace: Any
+
+
+class _PrimaryLlmCircuitOpen(Exception):
+    """Sentinel raised internally when the LLM circuit breaker has the
+    primary provider's circuit OPEN, so generate_and_stream_response's
+    existing exception-driven fallback logic routes straight to the
+    secondary provider (or canned fallback for Gemini agents) without ever
+    attempting the doomed primary call — avoids dead air."""
 
 
 class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
@@ -547,6 +557,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # Entries are (role, content) tuples matching the transcript filter rules.
         self._conversation_history_cache: list[tuple[str, str]] = []
 
+        # V-07 History Summarization Pipeline state.
+        # _history_summary holds the rolling compressed summary of turns that have been
+        # dropped from the active sliding window.  It is injected into build_system_prompt
+        # as an <earlier_conversation_summary> block so the agent retains full-call memory.
+        # _last_summarized_turn_index tracks the exclusive end of the range already fed to
+        # compress_history so we never re-summarize the same turns twice.
+        self._history_summary: str = ""
+        self._last_summarized_turn_index: int = 0
+
         # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
         self._voice_transcript_lock = asyncio.Lock()
         # One completion at a time (interim/final regen policy, task awaits). Matches product
@@ -673,7 +692,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
             self._flow_init()
         except Exception as e:
-            logger.error(f"Error loading session data: {e}", exc_info=True)
+            logger.error("Error loading session data: %s", e, exc_info=True)
 
     def _jd_recruitment_screening_active(self) -> bool:
         """JD-backed recruitment screening only — skips booking/general outbound calls."""
@@ -815,7 +834,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._voice_orchestrator.on_audio_chunk(audio_data)
 
         except Exception as e:
-            logger.error(f"Error handling media message: {e}", exc_info=True)
+            logger.error("Error handling media message: %s", e, exc_info=True)
 
     def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
@@ -1113,13 +1132,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         if self._flow_executor and await self._flow_on_transcript(transcript, confidence):
             return
 
+        _turn_timeout = float(getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 20.0) or 20.0)
         try:
             await asyncio.wait_for(
                 self.generate_and_stream_response(transcript, confidence, is_greeting=False),
-                timeout=12.0,
+                timeout=_turn_timeout,
             )
         except asyncio.TimeoutError:
-            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
+            logger.error("[LLM] generate_and_stream_response timed out (%.1fs) — aborting turn", _turn_timeout)
 
     async def _reject_with_reprompt(self) -> None:
         """F-01: Queue a varied re-prompt phrase instead of silence on STT rejection."""
@@ -1378,7 +1398,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
 
         except Exception as e:
-            logger.error(f"Error processing transcript: {e}", exc_info=True)
+            logger.error("Error processing transcript: %s", e, exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
@@ -1533,7 +1553,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
-            logger.error(f"Error processing interim: {e}")
+            logger.error("Error processing interim: %s", e)
     
     async def _send_quick_acknowledgement(self, user_text: str):
         """
@@ -1932,15 +1952,35 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 history_text = "\n".join(
                     f"{role.capitalize()}: {content}" for role, content in filtered
                 )
+
             except Exception:
                 history_text = ""
 
-        if _use_vertex_llm:
-            history_text = (
-                "(Prior conversation turns are provided separately — "
-                "maintain continuity; do not re-ask answered questions.)"
+        # V-07: Prepend rolling summary of dropped turns so the agent retains context
+        # from earlier in the call (caller name, problem, location, etc.) that has
+        # already scrolled out of the active window.  Applied unconditionally here so it
+        # works for normal calls, cache-empty/error paths, and the Vertex override below.
+        _v07_summary_block = ""
+        if self._history_summary:
+            _v07_summary_block = (
+                f"<earlier_conversation_summary>\n"
+                f"{self._history_summary.strip()}\n"
+                f"</earlier_conversation_summary>\n\n"
             )
-        
+
+        if _use_vertex_llm:
+            # Vertex calls provide turns natively — replace the recent-turns text with a
+            # short note.  Summary of dropped turns is still appended below since the
+            # native Vertex history only covers the active window.
+            history_text = (
+                "Prior conversation turns are provided separately — "
+                "maintain continuity; do not re-ask answered questions."
+            )
+
+        # Apply the summary block once, after any Vertex override.
+        if _v07_summary_block:
+            history_text = _v07_summary_block + history_text
+
         booking_memory_block = self._build_booking_memory_block()
 
         # Build system prompt with agent personality + history
@@ -2207,6 +2247,61 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
 
+        # F-11: Call-drop reconnect recognition
+        if (
+            self.call_session is not None
+            and isinstance(self.call_session.call_metadata, dict)
+            and self.call_session.call_metadata.get("is_reconnect")
+        ):
+            reconnect_instruction = (
+                "\n\nIMPORTANT — RECONNECTING CALLER (CALL DROP): This caller was "
+                "disconnected less than 5 minutes ago. Acknowledge the reconnection "
+                "warmly (e.g. \"Welcome back! Looks like we got cut off — let's pick "
+                "up right where we left off.\"). Do NOT use a generic introductory "
+                "greeting, re-introduce yourself, or ask questions that were already "
+                "answered in the previous interaction.\n"
+            )
+            # Best-effort: pull a brief snippet from the dropped session's transcript,
+            # if reachable — fails open, never blocks the turn.
+            if self.db:
+                try:
+                    reconnect_from_id = self.call_session.call_metadata.get(
+                        "reconnect_from_session_id"
+                    )
+                    dropped = (
+                        call_session_service.get_call_session_by_id_and_tenant(
+                            self.db,
+                            uuid.UUID(reconnect_from_id),
+                            self.call_session.tenant_id,
+                        )
+                        if reconnect_from_id
+                        else None
+                    )
+                    if dropped and dropped.call_transcript:
+                        raw = dropped.call_transcript
+                        dropped_history = (
+                            json.loads(raw) if isinstance(raw, str) else list(raw)
+                        )
+                        snippet_lines = []
+                        for msg in dropped_history[-4:]:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "unknown")
+                                content = msg.get("content") or msg.get("message", "")
+                                if content:
+                                    snippet_lines.append(f"{role.capitalize()}: {content}")
+                        if snippet_lines:
+                            reconnect_instruction += (
+                                "\nContext from the dropped call (for your reference only, "
+                                "do not read this verbatim):\n"
+                                + "\n".join(snippet_lines)
+                                + "\n"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "F-11 reconnect transcript snippet lookup failed: %s", exc
+                    )
+            system_prompt = system_prompt + reconnect_instruction
+
         # Prepend current date/time so the agent knows what "today", "tomorrow",
         # and "past slots" mean. Also injected into appointment booking flow.
         _now_local = datetime.now(timezone.utc)
@@ -2279,7 +2374,21 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     and (self.call_session.call_type or "").lower() == "outbound"
                     and self._jd_recruitment_screening_active()
                 )
-                if self.agent and inbound:
+                # F-11: Call-drop reconnect recognition — override the scripted
+                # greeting when voice_inbound (app/routers/voice.py) linked this
+                # call to a recent dropped session from the same caller.
+                is_reconnect = bool(
+                    inbound
+                    and self.call_session is not None
+                    and isinstance(self.call_session.call_metadata, dict)
+                    and self.call_session.call_metadata.get("is_reconnect")
+                )
+                if is_reconnect:
+                    greeting_text = (
+                        "Welcome back! Looks like we got cut off there — let's "
+                        "pick up right where we left off."
+                    )
+                elif self.agent and inbound:
                     if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
                     elif getattr(self.agent, "first_message", None):
@@ -2374,7 +2483,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._twilio_buffer_primed = False
 
                 return  # Done! No LLM needed for greeting
-            
+
+            if self.call_session and self.db:
+                try:
+                    within_budget, _usage, _limit = await token_budget_service.check_daily_budget(
+                        self.db, self.call_session.tenant_id
+                    )
+                except Exception as exc:
+                    logger.warning("Token budget check failed; failing open: %s", exc)
+                    within_budget = True
+                if not within_budget:
+                    refusal_text = (
+                        "This workspace has reached its daily AI usage limit. Please "
+                        "contact support or your administrator."
+                    )
+                    await self._add_to_transcript("agent", refusal_text, "system")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": refusal_text,
+                            "chunk_id": "budget_exceeded",
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                        })
+                    self._twilio_buffer_primed = False
+                    return
+
             # Reset TTS state for new response generation
             self._tts_cancel.clear()
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
@@ -2414,7 +2547,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
             )
             _time_flush_target_words = 3 if low_latency_fastpath else 4
-            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
+            logger.info("🧠 Calling LLM (%s) for response to: '%s...'", llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service', user_text[:20])
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
@@ -2635,10 +2768,26 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
             # F-03: Use varied fallback pool; keep legacy env var as override
             _legacy_fallback = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", None)
+            # A-05: distributed circuit breaker — trips OPEN across all calls/workers
+            # after consecutive failures, so a doomed provider isn't retried per-turn.
+            # Keyed by the actual resolved provider slug (openai/gemini/groq), not the
+            # binary gemini/else split — collapsing Groq into "openai" would let an
+            # OpenAI outage fast-fail healthy Groq tenants and vice versa.
+            _primary_provider = (_provider_slug or "openai").lower()
+            _breaker_open = not await llm_circuit_breaker.can_execute(_primary_provider)
+            if _breaker_open:
+                logger.warning(
+                    "[CircuitBreaker] %s circuit is OPEN — fast-failing to secondary provider without dead air",
+                    _primary_provider,
+                )
             try:
                 from app.services.vertex_gemini_service import VertexGeminiService as _VertexGeminiServiceCls
 
-                if self._calendly_enabled() and isinstance(llm_service, _VertexGeminiServiceCls):
+                if (
+                    not _breaker_open
+                    and self._calendly_enabled()
+                    and isinstance(llm_service, _VertexGeminiServiceCls)
+                ):
                     # Calendly-enabled agents resolve availability/booking via Gemini
                     # native function calling — bypass the legacy try_stream() +
                     # [CHECK_SLOTS:...]/[BOOK_APPOINTMENT:...] regex-token pipeline.
@@ -2651,6 +2800,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     chunk_counter += 1
                     if final_text and self._tts_pipeline and not self._tts_cancel.is_set():
                         safe_tts_text = self._prepare_tts_text(final_text)
@@ -2668,7 +2818,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
                 else:
+                    if _breaker_open:
+                        raise _PrimaryLlmCircuitOpen(_primary_provider)
                     final_text = await try_stream(llm_service, model_name, api_key)
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     self._consecutive_llm_failures = 0  # F-03: reset on success
             except VertexLlmError as vertex_err:
                 # Vertex-specific errors (quota, timeout, content filter) — canned fallback only.
@@ -2678,6 +2831,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     vertex_err.error_type,
                     model_name,
                 )
+                await llm_circuit_breaker.record_failure(_primary_provider, vertex_err)
                 self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                 _etype = "timeout" if "timeout" in str(vertex_err.error_type).lower() else "quota" if "quota" in str(vertex_err.error_type).lower() else "general"
                 _fallback_msg = _legacy_fallback or self._pick_llm_fallback(_etype, self._consecutive_llm_failures)
@@ -2694,7 +2848,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
             except Exception as e:
-                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
+                if isinstance(e, _PrimaryLlmCircuitOpen):
+                    # Already logged when the breaker was checked; don't count
+                    # this as a fresh failure — it wasn't an actual call attempt.
+                    pass
+                else:
+                    logger.warning("⚠️ Primary LLM failed (%s): %s. Attempting fallback...", model_name, e)
+                    await llm_circuit_breaker.record_failure(_primary_provider, e)
                 if _is_gemini_agent:
                     # Gemini agents: canned fallback only, no cross-provider attempt
                     logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")
@@ -2720,7 +2880,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         else:
                             final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
                     except Exception as e:
-                        logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
+                        logger.warning("⚠️ Secondary LLM fallback failed: %s. Attempting VoiceLoggingService fallback...", e)
                         try:
                             final_text = await VoiceLoggingService.generate_agent_response(
                                 speech_text=user_text,
@@ -2747,7 +2907,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         self._deferred_conversation_memory_update(turn_context, user_text)
                                     )
                         except Exception as e:
-                            logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
+                            logger.warning("⚠️ VoiceLoggingService fallback failed: %s. Using ultimate fallback.", e)
                             self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                             _fallback_msg = _legacy_fallback or self._pick_llm_fallback("general", self._consecutive_llm_failures)
                             final_text = _fallback_msg
@@ -2767,6 +2927,18 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
 
             if final_text:
+                if self.call_session:
+                    try:
+                        _estimated_tokens = int((len(system_prompt or "") + len(final_text or "")) / 3.8)
+                        if _estimated_tokens > 0:
+                            asyncio.create_task(
+                                token_budget_service.record_daily_tokens(
+                                    self.call_session.tenant_id, _estimated_tokens
+                                )
+                            )
+                    except Exception as exc:
+                        logger.debug("Token budget recording failed: %s", exc)
+
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = _RE_VOICE_END_CALL.sub(
                     "", self._strip_control_tokens_for_tts(final_text)
@@ -2828,14 +3000,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
 
     async def _deferred_conversation_memory_update(
         self, turn_context: TurnContext, user_text: str
     ) -> None:
         """
         Non-blocking hook after first TTS is queued. Extend with embeddings or summaries
-        without adding latency to STT → LLM → TTS.
+        without adding latency to STT -> LLM -> TTS.
+
+        V-07: Also triggers background history summarization when the conversation history
+        has grown past the active window and enough unsummarized dropped turns have
+        accumulated.  Summarization always runs as a **detached** asyncio.Task so this
+        hook returns immediately and never blocks the hot path.
         """
         try:
             logger.debug(
@@ -2847,7 +3024,73 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("deferred conversation memory update failed: %s", e, exc_info=True)
-    
+
+        # ── V-07: History Summarization Pipeline ─────────────────────────────
+        # Runs completely out-of-band as a detached background task — zero impact
+        # on the STT -> LLM -> TTS hot path.
+        try:
+            from app.core.config import settings as _settings  # local import to avoid circulars
+
+            _summarization_enabled = getattr(_settings, "VOICE_HISTORY_SUMMARIZATION_ENABLED", True)
+            if not _summarization_enabled:
+                return
+
+            _max_msgs: int = getattr(self, "HISTORY_MAX_MESSAGES", 50)
+            _chunk_size: int = getattr(_settings, "VOICE_HISTORY_SUMMARY_CHUNK_SIZE", 10)
+            _total_turns: int = len(self._conversation_history_cache)
+
+            if _total_turns <= _max_msgs:
+                # History hasn't grown past the active window yet — nothing dropped.
+                return
+
+            # Index of the first turn that is currently OUTSIDE the active window
+            # (i.e., the last turn dropped by the sliding-window slice).
+            _drop_boundary: int = _total_turns - _max_msgs
+
+            # How many newly dropped turns haven't been summarized yet?
+            _unsummarized_count: int = _drop_boundary - self._last_summarized_turn_index
+            if _unsummarized_count < _chunk_size:
+                # Not enough new dropped turns to justify a mini-LLM call yet; wait for
+                # the next turn.
+                return
+
+            # Snapshot the turns to summarize (avoids holding a reference to the
+            # live list inside the background task).
+            _turns_to_compress: list[tuple[str, str]] = list(
+                self._conversation_history_cache[
+                    self._last_summarized_turn_index : _drop_boundary
+                ]
+            )
+            _current_summary: str = self._history_summary
+            _new_index: int = _drop_boundary
+
+            async def _background_summarize() -> None:
+                """Detached task: runs compress_history and updates handler state."""
+                try:
+                    from app.services.history_summarization_service import compress_history
+
+                    updated_summary = await compress_history(
+                        existing_summary=_current_summary,
+                        new_turns=_turns_to_compress,
+                    )
+                    # Write back to handler state atomically (GIL makes str assignment safe).
+                    self._history_summary = updated_summary
+                    self._last_summarized_turn_index = _new_index
+                    logger.debug(
+                        "[V-07] History summary updated: index=%d summary_len=%d",
+                        _new_index,
+                        len(updated_summary),
+                    )
+                except Exception as _bg_exc:  # pragma: no cover - defensive
+                    # Never let a background summarization failure affect the call.
+                    logger.debug("[V-07] Background summarization task failed: %s", _bg_exc)
+
+            asyncio.create_task(_background_summarize())
+
+        except Exception as _exc:
+            # Defensive: the deferred hook must never raise.
+            logger.debug("[V-07] History summarization scheduling failed: %s", _exc)
+
     # ── Booking and calendar token methods live in app/voice/booking_mixin.py ──
 
     # ── TTS streaming methods live in app/voice/tts_stream_mixin.py ──
@@ -2920,7 +3163,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Wait for first media packet (user actually picks up - VAPI-style)
 
         except Exception as e:
-            logger.error(f"Error in handle_start_message: {e}", exc_info=True)
+            logger.error("Error in handle_start_message: %s", e, exc_info=True)
     
     async def _handle_user_pickup(self):
         """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
@@ -2964,7 +3207,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 asyncio.create_task(self._schedule_outbound_screening_intro_after_delay())
         
         except Exception as e:
-            logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+            logger.error("Error in _handle_user_pickup: %s", e, exc_info=True)
 
     async def _schedule_outbound_screening_intro_after_delay(self) -> None:
         """Brief delay after pickup, then scripted recruitment intro via same path as inbound greeting."""
@@ -3165,7 +3408,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             await self._full_shutdown()
         except Exception as e:
-            logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
+            logger.error("Error in handle_stop_message: %s", e, exc_info=True)
 
 
 async def _receive_or_stop(
@@ -3226,7 +3469,7 @@ async def bidirectional_stream_websocket(
     try:
         await websocket.accept()
     except Exception as e:
-        logger.error(f"Failed to accept bidirectional WebSocket: {e}")
+        logger.error("Failed to accept bidirectional WebSocket: %s", e)
         return
     
     # Get database session
@@ -3248,7 +3491,7 @@ async def bidirectional_stream_websocket(
 
             if data is None:
                 # Internal end-call path triggered _full_shutdown + set _stop_event
-                logger.info(f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket")
+                logger.info("🛑 Internal stop event fired for session %s — closing WebSocket", callSessionId)
                 break
 
             message = json.loads(data)
@@ -3271,10 +3514,10 @@ async def bidirectional_stream_websocket(
                 pass  # Synchronization marks
     
     except WebSocketDisconnect:
-        logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 Bidirectional WebSocket disconnected for session %s", callSessionId)
     
     except Exception as e:
-        logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in bidirectional WebSocket: %s", e, exc_info=True)
     
     finally:
         # Ensure all pipelines are fully shut down (idempotent — safe if already done)
@@ -3282,7 +3525,7 @@ async def bidirectional_stream_websocket(
             try:
                 await handler._full_shutdown()
             except Exception as e:
-                logger.debug(f"Pipeline cleanup in finally: {e}")
+                logger.debug("Pipeline cleanup in finally: %s", e)
 
         # Explicitly close the WebSocket so Twilio gets an immediate close frame
         # instead of waiting for the TCP connection to time out.
@@ -3322,8 +3565,8 @@ async def tts_only_websocket(
     try:
         await session.run()
     except WebSocketDisconnect:
-        logger.info(f"🔌 TTS-ONLY WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 TTS-ONLY WebSocket disconnected for session %s", callSessionId)
     except Exception as e:
-        logger.error(f"Unexpected error in TTS-ONLY WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in TTS-ONLY WebSocket: %s", e, exc_info=True)
     finally:
         db.close()

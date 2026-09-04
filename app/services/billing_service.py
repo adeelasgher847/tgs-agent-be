@@ -116,7 +116,7 @@ class BillingService:
         try:
             session = stripe.checkout.Session.retrieve(session_id)
             if session.payment_status != "paid":
-                logger.warning(f"Session {session_id} not paid yet (status: {session.payment_status})")
+                logger.warning("Session %s not paid yet (status: %s)", session_id, session.payment_status)
                 return None
 
             metadata = StripeService.stripe_metadata_as_dict(session["metadata"])
@@ -127,7 +127,7 @@ class BillingService:
             crm_type = metadata.get('crm_type')
 
             if not tenant_id_str:
-                logger.warning(f"Session {session_id} missing tenant_id in metadata")
+                logger.warning("Session %s missing tenant_id in metadata", session_id)
                 return None
 
             tenant_id = uuid.UUID(tenant_id_str)
@@ -135,7 +135,7 @@ class BillingService:
             plan_id = uuid.UUID(plan_id_str) if plan_id_str else None
 
             if not BillingService._claim_checkout_session(db, session_id, stripe_event_id):
-                logger.info(f"Session {session_id} already processed.")
+                logger.info("Session %s already processed.", session_id)
                 return {"status": "already_processed"}
 
             # Plan purchase: update subscription (core plans additionally grant monthly credits)
@@ -157,7 +157,7 @@ class BillingService:
                         if sub.current_period_end:
                             period_end = datetime.fromtimestamp(sub.current_period_end, tz=timezone.utc)
                     except Exception as exc:
-                        logger.warning(f"Failed to retrieve Stripe subscription period for {stripe_sub_id}: {exc}")
+                        logger.warning("Failed to retrieve Stripe subscription period for %s: %s", stripe_sub_id, exc)
 
                 if is_core_plan:
                     BillingService.update_subscription(
@@ -181,8 +181,7 @@ class BillingService:
                             tenant.status = 'active'
                             db.commit()
                     logger.info(
-                        f"Core plan subscription updated for tenant {tenant_id} (plan={plan_row.name}) "
-                        f"via sync - granted {credits_granted} credits"
+                        "Core plan subscription updated for tenant %s (plan=%s) via sync - granted %s credits", tenant_id, plan_row.name, credits_granted
                     )
                     return {
                         "status": "success",
@@ -204,7 +203,7 @@ class BillingService:
                     current_period_start=period_start,
                     current_period_end=period_end
                 )
-                logger.info(f"Subscription updated for user {user_id} (crm_type={crm_type}) via sync - no credits added")
+                logger.info("Subscription updated for user %s (crm_type=%s) via sync - no credits added", user_id, crm_type)
                 return {
                     "status": "success",
                     "credits_added": 0,
@@ -225,7 +224,7 @@ class BillingService:
                 if tenant:
                     tenant.credits = (tenant.credits or Decimal("0")) + credits_to_add
                     tenant.status = 'active'
-                    logger.info(f"Added {credits_to_add} credits to tenant {tenant_id} (credit_purchase)")
+                    logger.info("Added %s credits to tenant %s (credit_purchase)", credits_to_add, tenant_id)
 
             db.commit()
             return {
@@ -235,13 +234,18 @@ class BillingService:
             }
         except Exception as e:
             from app.core.logger import logger
-            logger.error(f"Error syncing payment status for session {session_id}: {str(e)}")
+            logger.error("Error syncing payment status for session %s: %s", session_id, str(e))
             db.rollback()
             return None
 
     @staticmethod
     def has_active_paid_subscription(db: Session, user_id: uuid.UUID) -> bool:
-        """Check if user has at least one active paid (CRM) subscription with valid period."""
+        """Check if user has at least one active paid (CRM) subscription with valid period.
+
+        CRM-addon `Subscription` rows are user-scoped, not tenant-scoped (they never
+        set `tenant_id` — see the model's `uq_user_crm_subscription` constraint), so
+        this check is intentionally per-user rather than per-tenant.
+        """
         now = datetime.now(timezone.utc)
         subscription = db.query(Subscription).join(Plan).filter(
             Subscription.user_id == user_id,

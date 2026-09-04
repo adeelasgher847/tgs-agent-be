@@ -1,4 +1,4 @@
-from sqlalchemy import Boolean, Column, String, DateTime, Numeric, Index, ForeignKey, CheckConstraint, text
+from sqlalchemy import Boolean, Column, String, DateTime, Numeric, Integer, Index, ForeignKey, CheckConstraint, text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -30,7 +30,9 @@ class Tenant(Base):
     workspace_slug = Column(String(100), nullable=True, index=True)
     uses_master_wallet = Column(Boolean, nullable=False, server_default="false")
     auto_link_new_workspaces = Column(Boolean, nullable=False, server_default="false")
-    
+    # NULL = unlimited/observe-only; a numeric value is a hard daily cap enforced by token_budget_service
+    llm_token_budget_daily = Column(Integer, nullable=True, default=None)
+
     # Relationships
     users = relationship("User", secondary="user_tenant_association", back_populates="tenants") 
     agents = relationship("Agent", back_populates="tenant")

@@ -86,13 +86,13 @@ def decode_background_audio_from_base64() -> tuple[bytes, int]:
         return mulaw_bytes, len(mulaw_bytes)
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr.decode("utf-8", errors="ignore") if e.stderr else str(e)
-        logger.error(f"FFmpeg conversion failed: {error_msg}")
+        logger.error("FFmpeg conversion failed: %s", error_msg)
         return b"", 0
     except FileNotFoundError:
         logger.error("FFmpeg not found; embedded background audio disabled.")
         return b"", 0
     except Exception as e:
-        logger.error(f"Failed to decode embedded background audio: {e}")
+        logger.error("Failed to decode embedded background audio: %s", e)
         return b"", 0
     finally:
         if mp3_path and os.path.exists(mp3_path):
@@ -131,7 +131,7 @@ def mix_audio_with_background(
             mixed.append(max(-32768, min(32767, m)))
         return bytes(linear_to_ulaw_sample(s) for s in mixed)
     except Exception as e:
-        logger.warning(f"Background mix failed; using dry voice. err={e}")
+        logger.warning("Background mix failed; using dry voice. err=%s", e)
         return tts_audio
 
 
@@ -172,7 +172,7 @@ def apply_volume_fade(audio_bytes: bytes, volume: float) -> bytes:
         ]
         return bytes(linear_to_ulaw_sample(s) for s in adjusted_samples)
     except Exception as e:
-        logger.warning(f"⚠️ Volume adjustment failed: {e}")
+        logger.warning("⚠️ Volume adjustment failed: %s", e)
         return audio_bytes
 
 
@@ -215,7 +215,7 @@ def apply_micro_fade_in(audio_bytes: bytes, duration_ms: float = 25.0) -> bytes:
         return faded_part_mulaw + remaining_part
         
     except Exception as e:
-        logger.warning(f"⚠️ Micro fade-in failed: {e}")
+        logger.warning("⚠️ Micro fade-in failed: %s", e)
         return audio_bytes
 
 
@@ -264,7 +264,7 @@ def apply_micro_fade_out(audio_bytes: bytes, duration_ms: float = 25.0) -> bytes
         return head_part + faded_part_mulaw
 
     except Exception as e:
-        logger.warning(f"⚠️ Micro fade-out failed: {e}")
+        logger.warning("⚠️ Micro fade-out failed: %s", e)
         return audio_bytes
 
 
@@ -669,7 +669,7 @@ def crossfade_mulaw_segments(prev_tail: bytes, next_head: bytes, overlap_bytes: 
         return prev_tail[:-overlap] + bytes(mixed) + next_head[overlap:]
 
     except Exception as e:
-        logger.warning(f"⚠️ Crossfade failed, using direct join: {e}")
+        logger.warning("⚠️ Crossfade failed, using direct join: %s", e)
         return (prev_tail or b"") + (next_head or b"")
 
 
@@ -758,6 +758,6 @@ def add_ambient_noise_to_mulaw(audio_bytes: bytes, noise_level: float = 0.02) ->
 
         return bytes(linear_to_ulaw_sample(sample) for sample in mixed_linear)
     except Exception as e:
-        logger.warning(f"Ambient noise mix failed, returning dry audio: {e}")
+        logger.warning("Ambient noise mix failed, returning dry audio: %s", e)
         return audio_bytes
 

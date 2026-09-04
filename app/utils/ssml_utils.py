@@ -134,7 +134,7 @@ def add_natural_ssml(text: str, use_ssml: bool = True, add_breaths: bool = True,
         ]
         chosen_filler = random.choice(boundary_fillers)
         ssml += chosen_filler
-        logger.debug(f"🔗 Added boundary filler: {chosen_filler[:50]}")
+        logger.debug("🔗 Added boundary filler: %s", chosen_filler[:50])
     
     ssml += '</speak>'
     

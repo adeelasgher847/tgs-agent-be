@@ -396,9 +396,9 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
                 try:
                     api_key = decrypt_api_key(model.api_key)
                 except Exception as e:
-                    logger.error(f"Failed to decrypt API key for model '{model_name}': {e}", exc_info=True)
+                    logger.error("Failed to decrypt API key for model '%s': %s", model_name, e, exc_info=True)
         except Exception as e:
-            logger.error(f"Failed to load model configuration for '{model_name}': {e}", exc_info=True)
+            logger.error("Failed to load model configuration for '%s': %s", model_name, e, exc_info=True)
 
         if not api_key:
             raise HTTPException(
@@ -424,7 +424,7 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
         try:
             parsed = json.loads(raw_content)
         except json.JSONDecodeError as e:
-            logger.error(f"Prompt engineer JSON parse error: {e}; raw content: {raw_content}")
+            logger.error("Prompt engineer JSON parse error: %s; raw content: %s", e, raw_content)
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="AI returned invalid JSON for prompt design. Please try again.",
@@ -460,7 +460,7 @@ Remember: OUTPUT MUST BE VALID JSON ONLY.
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to design agent prompt: {e}", exc_info=True)
+        logger.error("Failed to design agent prompt: %s", e, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to design agent prompt: {str(e)}",

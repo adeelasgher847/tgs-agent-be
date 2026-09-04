@@ -508,7 +508,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            logger.error(f"Error getting checkout sessions: {str(e)}", exc_info=True)
+            logger.error("Error getting checkout sessions: %s", str(e), exc_info=True)
         
         # 2. Get all invoices
         try:
@@ -576,7 +576,7 @@ def get_payment_history(
                 
                 payment_history.append(payment_entry)
         except Exception as e:
-            logger.error(f"Error getting invoices: {str(e)}", exc_info=True)
+            logger.error("Error getting invoices: %s", str(e), exc_info=True)
         
         # Sort by creation date (newest first)
         payment_history.sort(key=lambda x: x["created"], reverse=True)
@@ -742,6 +742,7 @@ def get_tenant_plan(
         subscription_status=subscription.status if subscription else None,
         current_period_end=subscription.current_period_end if subscription else None,
         cancel_at_period_end=subscription.cancel_at_period_end if subscription else False,
+        llm_token_budget_daily=tenant.llm_token_budget_daily,
     )
 
 

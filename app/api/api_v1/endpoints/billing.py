@@ -98,7 +98,7 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
                 if period["end"]:
                     period_end = datetime.fromtimestamp(period["end"], tz=timezone.utc)
             except (KeyError, TypeError, IndexError) as exc:
-                logger.warning(f"Failed to extract invoice line period: {exc}")
+                logger.warning("Failed to extract invoice line period: %s", exc)
 
             if not period_start or not period_end:
                 logger.warning(
@@ -114,13 +114,13 @@ async def stripe_webhook(request: Request, db: Session = Depends(get_db)):
             return {"status": "success", "event_type": event_type}
 
         if event_type in IGNORED_EVENT_TYPES:
-            logger.info(f"Ignored event type: {event_type}")
+            logger.info("Ignored event type: %s", event_type)
             return {"status": "ignored", "event_type": event_type}
 
-        logger.info(f"Unhandled event type: {event_type}")
+        logger.info("Unhandled event type: %s", event_type)
         return {"status": "success", "event_type": event_type}
     except Exception as e:
-        logger.error(f"Error handling webhook: {str(e)}", exc_info=True)
+        logger.error("Error handling webhook: %s", str(e), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error processing webhook"

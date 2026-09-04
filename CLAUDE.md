@@ -342,7 +342,8 @@ Mock external HTTP APIs at the boundary with `unittest.mock.patch` or `respx`.
 | `REFRESH_TOKEN_EXPIRE_DAYS` | | Default 7 days |
 | `SSO_ENCRYPTION_KEY` | SSO | AES key for SSO token encryption |
 | `GCP_PROJECT_ID` | HIPAA | Google Cloud project for CMEK KMS key management; required in staging/production |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_REGION_NAME` | S3 | Recordings, KB files, batch CSVs, data exports |
+| `AWS_REGION_NAME` | S3 | Recordings, KB files, batch CSVs, data exports. Auth is via the ambient AWS IAM Task Role (Default Credential Provider Chain) — no static key env vars are read |
+| `LIVEKIT_S3_ASSUME_ROLE_ARN` / `LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID` | Voice | Optional STS AssumeRole config for LiveKit's own AWS SDK to upload call recordings to S3 (`livekit_recording_service.py`); leave blank to let LiveKit fall back to its own ambient credentials |
 | `OTEL_TRACING_ENABLED` | Observability | Default `false`; enable to export spans via OTLP |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Observability | Default `http://localhost:4317` |
 | `OTEL_SERVICE_NAME` | Observability | Default `tgs-agent-be` |

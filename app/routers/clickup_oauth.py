@@ -242,7 +242,7 @@ async def clickup_oauth_callback(
                 if teams:
                     team_id = teams[0].get("id", "")
                     team_name = teams[0].get("name", "Unknown")
-                    logger.info(f"✅ Found team: {team_name} (ID: {team_id})")
+                    logger.info("✅ Found team: %s (ID: %s)", team_name, team_id)
                     
                     # Get spaces for this team
                     spaces_url = f"https://api.clickup.com/api/v2/team/{team_id}/space"
@@ -259,18 +259,18 @@ async def clickup_oauth_callback(
                                 additional_config = {}
                             if "space_id" not in additional_config or not additional_config.get("space_id"):
                                 additional_config["space_id"] = space_id
-                                logger.info(f"✅ Auto-detected and stored ClickUp space: {space_name} (ID: {space_id})")
+                                logger.info("✅ Auto-detected and stored ClickUp space: %s (ID: %s)", space_name, space_id)
                             else:
-                                logger.info(f"ℹ️ Space ID already exists in config: {additional_config.get('space_id')}")
+                                logger.info("ℹ️ Space ID already exists in config: %s", additional_config.get('space_id'))
                     else:
-                        logger.warning(f"⚠️ Failed to fetch spaces: HTTP {spaces_response.status_code}")
+                        logger.warning("⚠️ Failed to fetch spaces: HTTP %s", spaces_response.status_code)
                 else:
                     logger.warning("⚠️ No teams found for this access token")
             else:
-                logger.warning(f"⚠️ Failed to fetch teams: HTTP {team_response.status_code}")
+                logger.warning("⚠️ Failed to fetch teams: HTTP %s", team_response.status_code)
         except Exception as e:
             # Don't fail the OAuth flow if space detection fails
-            logger.error(f"⚠️ Failed to auto-detect space_id: {str(e)}. You can add it manually later.", exc_info=True)
+            logger.error("⚠️ Failed to auto-detect space_id: %s. You can add it manually later.", str(e), exc_info=True)
         
         # Update additional_config
         clickup_config.additional_config = json.dumps(additional_config)

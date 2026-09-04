@@ -32,8 +32,8 @@ class VoiceLoggingService:
         Log voice interaction during a call
         """
         try:
-            logger.info(f"🎤 LOGGING VOICE INTERACTION | Session: {call_session_id} | Type: {interaction_type}")
-            logger.debug(f"🗣️ Speech: {speech_text} | Confidence: {confidence} | Duration: {duration}")
+            logger.info("🎤 LOGGING VOICE INTERACTION | Session: %s | Type: %s", call_session_id, interaction_type)
+            logger.debug("🗣️ Speech: %s | Confidence: %s | Duration: %s", speech_text, confidence, duration)
             
             # Get call session
             call_session = db.query(CallSession).filter(
@@ -73,7 +73,7 @@ class VoiceLoggingService:
             return voice_log
             
         except Exception as e:
-            logger.error(f"❌ Error logging voice interaction: {e}")
+            logger.error("❌ Error logging voice interaction: %s", e)
             db.rollback()
             raise e
     
@@ -90,8 +90,8 @@ class VoiceLoggingService:
         Process speech input and generate response
         """
         try:
-            logger.info(f"🗣️ PROCESSING SPEECH INPUT | Session: {call_session_id}")
-            logger.debug(f"📝 Speech: '{speech_text}' | Conf: {confidence} | Dur: {duration}")
+            logger.info("🗣️ PROCESSING SPEECH INPUT | Session: %s", call_session_id)
+            logger.debug("📝 Speech: '%s' | Conf: %s | Dur: %s", speech_text, confidence, duration)
             
             # Log the speech input
             await VoiceLoggingService.log_voice_interaction(
@@ -133,7 +133,7 @@ class VoiceLoggingService:
                 }
             )
             
-            logger.info(f"✅ Speech processed, response generated: '{response_text}'")
+            logger.info("✅ Speech processed, response generated: '%s'", response_text)
             
             return {
                 "response_text": response_text,
@@ -143,7 +143,7 @@ class VoiceLoggingService:
             }
             
         except Exception as e:
-            logger.error(f"❌ Error processing speech input: {e}")
+            logger.error("❌ Error processing speech input: %s", e)
             raise e
     
     @staticmethod
@@ -158,7 +158,7 @@ class VoiceLoggingService:
         Generate agent response based on speech input using AI (Gemini or OpenAI) with conversation context
         """
         try:
-            logger.info(f"🤖 Generating AI response for: '{speech_text}'")
+            logger.info("🤖 Generating AI response for: '%s'", speech_text)
             
             if not agent:
                 logger.warning("⚠️ No agent found, using fallback response")
@@ -226,9 +226,9 @@ class VoiceLoggingService:
                                 text = interaction.get("message", "")
                                 conversation_context += f"{speaker}: {text}\n"
                             
-                            logger.debug(f"🧠 Conversation context loaded: {len(recent_interactions)} recent interactions")
+                            logger.debug("🧠 Conversation context loaded: %s recent interactions", len(recent_interactions))
                 except Exception as e:
-                    logger.warning(f"⚠️ Error getting conversation context: {e}")
+                    logger.warning("⚠️ Error getting conversation context: %s", e)
                     import traceback
                     traceback.print_exc()
             
@@ -333,7 +333,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 try:
                     api_key = decrypt_api_key(model.api_key)
                 except Exception as e:
-                    logger.warning(f"⚠️ Failed to decrypt model API key: {e}")
+                    logger.warning("⚠️ Failed to decrypt model API key: %s", e)
 
             slug = (provider_slug or "").lower()
             if slug not in ("gemini", "openai", "groq"):
@@ -366,12 +366,12 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
             # Generate response using selected AI service
-            logger.info(f"🔧 {ai_service_name} Config: model={model_name}, temp={temperature}, max_tokens={max_tokens} | Agent: {agent_name} ({agent_language})")
+            logger.info("🔧 %s Config: model=%s, temp=%s, max_tokens=%s | Agent: %s (%s)", ai_service_name, model_name, temperature, max_tokens, agent_name, agent_language)
             logger.debug("System prompt length: %s chars", len(system_prompt or ""))
-            logger.debug(f"🔧 User Prompt: {speech_text}")
-            logger.debug(f"🧠 Conversation Context Length: {len(conversation_context)} chars")
+            logger.debug("🔧 User Prompt: %s", speech_text)
+            logger.debug("🧠 Conversation Context Length: %s chars", len(conversation_context))
             if conversation_context:
-                logger.debug(f"🧠 Conversation Context Preview: {conversation_context[:300]}...")
+                logger.debug("🧠 Conversation Context Preview: %s...", conversation_context[:300])
             
             # Generate response with 5-second timeout for voice calls
             try:
@@ -401,11 +401,11 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                 logger.info("🎯 Conversation completion detected in response - generating goodbye")
                 return VoiceLoggingService._generate_completion_goodbye(agent_name, conversation_context)
             
-            logger.info(f"✅ {ai_service_name} generated response in {response_time:.2f}s: '{response_text}'")
+            logger.info("✅ %s generated response in %ss: '%s'", ai_service_name, format(response_time, '.2f'), response_text)
             return response_text
             
         except Exception as e:
-            logger.error(f"❌ Error generating AI response: {e}")
+            logger.error("❌ Error generating AI response: %s", e)
             # Fall back to simple response
             return await VoiceLoggingService._generate_fallback_response(speech_text, agent)
     
@@ -439,7 +439,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
         is_complete = completion_ratio >= 0.8
         
         if is_complete:
-            logger.info(f"🎯 Conversation completion: {completed_objectives}/{total_objectives} objectives completed ({completion_ratio:.1%})")
+            logger.info("🎯 Conversation completion: %s/%s objectives completed (%s)", completed_objectives, total_objectives, format(completion_ratio, '.1%'))
         
         return is_complete
     
@@ -584,11 +584,11 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             else:
                 response = "Got it! What else would you like to talk about?"
             
-            logger.info(f"✅ Generated fallback response: '{response}'")
+            logger.info("✅ Generated fallback response: '%s'", response)
             return response
             
         except Exception as e:
-            logger.error(f"❌ Error generating fallback response: {e}")
+            logger.error("❌ Error generating fallback response: %s", e)
             # Use agent name in error response if available
             if agent and agent.name:
                 return "Sorry, I didn't quite catch that. Could you repeat that?"
@@ -606,8 +606,8 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
         Log call events (ringing, answered, completed, etc.)
         """
         try:
-            logger.info(f"📞 LOGGING CALL EVENT | Session: {call_session_id} | Type: {event_type}")
-            logger.debug(f"📊 Event Data: {event_data}")
+            logger.info("📞 LOGGING CALL EVENT | Session: %s | Type: %s", call_session_id, event_type)
+            logger.debug("📊 Event Data: %s", event_data)
             
             # Get call session
             call_session = db.query(CallSession).filter(
@@ -658,12 +658,12 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
                     event_data
                 ))
             except Exception as e:
-                logger.error(f"Error broadcasting call event: {e}")
+                logger.error("Error broadcasting call event: %s", e)
             
-            logger.info(f"✅ Logged call event: {event_type} for session {call_session_id}")
+            logger.info("✅ Logged call event: %s for session %s", event_type, call_session_id)
             
         except Exception as e:
-            logger.error(f"❌ Error logging call event: {e}")
+            logger.error("❌ Error logging call event: %s", e)
             raise
     
     @staticmethod
@@ -688,7 +688,7 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             return call_session.call_metadata["voice_interactions"]
             
         except Exception as e:
-            logger.error(f"❌ Error getting call voice logs: {e}")
+            logger.error("❌ Error getting call voice logs: %s", e)
             return []
     
     @staticmethod
@@ -710,6 +710,6 @@ Always respond as {agent_name}, a real person having a conversation, not as any 
             return call_session.call_transcript or []
             
         except Exception as e:
-            logger.error(f"❌ Error getting call transcript: {e}")
+            logger.error("❌ Error getting call transcript: %s", e)
             return []
 

@@ -131,7 +131,7 @@ class TranscriptService:
         
         message_lower = message.lower().strip()
         if any(sys_msg in message_lower for sys_msg in twilio_system_messages):
-            logger.info(f"🚫 Filtered Twilio system message: '{message[:50]}...' (ignored, not saved)")
+            logger.info("🚫 Filtered Twilio system message: '%s...' (ignored, not saved)", message[:50])
             # Return None or create a minimal object - don't save to DB
             # This prevents LLM from seeing Twilio's messages!
             return None
@@ -177,9 +177,9 @@ class TranscriptService:
                 transcript=conversation,
                 new_messages=[new_message]
             ))
-            logger.debug(f"✅ WebSocket: Transcript update queued for session {call_session_id}")
+            logger.debug("✅ WebSocket: Transcript update queued for session %s", call_session_id)
         except Exception as e:
-            logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+            logger.warning("⚠️ WebSocket broadcast failed (non-critical): %s", e)
             # Don't let WebSocket failures affect transcript saving
         
         return transcript_message

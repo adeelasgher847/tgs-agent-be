@@ -889,7 +889,7 @@ class CallSessionService:
 
             await broadcast_call_event(call_session_id, event_type, event_data)
         except Exception as e:
-            logger.error(f"Error broadcasting call event: {e}")
+            logger.error("Error broadcasting call event: %s", e)
 
     async def _broadcast_status_update(
         self, call_session_id: str, status: str, metadata: dict = None
@@ -900,7 +900,7 @@ class CallSessionService:
 
             await broadcast_call_status_update(call_session_id, status, metadata)
         except Exception as e:
-            logger.error(f"Error broadcasting status update: {e}")
+            logger.error("Error broadcasting status update: %s", e)
 
     async def _broadcast_transcript_update(
         self, call_session_id: str, transcript: list, new_messages: list = None
@@ -911,7 +911,7 @@ class CallSessionService:
 
             await broadcast_transcript_update(call_session_id, transcript, new_messages)
         except Exception as e:
-            logger.error(f"Error broadcasting transcript update: {e}")
+            logger.error("Error broadcasting transcript update: %s", e)
 
     def find_recent_dropped_session(
         self,
@@ -946,7 +946,7 @@ class CallSessionService:
 
             await broadcast_call_metadata_update(call_session_id, metadata)
         except Exception as e:
-            logger.error(f"Error broadcasting metadata update: {e}")
+            logger.error("Error broadcasting metadata update: %s", e)
 
 
 # Global instance

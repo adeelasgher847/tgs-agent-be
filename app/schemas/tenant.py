@@ -51,6 +51,10 @@ class TenantPlanOut(BaseModel):
     current_period_end: datetime | None = None
     cancel_at_period_end: bool = False
 
+    # Daily LLM token budget cap (observe-only when None). See
+    # Tenant.llm_token_budget_daily.
+    llm_token_budget_daily: int | None = None
+
     model_config = ConfigDict(from_attributes=True)
 
 
