@@ -12,6 +12,7 @@ user_tenant_association = Table(
     Column('is_creator', Boolean, nullable=False, default=False),
     Column('role_id', UUID(as_uuid=True), ForeignKey('role.id'), nullable=True),
     Column('product_id', UUID(as_uuid=True), ForeignKey('product.id'), nullable=True),
+    Column('removed_at', DateTime(timezone=True), nullable=True),
 )
 
 class User(Base):

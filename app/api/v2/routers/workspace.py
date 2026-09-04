@@ -35,9 +35,11 @@ from app.schemas.workspace import (
     LinkedWorkspaceOut,
     LinkedWorkspacesOut,
 )
+from app.schemas.base import SuccessResponse
 from app.services.credit_service import credit_service
 
 import uuid
+from datetime import datetime, timezone
 
 from fastapi import Request, Response, status
 from pydantic import BaseModel
@@ -49,6 +51,7 @@ from app.services import rbac_cache_service, role_service
 from app.services.account_deletion_service import delete_workspace_account
 from app.services.audit_service import log_audit_event
 from app.services.data_export_service import create_export_job, get_export_job
+from app.utils.response import create_success_response
 
 router = APIRouter(prefix="/workspace", tags=["workspace-gdpr"])
 
@@ -729,6 +732,7 @@ def update_member_role(
         user_tenant_association.select().where(
             user_tenant_association.c.user_id == user_id,
             user_tenant_association.c.tenant_id == tenant_id,
+            user_tenant_association.c.removed_at.is_(None),
         )
     ).first()
     if membership is None:
@@ -775,6 +779,65 @@ def update_member_role(
         user_id=user_id,
         workspace_id=tenant_id,
         role="owner" if membership.is_creator else payload.role
+    )
+
+
+@v2_router.delete("/members/{user_id}", response_model=SuccessResponse[dict])
+def remove_member(
+    user_id: uuid.UUID,
+    request: Request,
+    user: User = Depends(require_admin),
+    db: Session = Depends(get_db),
+):
+    """Remove a member from the current workspace. Admin only."""
+    tenant_id = user.current_tenant_id
+    membership = db.execute(
+        user_tenant_association.select().where(
+            user_tenant_association.c.user_id == user_id,
+            user_tenant_association.c.tenant_id == tenant_id,
+            user_tenant_association.c.removed_at.is_(None),
+        )
+    ).first()
+    if membership is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="User is not a member of this workspace",
+        )
+
+    if membership.is_creator:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove the workspace creator",
+        )
+
+    if user_id == user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot remove yourself from the workspace",
+        )
+
+    db.execute(
+        user_tenant_association.update().where(
+            user_tenant_association.c.user_id == user_id,
+            user_tenant_association.c.tenant_id == tenant_id,
+        ).values(removed_at=datetime.now(timezone.utc))
+    )
+    db.commit()
+    rbac_cache_service.invalidate(user_id, tenant_id)
+
+    log_audit_event(
+        db,
+        request=request,
+        tenant_id=tenant_id,
+        action="workspace.member_removed",
+        resource_type="user_tenant_association",
+        resource_id=user_id,
+        actor_user_id=user.id,
+    )
+
+    return create_success_response(
+        {"user_id": user_id, "workspace_id": tenant_id},
+        "Member removed successfully",
     )
 
 

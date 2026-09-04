@@ -219,6 +219,67 @@ class TestListInvitations:
             assert "token" not in item
 
 
+class TestDeleteInvitation:
+    def test_delete_invitation_cancels_record(self, authed_client, db, admin_user):
+        invite = Invite(
+            email=f"cancel-{uuid.uuid4().hex[:6]}@example.com",
+            tenant_id=admin_user.current_tenant_id,
+            invited_by=admin_user.id,
+            token=str(uuid.uuid4()),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+        db.refresh(invite)
+
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite.id}")
+
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["data"]["status"] == "cancelled"
+        db.refresh(invite)
+        assert invite.status == "cancelled"
+        assert db.query(Invite).filter(Invite.id == invite.id).first() is not None
+
+    def test_delete_invitation_cross_tenant_returns_404(
+        self, authed_client, db, admin_user, workspace_tenant
+    ):
+        other_tenant = Tenant(
+            name=f"Other-{uuid.uuid4().hex[:6]}",
+            schema_name=f"s_{uuid.uuid4().hex[:6]}",
+            status="active",
+        )
+        db.add(other_tenant)
+        db.flush()
+        invite = Invite(
+            email=f"other-{uuid.uuid4().hex[:6]}@example.com",
+            tenant_id=other_tenant.id,
+            invited_by=admin_user.id,
+            token=str(uuid.uuid4()),
+            expires_at=datetime.now(timezone.utc) + timedelta(days=7),
+            status="pending",
+        )
+        db.add(invite)
+        db.commit()
+        db.refresh(invite)
+
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{invite.id}")
+
+        assert resp.status_code == 404
+        db.refresh(invite)
+        assert invite.status == "pending"
+
+    def test_delete_invitation_not_found_returns_404(self, authed_client):
+        resp = authed_client.delete(f"/api/v1/workspace/invitations/{uuid.uuid4()}")
+
+        assert resp.status_code == 404
+
+    def test_delete_invitation_unauthorized_returns_error(self, client):
+        resp = client.delete(f"/api/v1/workspace/invitations/{uuid.uuid4()}")
+
+        assert resp.status_code in (401, 403)
+
+
 # ---------------------------------------------------------------------------
 # POST /api/v1/accept-invite — expired token regression
 # ---------------------------------------------------------------------------

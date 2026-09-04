@@ -818,6 +818,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/SuccessResponse_list_InviteOut__'
       security: *id001
+  /api/v1/workspace/invitations/{invite_id}:
+    delete:
+      tags:
+      - Workspace Invitations
+      summary: Cancel Invitation
+      operationId: cancel_invitation_api_v1_workspace_invitations__invite_id__delete
+      security: *id001
+      parameters:
+      - name: invite_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Invite Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_InviteOut_'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/v1/workspace/allowed-domains:
     get:
       tags:
@@ -10817,6 +10845,36 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MemberRoleOut'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v2/workspace/members/{user_id}:
+    delete:
+      tags:
+      - Workspace Settings
+      summary: Remove Member
+      description: Remove a member from the current workspace. Admin only.
+      operationId: remove_member_api_v2_workspace_members__user_id__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse_dict_'
         '422':
           description: Validation Error
           content:

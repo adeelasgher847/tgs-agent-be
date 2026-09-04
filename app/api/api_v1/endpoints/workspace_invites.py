@@ -144,3 +144,30 @@ def list_invitations(
     out = [InviteOut.model_validate(i) for i in invites]
     return create_success_response(out, "Pending invitations retrieved")
 
+
+@router.delete("/invitations/{invite_id}", response_model=SuccessResponse[InviteOut])
+def cancel_invitation(
+    invite_id: uuid.UUID,
+    admin: User | ApiKeyPrincipal = Depends(require_admin_or_api_key),
+    db: Session = Depends(get_db),
+) -> SuccessResponse[InviteOut]:
+    invite = (
+        db.query(Invite)
+        .filter(
+            Invite.id == invite_id,
+            Invite.tenant_id == admin.current_tenant_id,
+        )
+        .first()
+    )
+    if not invite:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invitation not found")
+
+    invite.status = "cancelled"
+    db.commit()
+    db.refresh(invite)
+
+    return create_success_response(
+        InviteOut.model_validate(invite),
+        "Invitation cancelled successfully",
+    )
+

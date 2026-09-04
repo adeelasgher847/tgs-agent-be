@@ -1,7 +1,7 @@
 """
 GitHub Code Review Agent for happyassist.ai backend.
 
-Uses Claude claude-opus-4-7 with tool use to:
+Uses Claude claude-opus-5 with tool use to:
   - Inspect changed files and diffs
   - Run linting (flake8/pylint) and type checks (mypy)
   - Review code quality, security, and FastAPI/SQLAlchemy standards
@@ -81,9 +81,18 @@ def get_git_diff(base: str, file_path: str | None = None) -> str:
 
 
 def get_file_content(file_path: str) -> str:
-    """Read a file from the working tree."""
+    """Read a file from the working tree.
+
+    `file_path` is an LLM tool-call argument supplied while reviewing an
+    untrusted PR, so a prompt-injected value like `../../.env` or an absolute
+    path must not escape the repo root.
+    """
+    repo_root = os.path.abspath(".")
+    abs_path = os.path.abspath(os.path.join(repo_root, file_path))
+    if abs_path != repo_root and not abs_path.startswith(repo_root + os.sep):
+        return f"Refused: {file_path!r} resolves outside the repository."
     try:
-        with open(file_path, encoding="utf-8") as f:
+        with open(abs_path, encoding="utf-8") as f:
             content = f.read()
         if len(content) > 10_000:
             content = content[:10_000] + "\n... (truncated)"
@@ -253,9 +262,10 @@ def run_review(base: str) -> None:
     print(f"\n🔍  Starting code review (base: {base}) …\n{'─' * 60}\n", file=sys.stderr)
 
     # Agentic loop
-    while True:
+    MAX_ITERATIONS = 20
+    for _ in range(MAX_ITERATIONS):
         response = client.messages.create(
-            model="claude-opus-4-5",
+            model="claude-opus-5",
             max_tokens=8192,
             system=[{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}],
             tools=TOOLS,
@@ -291,6 +301,8 @@ def run_review(base: str) -> None:
         # Unexpected stop reason – bail out
         print(f"Unexpected stop_reason: {response.stop_reason}")
         break
+    else:
+        raise RuntimeError(f"Agent loop exceeded max iterations ({MAX_ITERATIONS})")
 
 
 # ---------------------------------------------------------------------------
