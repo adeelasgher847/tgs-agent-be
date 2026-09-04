@@ -240,7 +240,12 @@ class BillingService:
 
     @staticmethod
     def has_active_paid_subscription(db: Session, user_id: uuid.UUID) -> bool:
-        """Check if user has at least one active paid (CRM) subscription with valid period."""
+        """Check if user has at least one active paid (CRM) subscription with valid period.
+
+        CRM-addon `Subscription` rows are user-scoped, not tenant-scoped (they never
+        set `tenant_id` — see the model's `uq_user_crm_subscription` constraint), so
+        this check is intentionally per-user rather than per-tenant.
+        """
         now = datetime.now(timezone.utc)
         subscription = db.query(Subscription).join(Plan).filter(
             Subscription.user_id == user_id,
