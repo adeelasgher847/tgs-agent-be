@@ -45,6 +45,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import struct
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -482,6 +483,21 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
         )
         self._barge_in_min_words: int = max(1, int(getattr(settings, "VOICE_BARGE_IN_MIN_WORDS", 2) or 2))
+        # Dead-zone: suppress interim-triggered barge-in for N ms after TTS
+        # audio starts playing. Mirrors bidirectional_stream.py's identical
+        # guard — both transports share the same underlying SttPipeline, so
+        # a stale Deepgram interim from the caller's PRIOR utterance (still
+        # being finalized) can arrive at almost exactly the moment this
+        # transport's own TTS starts playing too; without this guard the
+        # agent's response would get cut before the caller has heard
+        # anything. LiveKit's own WebRTC echo cancellation prevents a
+        # DIFFERENT failure mode (the mic picking up the agent's own voice)
+        # but does not protect against this STT-timing race, so this guard
+        # is still needed here despite that echo cancellation.
+        self._tts_play_start_ts: float = 0.0
+        self._barge_in_dead_zone_ms: float = float(
+            getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 600) or 600
+        )
 
         # ── RAG interim-prefetch ─────────────────────────────────────────────
         # Mirrors bidirectional_stream.py's _prefetch_rag_context pattern
@@ -721,6 +737,18 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         )
         return classification == TurnClassification.BARGE_IN
 
+    def _in_barge_in_dead_zone(self) -> bool:
+        """
+        True when TTS started playing less than `_barge_in_dead_zone_ms` ago
+        — see the dead-zone guard's rationale in `__init__`. Mirrors
+        `bidirectional_stream.py`'s identical check exactly.
+        """
+        return (
+            self._tts_play_start_ts > 0
+            and (time.perf_counter() - self._tts_play_start_ts) * 1000
+            < self._barge_in_dead_zone_ms
+        )
+
     async def _maybe_process_interim(self, transcript: str, confidence: float) -> None:
         try:
             text = (transcript or "").strip()
@@ -728,7 +756,11 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 return
             word_count = len(text.split())
 
-            is_barge_in = self._is_tts_playing and self._should_barge_in_on_stt(text, confidence)
+            is_barge_in = (
+                self._is_tts_playing
+                and not self._in_barge_in_dead_zone()
+                and self._should_barge_in_on_stt(text, confidence)
+            )
             if is_barge_in:
                 logger.info(
                     "[LiveKitBrowserCall] barge-in: words=%d conf=%.2f text=%r",
@@ -944,7 +976,10 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             from app.services.google_tts_service import google_tts_service
             from app.utils.eleven_tts_text import prepare_tts_text_for_provider
             from app.utils.tts_adapter import get_tts_adapter
-            from app.voice.tts_provider_capabilities import build_voice_settings_overlay
+            from app.voice.tts_provider_capabilities import (
+                apply_vocal_behavior_tag,
+                build_voice_settings_overlay,
+            )
 
             lang = self.agent.language if self.agent and self.agent.language else "en"
             voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
@@ -955,6 +990,20 @@ class LiveKitBrowserCallHandler(CallControlMixin):
             streaming_text = prepare_tts_text_for_provider(streaming_text, tts_provider_slug)
             if not streaming_text or not streaming_text.strip():
                 return None
+            # V-08: ElevenLabs-only native bracket tag for an LLM-requested
+            # vocal_behavior (no-op for every other provider/decision — see
+            # apply_vocal_behavior_tag's docstring).
+            try:
+                streaming_text = apply_vocal_behavior_tag(
+                    streaming_text, tts_provider_slug, task.get("_humanization_decision")
+                )
+            except Exception as exc:
+                logger.debug("[LiveKitBrowserCall] vocal behavior tag skipped: %s", exc)
+            # Note: apply_emphasis_word() is NOT called here (or anywhere) —
+            # it's a deliberate, documented no-op for every provider today
+            # (no real per-word emphasis mechanism exists on any live
+            # streaming path), not an oversight. See its docstring in
+            # app.voice.tts_provider_capabilities.
 
             if tts_provider_slug and tts_provider_slug not in ("google", ""):
                 external_voice_id = tts_runtime.voice_external_id
@@ -1057,13 +1106,24 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 return _async_iter_from_sync(sync_iter)
 
             # Google (or unresolved provider): native async streaming API.
+            # Speaking-rate nudge (V-08): consolidated into
+            # build_voice_settings_overlay — a no-op (1.0) unless an LLM
+            # delivery emotion or response_emotion heuristic applies,
+            # matching this call site's previous hardcoded 1.0 by default.
+            speaking_rate = 1.0
+            try:
+                speaking_rate = build_voice_settings_overlay(
+                    tts_provider_slug, task.get("_humanization_decision")
+                ).get("speaking_rate", 1.0)
+            except Exception as exc:
+                logger.debug("[LiveKitBrowserCall] speaking-rate overlay skipped: %s", exc)
             tts_voice = getattr(self.agent, "tts_voice", None) if self.agent else None
             google_voice_name = getattr(tts_voice, "external_voice_id", None)
             audio_iter = google_tts_service.stream_text_to_speech(
                 text=streaming_text,
                 language=lang,
                 voice_type=voice,
-                speaking_rate=1.0,
+                speaking_rate=speaking_rate,
                 output_format="mulaw",
                 use_chirp3_hd=True,
                 sample_rate_hz=_AGENT_AUDIO_SAMPLE_RATE,
@@ -1153,6 +1213,7 @@ class LiveKitBrowserCallHandler(CallControlMixin):
         prefetched_bytes: Any = None,
         pacing: "PacingHint | None" = None,
         previous_text: str | None = None,
+        pause_after: Any = None,
     ) -> None:
         """
         Publish one TTS chunk's audio into the LiveKit room (TtsPipeline's audio sink).
@@ -1194,6 +1255,8 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                     return
 
                 self._is_tts_playing = True
+                # Record for barge-in dead zone (see _maybe_process_interim).
+                self._tts_play_start_ts = time.perf_counter()
 
                 if hasattr(source, "__aiter__"):
                     logger.debug(
@@ -1239,7 +1302,9 @@ class LiveKitBrowserCallHandler(CallControlMixin):
                 # silently going inactive between chunks.
                 if not self._tts_cancel.is_set():
                     try:
-                        for _ in range(pause_frames_for_chunk(pacing, is_final)):
+                        for _ in range(
+                            pause_frames_for_chunk(pacing, is_final, pause_after=pause_after)
+                        ):
                             if self._tts_cancel.is_set():
                                 break
                             await publisher.publish_mulaw(

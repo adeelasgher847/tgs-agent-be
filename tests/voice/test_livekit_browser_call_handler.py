@@ -140,6 +140,48 @@ class TestTurnHandling:
         h._cancel_inflight_llm_response.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_interim_within_dead_zone_never_barges_in(self):
+        """
+        Mirrors bidirectional_stream.py's dead-zone regression coverage: a
+        stale Deepgram interim from the caller's PRIOR utterance arriving
+        just as this transport's own TTS starts must never cut the agent's
+        response before the caller has heard anything, even when the
+        interim would otherwise clearly qualify as a confident barge-in.
+        """
+        import time
+
+        h = _base_handler()
+        h._is_tts_playing = True
+        h._tts_play_start_ts = time.perf_counter()  # TTS just started
+        h._cancel_inflight_llm_response = AsyncMock()
+        await h._maybe_process_interim("please stop now", 0.9)
+        h._cancel_inflight_llm_response.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_interim_after_dead_zone_elapses_barges_in_normally(self):
+        import time
+
+        h = _base_handler()
+        h._is_tts_playing = True
+        h._tts_play_start_ts = time.perf_counter() - 1.0  # dead zone (600ms) long passed
+        h._cancel_inflight_llm_response = AsyncMock()
+        await h._maybe_process_interim("please stop now", 0.9)
+        h._cancel_inflight_llm_response.assert_called_once()
+
+    def test_dead_zone_check_true_only_within_window(self):
+        import time
+
+        h = _base_handler()
+        h._tts_play_start_ts = 0.0
+        assert h._in_barge_in_dead_zone() is False  # never started -> not in dead zone
+
+        h._tts_play_start_ts = time.perf_counter()
+        assert h._in_barge_in_dead_zone() is True
+
+        h._tts_play_start_ts = time.perf_counter() - 1.0
+        assert h._in_barge_in_dead_zone() is False
+
+    @pytest.mark.asyncio
     async def test_process_transcript_persists_and_triggers_turn(self):
         h = _base_handler()
         h._add_to_transcript = AsyncMock()

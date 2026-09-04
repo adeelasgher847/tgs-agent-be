@@ -1,16 +1,28 @@
 """
-Bracket-tag prompt-consistency regression tests (Phase 5-4).
+Bracket-tag prompt-consistency regression tests (Phase 5-4 / V-08 follow-up).
 
-These tests guard against the specific contradiction fixed in this phase:
-before the fix, the base/custom/model system-prompt branches on both
-transports (Twilio's ``BidirectionalStreamHandler`` in
-``app/routers/bidirectional_stream.py`` and LiveKit's
-``ConversationOrchestrator`` in ``app/voice/conversation_orchestrator.py``)
-could assemble a system prompt containing BOTH a generic
-"NO BRACKET TAGS: Never output..." instruction AND the
-``build_elevenlabs_audio_tag_prompt_block()`` block saying tags ARE allowed,
-whenever the agent used ElevenLabs TTS together with a custom
-``system_prompt`` or ``model.system_prompt``.
+Historically these tests guarded against a contradiction where the base/
+custom/model system-prompt branches on both transports (Twilio's
+``BidirectionalStreamHandler`` in ``app/routers/bidirectional_stream.py``
+and LiveKit's ``ConversationOrchestrator`` in
+``app/voice/conversation_orchestrator.py``) could assemble a system prompt
+containing BOTH a generic "NO BRACKET TAGS: Never output..." instruction
+AND a provider-specific "ElevenLabs audio tags ARE allowed" block, whenever
+the agent used ElevenLabs TTS together with a custom ``system_prompt`` or
+``model.system_prompt``.
+
+Under the V-08 humanization architecture, the LLM is never told it may emit
+bracketed tags itself for any provider — it only ever emits the semantic
+``[DELIVERY ...]`` tag (``app/voice/humanization_intent.py``). Real
+provider-specific bracket tags (e.g. ElevenLabs ``[chuckles]``/``[sighs]``)
+are added programmatically after the fact by ``apply_vocal_behavior_tag()``
+in ``app/voice/tts_provider_capabilities.py``. The old provider-conditional
+prompt-assembly branching (and the ElevenLabs "tags allowed" prompt block)
+has been removed entirely, so the contradiction this file used to guard
+against is now structurally impossible. These tests instead assert the
+single remaining behavior: the generic "NO BRACKET TAGS" instruction is
+always present in the assembled system prompt, for every TTS provider and
+every prompt-source branch, on both transports.
 
 Only prompt-text assembly is asserted here (never LLM compliance or audio
 output — those are untestable in this codebase). External LLM/DB
@@ -28,22 +40,7 @@ from app.voice.conversation_orchestrator import ConversationOrchestrator
 from tests.voice.test_call_pipeline import _base_handler
 
 
-ELEVEN_TAG_MARKER = "ELEVENLABS AUDIO TAGS"
 GENERIC_NO_TAG_MARKER = "NO BRACKET TAGS"
-
-
-def _assert_single_tag_source(system_prompt: str) -> None:
-    """Exactly one bracket-tag instruction source may ever be present."""
-    has_eleven_block = ELEVEN_TAG_MARKER in system_prompt
-    has_generic_never = GENERIC_NO_TAG_MARKER in system_prompt
-    assert not (has_eleven_block and has_generic_never), (
-        "Assembled prompt contains BOTH the ElevenLabs 'tags allowed' block "
-        "and the generic 'never use tags' instruction — contradiction "
-        "reintroduced.\n---\n" + system_prompt
-    )
-    # At least one of the two sources must be present so tag behavior is
-    # always specified one way or the other.
-    assert has_eleven_block or has_generic_never
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -69,7 +66,7 @@ class TestTwilioBracketTagPromptConsistency:
         ):
             asyncio.run(h.generate_and_stream_response("Hello there", 0.9))
 
-    def test_base_prompt_elevenlabs_no_contradiction(self):
+    def test_base_prompt_elevenlabs_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = None  # force base_prompt branch
         h.agent.model.system_prompt = None
@@ -79,11 +76,9 @@ class TestTwilioBracketTagPromptConsistency:
 
         assert captured, "LLM must have been invoked"
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_base_prompt_google_no_contradiction(self):
+    def test_base_prompt_google_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = None
         h.agent.model.system_prompt = None
@@ -92,11 +87,9 @@ class TestTwilioBracketTagPromptConsistency:
         self._run(h, spy)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_custom_system_prompt_elevenlabs_no_contradiction(self):
+    def test_custom_system_prompt_elevenlabs_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = "Custom instructions for this agent."
         h.agent.model.system_prompt = None
@@ -105,11 +98,9 @@ class TestTwilioBracketTagPromptConsistency:
         self._run(h, spy)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_custom_system_prompt_google_no_contradiction(self):
+    def test_custom_system_prompt_google_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = "Custom instructions for this agent."
         h.agent.model.system_prompt = None
@@ -118,11 +109,9 @@ class TestTwilioBracketTagPromptConsistency:
         self._run(h, spy)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_model_system_prompt_elevenlabs_no_contradiction(self):
+    def test_model_system_prompt_elevenlabs_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = None
         h.agent.model.system_prompt = "Model instructions for this agent."
@@ -131,11 +120,9 @@ class TestTwilioBracketTagPromptConsistency:
         self._run(h, spy)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_model_system_prompt_google_no_contradiction(self):
+    def test_model_system_prompt_google_has_generic_no_tag_line(self):
         h = _base_handler()
         h.agent.system_prompt = None
         h.agent.model.system_prompt = "Follow the recruiting script."
@@ -144,8 +131,6 @@ class TestTwilioBracketTagPromptConsistency:
         self._run(h, spy)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
 
@@ -232,7 +217,7 @@ class TestLiveKitBracketTagPromptConsistency:
         )
         asyncio.run(orchestrator.generate_and_stream_response("Hello there", 0.9))
 
-    def test_base_prompt_elevenlabs_no_contradiction(self, monkeypatch):
+    def test_base_prompt_elevenlabs_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(tts_slug="elevenlabs")
         orchestrator = ConversationOrchestrator(h)
         captured: list = []
@@ -240,26 +225,18 @@ class TestLiveKitBracketTagPromptConsistency:
 
         assert captured
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_base_prompt_google_no_generic_tag_line_needed(self, monkeypatch):
-        """LiveKit's base path has no generic 'NO BRACKET TAGS' line at all
-        (intentional — the elevenlabs_audio_tag_block is simply empty for
-        non-ElevenLabs). This must stay true: no contradiction either way."""
+    def test_base_prompt_google_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(tts_slug="google")
         orchestrator = ConversationOrchestrator(h)
         captured: list = []
         self._run(orchestrator, monkeypatch, captured)
 
         sp = captured[0]
-        assert ELEVEN_TAG_MARKER not in sp
-        # Base LiveKit path intentionally omits the generic line too; just
-        # confirm no contradiction is possible (can't have both).
-        assert not (ELEVEN_TAG_MARKER in sp and GENERIC_NO_TAG_MARKER in sp)
+        assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_custom_system_prompt_elevenlabs_no_contradiction(self, monkeypatch):
+    def test_custom_system_prompt_elevenlabs_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(
             tts_slug="elevenlabs", custom_system_prompt="You help schedule appointments."
         )
@@ -268,11 +245,9 @@ class TestLiveKitBracketTagPromptConsistency:
         self._run(orchestrator, monkeypatch, captured)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_custom_system_prompt_google_no_contradiction(self, monkeypatch):
+    def test_custom_system_prompt_google_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(
             tts_slug="google", custom_system_prompt="You help schedule appointments."
         )
@@ -281,11 +256,9 @@ class TestLiveKitBracketTagPromptConsistency:
         self._run(orchestrator, monkeypatch, captured)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_model_system_prompt_elevenlabs_no_contradiction(self, monkeypatch):
+    def test_model_system_prompt_elevenlabs_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(
             tts_slug="elevenlabs", model_system_prompt="Follow the recruiting script."
         )
@@ -294,11 +267,9 @@ class TestLiveKitBracketTagPromptConsistency:
         self._run(orchestrator, monkeypatch, captured)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp
 
-    def test_model_system_prompt_google_no_contradiction(self, monkeypatch):
+    def test_model_system_prompt_google_has_generic_no_tag_line(self, monkeypatch):
         h = _fake_livekit_handler(
             tts_slug="google", model_system_prompt="Follow the recruiting script."
         )
@@ -307,6 +278,4 @@ class TestLiveKitBracketTagPromptConsistency:
         self._run(orchestrator, monkeypatch, captured)
 
         sp = captured[0]
-        _assert_single_tag_source(sp)
-        assert ELEVEN_TAG_MARKER not in sp
         assert GENERIC_NO_TAG_MARKER in sp

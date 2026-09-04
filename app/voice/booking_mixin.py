@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from app.core.config import settings
 from app.core.logger import logger
 from app.utils.eleven_tts_text import strip_eleven_v3_style_tags_for_non_eleven_tts
+from app.voice.humanization_intent import strip_delivery_tags
 
 if TYPE_CHECKING:
     pass
@@ -602,6 +603,14 @@ class BookingMixin:
         out = _RE_VOICE_SCREENING_QUALIFIED.sub("", out)
         out = re.sub(r"\[\s*TRANSFER_CALL\s*\]", "", out, flags=re.IGNORECASE)
         out = re.sub(r"\[OUTCOME:[^\]]+\]", "", out)
+        # V-08: strip both complete AND dangling/never-closed [DELIVERY ...]
+        # tag fragments — this is the single universal chokepoint every
+        # Twilio TTS-queueing call site in bidirectional_stream.py routes
+        # through (directly or via _prepare_tts_text below), so a fragment
+        # left over after the LLM stream ends (e.g. max_tokens truncation)
+        # can never be spoken to the caller regardless of which call site
+        # produced the final text.
+        out = strip_delivery_tags(out)
         # Strip all known ElevenLabs-style audio tags and common variants so they
         # are never spoken as literal words regardless of TTS provider.
         out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)

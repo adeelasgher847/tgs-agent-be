@@ -7,6 +7,7 @@ the new pause, LiveKit keeps _is_tts_playing True through the pause (so
 barge-in stays active), cancellation stops additional silence frames
 mid-pause, and a pacing/provider failure never breaks playback.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -20,7 +21,9 @@ from app.utils.audio_utils import MULAW_FRAME_BYTES
 from app.voice.humanization_engine import PacingHint, SentenceEndingType
 
 
-def _fake_tts_runtime(adapter_slug: str = "rime", voice_external_id: str | None = "voice-1"):
+def _fake_tts_runtime(
+    adapter_slug: str = "rime", voice_external_id: str | None = "voice-1"
+):
     return ResolvedTtsRuntime(
         adapter_slug=adapter_slug,
         voice_external_id=voice_external_id,
@@ -99,7 +102,8 @@ async def test_twilio_eligible_chunk_sends_configured_extra_silence_frames(monke
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "A complete sentence.",
@@ -128,7 +132,8 @@ async def test_twilio_pause_frames_are_strictly_appended_after_real_audio(monkey
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "A complete sentence.",
@@ -157,7 +162,8 @@ async def test_twilio_ineligible_partial_chunk_sends_no_extra_frames(monkeypatch
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "mid sentence fragment",
@@ -177,7 +183,8 @@ async def test_twilio_short_acknowledgement_sends_no_extra_frames(monkeypatch):
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "Okay.",
@@ -199,7 +206,10 @@ async def test_twilio_pacing_introduces_no_extra_resolve_tts_runtime_calls(monke
     monkeypatch.setattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 3)
 
     call_counts = {}
-    for label, pacing in (("eligible", _eligible_pacing()), ("ineligible", _ineligible_pacing())):
+    for label, pacing in (
+        ("eligible", _eligible_pacing()),
+        ("ineligible", _ineligible_pacing()),
+    ):
         h = _twilio_handler()
         with patch(
             "app.voice.tts_stream_mixin.resolve_tts_runtime",
@@ -222,7 +232,8 @@ async def test_twilio_config_zero_sends_no_extra_frames_even_if_eligible(monkeyp
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "A complete sentence.",
@@ -245,7 +256,8 @@ async def test_twilio_final_chunk_drain_unchanged_no_pause_stacking(monkeypatch)
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "Final sentence.",
@@ -278,7 +290,8 @@ async def test_twilio_cancellation_during_pause_stops_extra_frames(monkeypatch):
     h.websocket.send_json = AsyncMock(side_effect=_send_and_cancel_after_real_audio)
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "A complete sentence.",
@@ -298,7 +311,8 @@ async def test_twilio_pause_decision_failure_does_not_break_playback(monkeypatch
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ), patch(
         "app.voice.tts_stream_mixin.pause_frames_for_chunk",
         side_effect=RuntimeError("boom"),
@@ -323,7 +337,8 @@ async def test_twilio_malformed_pacing_falls_back_to_normal_playback(monkeypatch
         pass
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await h._stream_tts_chunk(
             "A complete sentence.",
@@ -352,7 +367,8 @@ async def test_twilio_batch_fallback_path_with_pacing_does_not_raise(monkeypatch
     h = _twilio_handler()
 
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ), patch(
         "app.voice.tts_stream_mixin.generate_mulaw_tts",
         new=AsyncMock(return_value=bytes([0x10]) * MULAW_FRAME_BYTES),
@@ -411,9 +427,7 @@ async def test_twilio_streaming_fallback_applies_humanization_overlay(monkeypatc
     with patch(
         "app.voice.tts_stream_mixin.resolve_tts_runtime",
         return_value=_fake_tts_runtime(adapter_slug="elevenlabs"),
-    ), patch(
-        "app.voice.tts_stream_mixin.get_tts_adapter", return_value=_FakeAdapter()
-    ):
+    ), patch("app.voice.tts_stream_mixin.get_tts_adapter", return_value=_FakeAdapter()):
         await h._stream_tts_chunk(
             "A complete sentence with real content.",
             is_final=False,
@@ -440,7 +454,9 @@ def _livekit_handler():
     agent.voice_type = "female"
     agent.greeting_message = "hi"
     agent.first_message = None
-    h = LiveKitBrowserCallHandler(db=db, call_session=call_session, agent=agent, call_flow=None)
+    h = LiveKitBrowserCallHandler(
+        db=db, call_session=call_session, agent=agent, call_flow=None
+    )
 
     publisher = MagicMock()
     publisher.connected = True
@@ -450,7 +466,9 @@ def _livekit_handler():
 
 
 @pytest.mark.asyncio
-async def test_livekit_eligible_chunk_publishes_configured_extra_silence_frames(monkeypatch):
+async def test_livekit_eligible_chunk_publishes_configured_extra_silence_frames(
+    monkeypatch,
+):
     monkeypatch.setattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 3)
     h, publisher = _livekit_handler()
 
@@ -481,7 +499,8 @@ async def test_livekit_uses_same_pause_frame_count_as_twilio(monkeypatch):
 
     twilio = _twilio_handler()
     with patch(
-        "app.voice.tts_stream_mixin.resolve_tts_runtime", return_value=_fake_tts_runtime()
+        "app.voice.tts_stream_mixin.resolve_tts_runtime",
+        return_value=_fake_tts_runtime(),
     ):
         await twilio._stream_tts_chunk(
             "A complete sentence.",
@@ -526,7 +545,9 @@ async def test_livekit_short_acknowledgement_publishes_no_extra_frames(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_livekit_pacing_introduces_no_extra_resolve_tts_runtime_calls(monkeypatch):
+async def test_livekit_pacing_introduces_no_extra_resolve_tts_runtime_calls(
+    monkeypatch,
+):
     """
     Phase 4C-3 requirement: pacing must not add provider/runtime-resolution
     calls. As of Phase 4D-2, _stream_tts_chunk's streaming-publish branch no
@@ -541,7 +562,10 @@ async def test_livekit_pacing_introduces_no_extra_resolve_tts_runtime_calls(monk
     monkeypatch.setattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 3)
 
     call_counts = {}
-    for label, pacing in (("eligible", _eligible_pacing()), ("ineligible", _ineligible_pacing())):
+    for label, pacing in (
+        ("eligible", _eligible_pacing()),
+        ("ineligible", _ineligible_pacing()),
+    ):
         h, publisher = _livekit_handler()
         with patch("app.core.agent_runtime.resolve_tts_runtime") as mock_resolve:
             mock_resolve.return_value = _fake_tts_runtime()
@@ -617,7 +641,9 @@ async def test_livekit_cancellation_during_pause_stops_extra_frames(monkeypatch)
         if sent["n"] == 2:
             h._tts_cancel.set()
 
-    publisher.publish_mulaw = AsyncMock(side_effect=_publish_and_cancel_after_real_audio)
+    publisher.publish_mulaw = AsyncMock(
+        side_effect=_publish_and_cancel_after_real_audio
+    )
 
     await h._stream_tts_chunk(
         "A complete sentence.",
@@ -675,17 +701,26 @@ def test_no_provider_slug_referenced_in_pacing_call_sites():
     """
     Static guard: neither handler's pause-insertion code passes a provider
     slug/adapter into the pacing decision — it only ever receives
-    (pacing, is_final).
+    (pacing, is_final) plus, as of V-08, the provider-neutral, semantic
+    `pause_after` PauseCategory (never a provider slug/adapter object).
     """
     import inspect
 
     import app.voice.tts_stream_mixin as twilio_mod
     import app.voice.livekit_browser_call_handler as livekit_mod
 
-    twilio_src = inspect.getsource(twilio_mod._stream_tts_chunk if hasattr(
-        twilio_mod, "_stream_tts_chunk"
-    ) else twilio_mod.TtsStreamMixin._stream_tts_chunk)
-    livekit_src = inspect.getsource(livekit_mod.LiveKitBrowserCallHandler._stream_tts_chunk)
+    twilio_src = inspect.getsource(
+        twilio_mod._stream_tts_chunk
+        if hasattr(twilio_mod, "_stream_tts_chunk")
+        else twilio_mod.TtsStreamMixin._stream_tts_chunk
+    )
+    livekit_src = inspect.getsource(
+        livekit_mod.LiveKitBrowserCallHandler._stream_tts_chunk
+    )
 
     for src in (twilio_src, livekit_src):
-        assert "pause_frames_for_chunk(pacing, is_final)" in src
+        normalized = "".join(src.split())
+        assert (
+            "pause_frames_for_chunk(pacing,is_final,pause_after=pause_after)"
+            in normalized
+        )

@@ -23,11 +23,13 @@ from app.utils.audio_utils import (
     stream_mulaw_bytes_over_twilio,
 )
 from app.utils.tts_adapter import get_tts_adapter
-from app.utils.tts_preprocessing import detect_emotion
 from app.utils.ssml_utils import smart_chunk_text
 from app.utils.eleven_tts_text import prepare_tts_text_for_provider
 from app.voice.humanization_engine import pause_frames_for_chunk
-from app.voice.tts_provider_capabilities import build_voice_settings_overlay
+from app.voice.tts_provider_capabilities import (
+    apply_vocal_behavior_tag,
+    build_voice_settings_overlay,
+)
 from app.routers.general_websocket import broadcast_call_status_update
 
 if TYPE_CHECKING:
@@ -387,6 +389,7 @@ class TtsStreamMixin:
         pacing: "PacingHint | None" = None,
         previous_text: str | None = None,
         humanization_decision: Any = None,
+        pause_after: Any = None,
     ):
         """
         Generate and stream a single TTS chunk (used by parallel pipeline worker).
@@ -804,7 +807,9 @@ class TtsStreamMixin:
                                     # above — every frame still goes through send_frame()'s
                                     # existing _tts_cancel check.
                                     for _ in range(
-                                        pause_frames_for_chunk(pacing, is_final)
+                                        pause_frames_for_chunk(
+                                            pacing, is_final, pause_after=pause_after
+                                        )
                                     ):
                                         if self._tts_cancel.is_set():
                                             break
@@ -823,6 +828,19 @@ class TtsStreamMixin:
                             )
                             if not streaming_text or not streaming_text.strip():
                                 return
+                            # V-08: ElevenLabs-only native bracket tag for an
+                            # LLM-requested vocal_behavior (no-op for every
+                            # other provider/decision — see
+                            # apply_vocal_behavior_tag's docstring).
+                            try:
+                                streaming_text = apply_vocal_behavior_tag(
+                                    streaming_text, tts_provider_slug, humanization_decision
+                                )
+                            except Exception as exc:
+                                logger.debug(
+                                    "[TTS] vocal behavior tag skipped (streaming fallback): %s",
+                                    exc,
+                                )
                             if _is_prefetched_iter:
                                 audio_iter = prefetched_bytes
                             elif tts_provider_slug and tts_provider_slug not in (
@@ -956,18 +974,22 @@ class TtsStreamMixin:
 
                                     audio_iter = _async_iter_from_sync(sync_iter)
                             else:
-                                # Reduce robotic feel (streaming-safe): tiny emotion-based speaking rate adjustments
-                                # Keep this subtle to avoid uncanny/unstable cadence.
-                                emo = detect_emotion(streaming_text)
+                                # Reduce robotic feel (streaming-safe): tiny emotion-based
+                                # speaking rate adjustments. Consolidated into
+                                # build_voice_settings_overlay (V-08) — see that
+                                # function for the exact same happy/sad/uncertain/
+                                # confident values this replaces, plus the LLM
+                                # delivery-emotion override when V-08 is enabled.
                                 speaking_rate = 1.0
-                                if emo == "happy":
-                                    speaking_rate = 1.03
-                                elif emo == "sad":
-                                    speaking_rate = 0.97
-                                elif emo == "uncertain":
-                                    speaking_rate = 0.98
-                                elif emo == "confident":
-                                    speaking_rate = 1.01
+                                try:
+                                    speaking_rate = build_voice_settings_overlay(
+                                        tts_provider_slug, humanization_decision
+                                    ).get("speaking_rate", 1.0)
+                                except Exception as exc:
+                                    logger.debug(
+                                        "[TTS] speaking-rate overlay skipped (streaming fallback): %s",
+                                        exc,
+                                    )
 
                                 tts_voice = (
                                     getattr(self.agent, "tts_voice", None)
@@ -1165,7 +1187,9 @@ class TtsStreamMixin:
                             # eligibility depends only on chunk content, not on
                             # which internal path happened to handle it.
                             try:
-                                pause_frames = pause_frames_for_chunk(pacing, is_final)
+                                pause_frames = pause_frames_for_chunk(
+                                    pacing, is_final, pause_after=pause_after
+                                )
                                 if pause_frames > 0:
                                     await stream_mulaw_bytes_over_twilio(
                                         websocket=self.websocket,
@@ -1280,6 +1304,14 @@ class TtsStreamMixin:
             streaming_text = prepare_tts_text_for_provider(clean, tts_provider_slug)
             if not streaming_text or not streaming_text.strip():
                 return None
+            # V-08: ElevenLabs-only native bracket tag for an LLM-requested
+            # vocal_behavior (no-op for every other provider/decision).
+            try:
+                streaming_text = apply_vocal_behavior_tag(
+                    streaming_text, tts_provider_slug, task.get("_humanization_decision")
+                )
+            except Exception as exc:
+                logger.debug("[TTS] vocal behavior tag skipped: %s", exc)
 
             if tts_provider_slug and tts_provider_slug not in ("google", ""):
                 external_voice_id = tts_runtime.voice_external_id
@@ -1380,14 +1412,17 @@ class TtsStreamMixin:
                 return _async_iter_from_sync(sync_iter)
 
             else:
-                # Google: stream and collect
-                emo = detect_emotion(streaming_text)
-                speaking_rate = {
-                    "happy": 1.03,
-                    "sad": 0.97,
-                    "uncertain": 0.98,
-                    "confident": 1.01,
-                }.get(emo, 1.0)
+                # Google: stream and collect. Speaking-rate nudge
+                # consolidated into build_voice_settings_overlay (V-08) —
+                # see that function for the exact happy/sad/uncertain/
+                # confident values this replaces.
+                speaking_rate = 1.0
+                try:
+                    speaking_rate = build_voice_settings_overlay(
+                        tts_provider_slug, task.get("_humanization_decision")
+                    ).get("speaking_rate", 1.0)
+                except Exception as exc:
+                    logger.debug("[TTS] speaking-rate overlay skipped: %s", exc)
                 tts_voice = (
                     getattr(self.agent, "tts_voice", None) if self.agent else None
                 )

@@ -1,27 +1,31 @@
 """
-Regression coverage: Twilio's three system-prompt branches (base agent
-prompt, agent.system_prompt custom override, agent.model.system_prompt
-override) must each instruct the LLM to (1) speak phone numbers/confirmation
-codes/digit sequences in a naturally-grouped, comma-separated spoken form
-instead of one fast unbroken string, and (2) add a brief acknowledgement
-beat after delivering a specific requested detail (phone number, email,
-etc.) before moving on to the next question -- rather than jumping straight
-into it with no pause.
+Regression coverage: every system-prompt branch on BOTH voice transports
+(Twilio's base/custom/model prompts in bidirectional_stream.py, and
+LiveKit/browser's equivalent branches in conversation_orchestrator.py) must
+instruct the LLM to (1) speak phone numbers/confirmation codes/digit
+sequences in a naturally-grouped, comma-separated spoken form instead of one
+fast unbroken string, and (2) add a brief acknowledgement beat after
+delivering a specific requested detail (phone number, email, etc.) before
+moving on to the next question -- rather than jumping straight into it with
+no pause.
 
-Root cause (from a reviewed real call recording): neither instruction
-existed anywhere in the prompt, so the LLM had no guidance to slow down or
-add spoken-form punctuation for digit sequences, and no instruction that a
-short acknowledgement is appropriate right after delivering a requested
-detail -- both read back too fast / transitioned too abruptly as a direct
-consequence.
+Root cause (from a reviewed real Twilio call recording): neither
+instruction existed anywhere in Twilio's prompt, so the LLM had no guidance
+to slow down or add spoken-form punctuation for digit sequences, and no
+instruction that a short acknowledgement is appropriate right after
+delivering a requested detail -- both read back too fast / transitioned too
+abruptly as a direct consequence.
 
-Fix is text-only (system prompt content), reusing the exact real-handler
-fixture and system-prompt-capture pattern already proven in
-tests/voice/test_bracket_tag_prompt_consistency.py -- no audio pipeline,
-STT, or TTS-timing changes, so this cannot introduce latency and does not
-touch app/voice/livekit_browser_call_handler.py or
-app/voice/conversation_orchestrator.py (the demo/LiveKit path builds its
-system prompt via an entirely separate implementation, untouched here).
+The original fix (see git history) was scoped to Twilio only, on the
+reasoning that the LiveKit/browser path builds its prompt via a separate
+implementation untouched by that change. That scoping was itself a bug:
+linguistic humanization (what/how the agent says something) must not
+diverge between transports -- the SAME conversational situation (e.g. "read
+back this phone number") should get the SAME pacing guidance whether the
+caller is on the phone or in a browser demo. This file now asserts BOTH
+transports carry the identical guidance -- see
+tests/voice/test_linguistic_style_parity.py for the broader linguistic-
+style-parity regression suite this belongs alongside.
 """
 
 from __future__ import annotations
@@ -104,13 +108,15 @@ class TestStructuredInfoPacingPresentInAllTwilioPromptBranches:
         sp = captured[0]
         assert "five five five, one two three, four five six seven" in sp
 
-    def test_livekit_conversation_orchestrator_prompt_is_untouched(self):
-        """Explicit scope guard: the demo/LiveKit path's separate prompt
-        builder must not gain this Twilio-specific instruction text."""
+    def test_livekit_conversation_orchestrator_prompt_also_has_both_pacing_instructions(self):
+        """Transport-parity guard (corrected from the original scope guard
+        that excluded LiveKit -- see module docstring): the demo/LiveKit
+        path's separate prompt builder carries the identical instruction
+        text, sourced verbatim, not reimplemented."""
         import inspect
 
         from app.voice import conversation_orchestrator
 
         source = inspect.getsource(conversation_orchestrator)
-        assert STRUCTURED_INFO_MARKER not in source
-        assert TRANSITION_PACING_MARKER not in source
+        assert STRUCTURED_INFO_MARKER in source
+        assert TRANSITION_PACING_MARKER in source

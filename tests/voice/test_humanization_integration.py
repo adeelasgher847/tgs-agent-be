@@ -15,6 +15,7 @@ Covers:
      humanization entry point (no duplicated implementation)
   10. queue_tts() still returns before synthesis completes (incremental start)
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -28,7 +29,9 @@ from app.core.agent_runtime import ResolvedTtsRuntime
 from app.voice.tts_pipeline import TtsPipeline
 
 
-def _fake_tts_runtime(adapter_slug: str, voice_external_id: str | None = "voice-1", settings_json=None):
+def _fake_tts_runtime(
+    adapter_slug: str, voice_external_id: str | None = "voice-1", settings_json=None
+):
     return ResolvedTtsRuntime(
         adapter_slug=adapter_slug,
         voice_external_id=voice_external_id,
@@ -72,10 +75,14 @@ class _FakeHandler:
         )
 
 
-async def _drive_single_chunk(handler: _FakeHandler, text: str, user_text: str = "") -> None:
+async def _drive_single_chunk(
+    handler: _FakeHandler, text: str, user_text: str = ""
+) -> None:
     handler._current_turn_user_text = user_text
     pipeline = TtsPipeline(handler)
-    await pipeline.queue_tts({"text": text, "chunk_id": 0, "use_ssml": False, "is_final": True})
+    await pipeline.queue_tts(
+        {"text": text, "chunk_id": 0, "use_ssml": False, "is_final": True}
+    )
     # queue_tts spawns the chunk as an asyncio.Task; wait for it directly rather
     # than sleeping, so the test is not timing-dependent.
     task = pipeline._synthesis_tasks.get(0)
@@ -92,7 +99,9 @@ async def _drive_single_chunk(handler: _FakeHandler, text: str, user_text: str =
 async def test_humanization_enabled_engine_called_at_shared_point():
     handler = _FakeHandler()
     await _drive_single_chunk(
-        handler, "Sure, let's get that scheduled for you.", user_text="Can you help me book an appointment please"
+        handler,
+        "Sure, let's get that scheduled for you.",
+        user_text="Can you help me book an appointment please",
     )
 
     assert len(handler.prefetch_calls) == 1
@@ -102,11 +111,17 @@ async def test_humanization_enabled_engine_called_at_shared_point():
 
 
 @pytest.mark.asyncio
-async def test_humanization_disabled_returns_neutral_decision_and_no_overlay(monkeypatch):
-    monkeypatch.setattr(humanization_engine.settings, "VOICE_ENABLE_HUMANIZATION_ENGINE", False)
+async def test_humanization_disabled_returns_neutral_decision_and_no_overlay(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        humanization_engine.settings, "VOICE_ENABLE_HUMANIZATION_ENGINE", False
+    )
     handler = _FakeHandler()
     await _drive_single_chunk(
-        handler, "Sure, let's get that scheduled for you.", user_text="This is unacceptable, I want a refund now"
+        handler,
+        "Sure, let's get that scheduled for you.",
+        user_text="This is unacceptable, I want a refund now",
     )
 
     decision = handler.prefetch_calls[0].get("_humanization_decision")
@@ -161,7 +176,14 @@ async def test_queue_tts_returns_before_synthesis_completes():
     handler._prefetch_tts_audio = _slow_prefetch
 
     pipeline = TtsPipeline(handler)
-    await pipeline.queue_tts({"text": "Some longer response chunk here.", "chunk_id": 0, "use_ssml": False, "is_final": True})
+    await pipeline.queue_tts(
+        {
+            "text": "Some longer response chunk here.",
+            "chunk_id": 0,
+            "use_ssml": False,
+            "is_final": True,
+        }
+    )
 
     # queue_tts already returned; synthesis is still in flight in the background.
     await asyncio.wait_for(still_running.wait(), timeout=1.0)
@@ -240,7 +262,10 @@ async def test_elevenlabs_valid_stability_hint_is_applied():
         return_value=_fake_tts_runtime("elevenlabs"),
     ), patch("app.voice.tts_stream_mixin.get_tts_adapter", return_value=mock_adapter):
         result = await h._prefetch_tts_audio(
-            {"text": "Let's take care of that for you.", "_humanization_decision": decision}
+            {
+                "text": "Let's take care of that for you.",
+                "_humanization_decision": decision,
+            }
         )
         if hasattr(result, "__aiter__"):
             async for _ in result:
@@ -296,7 +321,9 @@ async def test_provider_capability_failure_does_not_block_tts():
     with patch(
         "app.voice.tts_stream_mixin.resolve_tts_runtime",
         return_value=_fake_tts_runtime("elevenlabs"),
-    ), patch("app.voice.tts_stream_mixin.get_tts_adapter", return_value=mock_adapter), patch(
+    ), patch(
+        "app.voice.tts_stream_mixin.get_tts_adapter", return_value=mock_adapter
+    ), patch(
         "app.voice.tts_stream_mixin.build_voice_settings_overlay",
         side_effect=RuntimeError("capability lookup exploded"),
     ):
@@ -343,15 +370,22 @@ async def test_google_receives_no_stability_setting():
         side_effect=fake_google_stream,
     ):
         result = await h._prefetch_tts_audio(
-            {"text": "Let's take care of that for you.", "_humanization_decision": decision}
+            {
+                "text": "Let's take care of that for you.",
+                "_humanization_decision": decision,
+            }
         )
         if hasattr(result, "__aiter__"):
             async for _ in result:
                 pass
 
-    # Google's branch never builds a provider_settings dict at all, so the
-    # overlay function is never even invoked for it.
-    spy_overlay.assert_not_called()
+    # Google's branch never builds a provider_settings dict, so no
+    # "stability"/"voice_settings" key is ever forwarded to the Google TTS
+    # call — but as of V-08's speaking-rate consolidation, the SAME
+    # build_voice_settings_overlay() IS now called for Google too (to
+    # resolve `speaking_rate`, replacing the old duplicated inline
+    # emotion->rate map), rather than never invoked.
+    spy_overlay.assert_called_once_with("google", decision)
     assert "stability" not in captured
     assert "voice_settings" not in captured
 

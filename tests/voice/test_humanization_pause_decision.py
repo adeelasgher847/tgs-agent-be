@@ -5,6 +5,7 @@ VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES config default.
 
 No audio, no TtsPipeline — just the eligibility decision function itself.
 """
+
 from __future__ import annotations
 
 from app.core.config import settings
@@ -127,4 +128,9 @@ def test_pause_decision_takes_no_provider_argument():
     sig = inspect.signature(pause_frames_for_chunk)
     assert "provider" not in sig.parameters
     assert "provider_slug" not in sig.parameters
-    assert list(sig.parameters) == ["pacing", "is_final"]
+    # V-08: `pause_after` is an optional, keyword-only, provider-NEUTRAL
+    # PauseCategory (semantic enum, never a provider slug/adapter) — added
+    # alongside the original two positional params, not replacing them.
+    assert list(sig.parameters) == ["pacing", "is_final", "pause_after"]
+    assert sig.parameters["pause_after"].kind == inspect.Parameter.KEYWORD_ONLY
+    assert sig.parameters["pause_after"].default is None

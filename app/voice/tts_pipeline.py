@@ -40,7 +40,7 @@ import time
 from typing import Any, Dict
 
 from app.core.logger import logger
-from app.voice.humanization_engine import analyze_response
+from app.voice.humanization_engine import VocalBehaviorGuardrailState, analyze_response
 from app.voice.tts_stream_mixin import TtsStreamMixin
 
 # ── Tuning constants ──────────────────────────────────────────────────────────
@@ -818,12 +818,27 @@ class TtsPipeline:
                 _stt_confidence = (
                     getattr(self._handler, "_current_turn_stt_confidence", 0.0) or 0.0
                 )
+                # V-08: per-call, in-memory-only guardrail counters — lazily
+                # created on the (already per-call, in-memory) handler, never
+                # persisted. Absent for a handler that has never queued an
+                # LLM delivery intent; analyze_response tolerates None.
+                _guardrail_state = getattr(
+                    self._handler, "_humanization_guardrail_state", None
+                )
+                if _guardrail_state is None:
+                    _guardrail_state = VocalBehaviorGuardrailState()
+                    try:
+                        self._handler._humanization_guardrail_state = _guardrail_state  # type: ignore[attr-defined]
+                    except Exception:
+                        pass
                 decision = analyze_response(
                     text,
                     user_text=_user_text,
                     stt_confidence=_stt_confidence,
                     use_ssml=bool(use_ssml),
                     is_final=bool(is_final),
+                    llm_intent=task.get("_llm_delivery_intent"),
+                    guardrail_state=_guardrail_state,
                 )
                 task["_humanization_decision"] = decision
                 if decision and decision.text:
@@ -997,6 +1012,17 @@ class TtsPipeline:
             _vm = getattr(self._handler, "_voice_metrics", None)
             if _vm:
                 _vm.mark_first_playback()
+            # V-08: pass through the guardrailed LLM PauseCategory (if any) so
+            # both transports' _stream_tts_chunk can prefer it over the
+            # pacing-only silence-frame heuristic (see
+            # humanization_engine.pause_frames_for_chunk). None (the
+            # overwhelmingly common case — no llm_intent, or the flag is
+            # off) preserves the exact pre-existing pacing-only behavior.
+            _pause_after = (
+                decision.delivery.pause_after
+                if decision is not None and decision.delivery is not None
+                else None
+            )
             _stream_kwargs: Dict[str, Any] = {
                 "use_ssml": use_ssml,
                 "is_final": effective_is_final,
@@ -1017,6 +1043,14 @@ class TtsPipeline:
             # transport.
             if isinstance(self._handler, TtsStreamMixin):
                 _stream_kwargs["humanization_decision"] = decision
+            # V-08: only added when an LLM PauseCategory is actually in play
+            # (flag on AND a guardrailed delivery decision requested one) —
+            # omitted entirely otherwise, so any handler (including test
+            # doubles built against the pre-V-08 _stream_tts_chunk shape)
+            # that doesn't know about this optional kwarg is never broken by
+            # an unconditional None value.
+            if _pause_after is not None:
+                _stream_kwargs["pause_after"] = _pause_after
             await self._handler._stream_tts_chunk(text, **_stream_kwargs)  # type: ignore[attr-defined]
 
             # Phase 6-3: distinguish "WS owner's iter_audio() ended because

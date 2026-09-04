@@ -2,19 +2,22 @@
 ElevenLabs v3 (and similar) use bracketed *audio tags* in TTS text, e.g. [breathes] [pause] [excited] [sad].
 Those must not reach other providers: Google TTS can speak the brackets and/or mis-handle SSML.
 
+Under the V-08 humanization architecture, the LLM never emits these tags itself — it only
+emits the semantic `[DELIVERY ...]` tag (see `app/voice/humanization_intent.py`). Real
+provider-specific bracketed tags (e.g. ElevenLabs `[chuckles]`/`[sighs]`) are added
+programmatically after the fact by `apply_vocal_behavior_tag()` in
+`app/voice/tts_provider_capabilities.py`, which reuses `_ELEVEN_V3_TAG_INNERS` below.
+
 This module:
 - For provider **elevenlabs**: returns text unchanged (no extra work when no [] present).
 - For any other provider: removes only **known** tag inners; unknown `[...]` is left as-is
   to avoid deleting user content like [SKU-100] (digits help distinguish later if needed).
-- LLM/voice prompt guidance and tag enablement: `settings.ENABLE_ELEVENLABS_AUDIO_TAGS` plus
-  `supports_elevenlabs_audio_tags` (ElevenLabs `tts_provider` slug only).
 """
 
 from __future__ import annotations
 
 import re
 
-from app.core.config import settings
 from app.utils.ssml_utils import strip_ssml_tags
 
 
@@ -143,50 +146,4 @@ def prepare_tts_text_for_provider(text: str, provider_slug: str | None) -> str:
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     return cleaned.strip()
 
-
-def supports_elevenlabs_audio_tags(provider_slug: str | None) -> bool:
-    """
-    Return True when the agent's TTS is ElevenLabs and tag guidance is enabled in settings.
-    All tag-related LLM text and fallbacks should be gated on this.
-    """
-    if (provider_slug or "").lower() != "elevenlabs":
-        return False
-    return bool(getattr(settings, "ENABLE_ELEVENLABS_AUDIO_TAGS", False))
-
-
-def get_elevenlabs_voice_prompt_rule_lines() -> tuple[str, str, str]:
-    """
-    (output_plain_text_rule, no_ssml_rule_base, no_ssml_rule) for voice system prompts.
-    """
-    return (
-        "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or bracketed tags. Prosody is handled by the system.",
-        "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only.",
-        "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML.",
-    )
-
-
-def contains_elevenlabs_audio_tag(text: str) -> bool:
-    """True when text already includes a known Eleven-style bracketed audio tag."""
-    if not text or "[" not in text:
-        return False
-    for match in _TAG_RE.finditer(text):
-        if _normalize_tag_inner(match.group(1) or "") in _ELEVEN_V3_TAG_INNERS:
-            return True
-    return False
-
-
-def apply_elevenlabs_breathing_fallback(text: str) -> str:
-    """
-    Pass through text cleanly without injecting literal [breathes] tags.
-    """
-    return (text or "").strip()
-
-
-def build_elevenlabs_audio_tag_prompt_block(provider_slug: str | None) -> str:
-    """
-    Guidance injected into voice prompts. Empty when audio tags are disabled.
-    """
-    if not supports_elevenlabs_audio_tags(provider_slug):
-        return ""
-    return ""
 

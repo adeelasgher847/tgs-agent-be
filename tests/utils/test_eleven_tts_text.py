@@ -1,12 +1,8 @@
 """Tests for Eleven-style audio tag stripping on non-ElevenLabs TTS."""
 
 from app.utils.eleven_tts_text import (
-    apply_elevenlabs_breathing_fallback,
-    build_elevenlabs_audio_tag_prompt_block,
-    contains_elevenlabs_audio_tag,
     prepare_tts_text_for_provider,
     strip_eleven_v3_style_tags_for_non_eleven_tts,
-    supports_elevenlabs_audio_tags,
 )
 
 
@@ -76,32 +72,4 @@ def test_default_non_eleven_strips():
     assert "[breathes]" not in prepare_tts_text_for_provider("[breathes] Hi", "openai-tts")
 
 
-def test_audio_tags_gated_by_provider_and_settings():
-    # Non-ElevenLabs providers never support the bracketed audio tags.
-    assert supports_elevenlabs_audio_tags("google") is False
-    assert supports_elevenlabs_audio_tags(None) is False
-    # ElevenLabs is gated by settings.ENABLE_ELEVENLABS_AUDIO_TAGS, which
-    # defaults to False (Flash/Turbo/Multilingual read brackets out loud).
-    assert supports_elevenlabs_audio_tags("elevenlabs") is False
-    assert build_elevenlabs_audio_tag_prompt_block("elevenlabs") == ""
-
-
-def test_audio_tags_can_be_opted_back_in_via_settings():
-    """Operators can re-enable ElevenLabs audio tags via ENABLE_ELEVENLABS_AUDIO_TAGS."""
-    from unittest.mock import patch
-
-    with patch("app.utils.eleven_tts_text.settings.ENABLE_ELEVENLABS_AUDIO_TAGS", True):
-        assert supports_elevenlabs_audio_tags("elevenlabs") is True
-        # Non-ElevenLabs providers remain unaffected regardless of the setting.
-        assert supports_elevenlabs_audio_tags("google") is False
-
-
-def test_contains_elevenlabs_audio_tag_detects_known_tags():
-    assert contains_elevenlabs_audio_tag("[breathes] Hello") is True
-    assert contains_elevenlabs_audio_tag("Price is [500]") is False
-
-
-def test_breathing_fallback_does_not_inject_literal_tags():
-    raw = "Hello there, thank you for calling today."
-    assert apply_elevenlabs_breathing_fallback(raw) == raw
 

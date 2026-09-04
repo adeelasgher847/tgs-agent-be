@@ -13,25 +13,24 @@ Use with: text input → preprocess_for_tts(text) → pass to Google TTS API
 """
 
 import re
-import random
-
 
 # ---------------------------------------------------------
 # 1. Basic Normalization
 # ---------------------------------------------------------
 
+
 def normalize_abbreviations(text: str) -> str:
     abbreviations = {
-        r'\bDr\.': 'Doctor',
-        r'\bMr\.': 'Mister',
-        r'\bMrs\.': 'Missus',
-        r'\bMs\.': 'Miss',
-        r'\bProf\.': 'Professor',
-        r'\betc\.': 'et cetera',
-        r'\be\.g\.': 'for example',
-        r'\bi\.e\.': 'that is',
-        r'\ba\.m\.': 'A M',
-        r'\bp\.m\.': 'P M',
+        r"\bDr\.": "Doctor",
+        r"\bMr\.": "Mister",
+        r"\bMrs\.": "Missus",
+        r"\bMs\.": "Miss",
+        r"\bProf\.": "Professor",
+        r"\betc\.": "et cetera",
+        r"\be\.g\.": "for example",
+        r"\bi\.e\.": "that is",
+        r"\ba\.m\.": "A M",
+        r"\bp\.m\.": "P M",
     }
     for abbr, full in abbreviations.items():
         text = re.sub(abbr, full, text, flags=re.IGNORECASE)
@@ -39,20 +38,27 @@ def normalize_abbreviations(text: str) -> str:
 
 
 def normalize_numbers(text: str) -> str:
-    text = re.sub(r'\$(\d+)', r'\1 dollars', text)
-    text = re.sub(r'(\d+)%', r'\1 percent', text)
-    text = re.sub(r'(\d{3})[-.]?(\d{3})[-.]?(\d{4})', r'\1, \2, \3', text)
-    text = re.sub(r'(\d{1,2}):(\d{2})', r'\1, \2', text)
+    text = re.sub(r"\$(\d+)", r"\1 dollars", text)
+    text = re.sub(r"(\d+)%", r"\1 percent", text)
+    text = re.sub(r"(\d{3})[-.]?(\d{3})[-.]?(\d{4})", r"\1, \2, \3", text)
+    text = re.sub(r"(\d{1,2}):(\d{2})", r"\1, \2", text)
     return text
 
 
 def add_contractions(text: str) -> str:
     contractions = {
-        r'\bI am\b': "I'm", r'\byou are\b': "you're", r'\bhe is\b': "he's",
-        r'\bshe is\b': "she's", r'\bit is\b': "it's", r'\bwe are\b': "we're",
-        r'\bthey are\b': "they're", r'\bthat is\b': "that's",
-        r'\bdo not\b': "don't", r'\bcan not\b': "can't",
-        r'\bwill not\b': "won't", r'\bshould not\b': "shouldn't",
+        r"\bI am\b": "I'm",
+        r"\byou are\b": "you're",
+        r"\bhe is\b": "he's",
+        r"\bshe is\b": "she's",
+        r"\bit is\b": "it's",
+        r"\bwe are\b": "we're",
+        r"\bthey are\b": "they're",
+        r"\bthat is\b": "that's",
+        r"\bdo not\b": "don't",
+        r"\bcan not\b": "can't",
+        r"\bwill not\b": "won't",
+        r"\bshould not\b": "shouldn't",
     }
     for pat, rep in contractions.items():
         text = re.sub(pat, rep, text, flags=re.IGNORECASE)
@@ -62,6 +68,7 @@ def add_contractions(text: str) -> str:
 # ---------------------------------------------------------
 # 1b. Symbol Normalization (for TTS readability)
 # ---------------------------------------------------------
+
 
 def normalize_symbols(text: str) -> str:
     """
@@ -73,62 +80,29 @@ def normalize_symbols(text: str) -> str:
         return ""
 
     # Collapse ellipses (and longer) into a soft pause
-    text = re.sub(r'\.{3,}', ', ', text)
+    text = re.sub(r"\.{3,}", ", ", text)
 
     # Turn inline slashes between words into "and"
     # e.g. "FastAPI/ML" or "A / B" → "FastAPI and ML"
-    text = re.sub(r'(?<=\w)\s*/\s*(?=\w)', ' and ', text)
+    text = re.sub(r"(?<=\w)\s*/\s*(?=\w)", " and ", text)
 
     return text
+
 
 # ---------------------------------------------------------
 # 1c. Emotion-aware Interjections (text-only, streaming-safe)
 # ---------------------------------------------------------
 
-def inject_emotion_preface(text: str, probability: float = 0.18) -> str:
-    """
-    Add a short human interjection at the START of an utterance.
-    This is TEXT-ONLY (no SSML), so it works with both:
-    - SSML synthesize_speech (tags wrap around it)
-    - StreamingSynthesize (where SSML tags may be stripped)
-    """
-    if not text or not text.strip():
-        return ""
-
-    t = text.strip()
-    lower = t.lower()
-
-    # If it already starts with an interjection, don't stack.
-    if re.match(r'^(umm|um|hmm|hm|oh|okay|alright|well|right|got it|hang on|wait)\b', lower):
-        return t
-
-    if random.random() >= probability:
-        return t
-
-    emotion = detect_emotion(t)
-
-    if emotion == "uncertain":
-        prefaces = ["Hmm,", "Umm,", "Well,"]
-    elif emotion == "happy":
-        prefaces = ["Oh, nice,", "Oh, great,", "Alright,"]
-    elif emotion == "sad":
-        prefaces = ["Oh, I'm sorry,", "Hmm, okay,", "I see,"]
-    elif emotion == "confident":
-        prefaces = ["Alright,", "Okay,", "Got it,"]
-    else:
-        prefaces = ["Okay,", "Alright,", "I see,"]
-
-    return f"{random.choice(prefaces)} {t}"
-
 # ---------------------------------------------------------
 # 2. Thinking Delay Mode (NEW!)
 # ---------------------------------------------------------
+
 
 def add_thinking_delays(text: str) -> str:
     """
     Adds realistic thinking pauses (400ms) before contemplative phrases.
     Makes agent sound more human - like they're actually thinking!
-    
+
     Examples:
         "Let me think" → "<break time='400ms'/> Let me think"
         "Hmm, I see" → "<break time='400ms'/> Hmm, I see"
@@ -136,32 +110,35 @@ def add_thinking_delays(text: str) -> str:
     # Thinking phrases that deserve a pause BEFORE them
     # Removed "you know" and "I mean" - too annoying in TTS output
     thinking_phrases = [
-        'let me think',
-        'let me see',
-        'let me check',
-        'hmm',
-        'well',
-        'actually',
-        'maybe',
-        'perhaps',
-        'how should I say',
-        'to be honest',
-        'frankly',
-        'honestly',
+        "let me think",
+        "let me see",
+        "let me check",
+        "hmm",
+        "well",
+        "actually",
+        "maybe",
+        "perhaps",
+        "how should I say",
+        "to be honest",
+        "frankly",
+        "honestly",
     ]
-    
+
     for phrase in thinking_phrases:
         # Add 400ms pause BEFORE the phrase
-        pattern = rf'\b{re.escape(phrase)}\b'
+        pattern = rf"\b{re.escape(phrase)}\b"
         replacement = f'<break time="400ms"/> {phrase}'
-        text = re.sub(pattern, replacement, text, flags=re.IGNORECASE, count=1)  # Only first occurrence
-    
+        text = re.sub(
+            pattern, replacement, text, flags=re.IGNORECASE, count=1
+        )  # Only first occurrence
+
     return text
 
 
 # ---------------------------------------------------------
 # 3. Emotion & Prosody Detection
 # ---------------------------------------------------------
+
 
 def detect_emotion(sentence: str) -> str:
     s = sentence.lower()
@@ -197,16 +174,6 @@ def emotion_to_prosody(emotion: str):
 # 4. Humanization: Fillers + Breathing
 # ---------------------------------------------------------
 
-def insert_fillers(sentence: str, emotion: str) -> str:
-    """
-    VAPI-STYLE: Removed ALL mid-sentence fillers to prevent clicking/tak sounds.
-    Prosody interruptions within sentences cause audio distortion.
-    Only thinking delays (natural pauses) are preserved for humanization.
-    """
-    # VAPI APPROACH: No fillers within sentences - eliminates clicking sounds
-    # Humanization happens at natural pause points only (thinking delays)
-    return sentence  # Return unchanged - no fillers!
-
 
 def add_breath(sentence: str, emotion: str) -> str:
     """
@@ -224,6 +191,7 @@ def add_breath(sentence: str, emotion: str) -> str:
 # 5. SSML Generator (Google-Compatible)
 # ---------------------------------------------------------
 
+
 def wrap_in_ssml(
     text: str,
     add_office_bg: bool = False,
@@ -232,7 +200,7 @@ def wrap_in_ssml(
 ) -> str:
     """
     Wraps text in SSML with prosody and emotion.
-    
+
     Args:
         text: Text to wrap
         add_office_bg: Deprecated; ignored (SSML <par> office ambience was never enabled).
@@ -241,14 +209,14 @@ def wrap_in_ssml(
     """
     # Add thinking delays BEFORE wrapping
     text = add_thinking_delays(text)
-    
+
     # 🎯 DETECT EMOTION ONCE for entire response (prevents prosody clicks!)
     # This ensures consistent prosody across all sentences - no abrupt transitions
     # Emotion still preserved (based on overall response tone), but applied consistently
     overall_emotion = detect_emotion(text)
     rate, pitch, volume = emotion_to_prosody(overall_emotion)
-    
-    sentences = re.split(r'([.!?])', text)
+
+    sentences = re.split(r"([.!?])", text)
     ssml = "<speak>"
     # Optional break at start to prevent audio pop (can be reduced/disabled when audio fade-in is applied)
     if start_break_ms and start_break_ms > 0:
@@ -257,14 +225,14 @@ def wrap_in_ssml(
     # Apply SAME prosody to all sentences (prevents clicks/tak sounds)
     # Emotion still applied (based on overall response), but consistently!
     ssml += f'<prosody rate="{rate}" pitch="{pitch}" volume="{volume}">'
-    
+
     processed_sentences = []
     for i in range(0, len(sentences) - 1, 2):
         s = sentences[i].strip()
-        p = sentences[i+1]
+        p = sentences[i + 1]
         if s:
             processed_sentences.append(s + p)
-    
+
     if len(sentences) % 2 == 1 and sentences[-1].strip():
         processed_sentences.append(sentences[-1].strip())
 
@@ -274,10 +242,10 @@ def wrap_in_ssml(
         if i < len(processed_sentences) - 1:
             if between_sentence_break_ms and between_sentence_break_ms > 0:
                 ssml += f'<break time="{int(between_sentence_break_ms)}ms"/>'
-    
+
     # Close prosody tag
-    ssml += '</prosody>'
-    
+    ssml += "</prosody>"
+
     ssml += "</speak>"
     return ssml
 
@@ -285,6 +253,7 @@ def wrap_in_ssml(
 # ---------------------------------------------------------
 # 6. Main Preprocessing Entry
 # ---------------------------------------------------------
+
 
 def preprocess_for_tts(
     text: str,
@@ -294,7 +263,7 @@ def preprocess_for_tts(
 ) -> str:
     """
     Complete humanization pipeline with optional office background.
-    
+
     Pipeline:
     1. Normalize abbreviations (Dr. → Doctor)
     2. Normalize numbers ($100 → 100 dollars)
@@ -305,11 +274,11 @@ def preprocess_for_tts(
     7. Add breathing (subtle, 3% on very long sentences only)
     8. Optional office background flag (deprecated; ignored)
     9. Generate SSML with prosody
-    
+
     Args:
         text: Raw text from LLM
         add_office_bg: Enable office background ambience (default: False, disabled)
-    
+
     Returns:
         SSML-formatted text ready for Google TTS
     """
@@ -332,12 +301,12 @@ def preprocess_for_tts(
 # 7. Quick Utility
 # ---------------------------------------------------------
 
+
 def quick_clean(text: str) -> str:
     """Fast cleaning without SSML (for cached phrases)"""
     if not text:
         return ""
-    text = re.sub(r'\.{3,}', ',', text)
-    text = re.sub(r'([.!?;,]){2,}', r'\1', text)
-    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r"\.{3,}", ",", text)
+    text = re.sub(r"([.!?;,]){2,}", r"\1", text)
+    text = re.sub(r"\s+", " ", text)
     return text.strip()
-

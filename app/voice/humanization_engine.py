@@ -40,15 +40,102 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from app.core.config import settings
 from app.utils.tts_preprocessing import detect_emotion
+from app.voice.humanization_intent import PauseCategory, SegmentIntent, VocalBehavior
 from app.voice.tone_adapter import tone_adapter
 from app.voice.tts_flush import SENTENCE_END_RE, SOFT_BOUNDARY_RE
 from app.voice.turn_signals import UserMood
 
 _SHORT_UTTERANCE_MAX_WORDS = 6
+
+# ── V-08: LLM-driven delivery guardrails (deterministic, never the LLM's call) ──
+#
+# Cooldown: a requested vocal_behavior is suppressed if the previous ONE was
+# used within this many segments (a "segment" == one analyze_response() call,
+# i.e. one flushed TTS chunk) — so a chuckle/sigh/hesitation can't repeat
+# back-to-back or every other sentence.
+_VOCAL_BEHAVIOR_COOLDOWN_SEGMENTS = 4
+# Hard ceiling on total non-NONE vocal_behavior realizations for the whole
+# call — a "handful", not unlimited, regardless of how often the LLM asks.
+_VOCAL_BEHAVIOR_CALL_CEILING = 6
+
+
+@dataclass
+class VocalBehaviorGuardrailState:
+    """
+    Per-call, in-memory-only counters enforcing the vocal_behavior
+    guardrails above. Lives on the transport handler instance (already the
+    per-active-call, in-memory object per this repo's convention — see
+    CLAUDE.md's "never hold conversation/call state in memory across
+    requests"; this is explicitly NOT cross-request state, it is ephemeral
+    delivery flavor for the CURRENT live call only, discarded on disconnect
+    exactly like the handler's other in-memory TTS/STT buffers). Never
+    persisted — a mid-call process restart simply resets the cooldown/
+    ceiling, which is an acceptable (and intentional, per the task spec)
+    trade-off for state this ephemeral.
+    """
+
+    last_vocal_behavior: VocalBehavior = VocalBehavior.NONE
+    segments_since_last_vocal_behavior: int = _VOCAL_BEHAVIOR_COOLDOWN_SEGMENTS
+    total_vocal_behavior_used: int = 0
+
+    def record(self, behavior: VocalBehavior) -> None:
+        """Advance counters after a segment's (possibly guardrail-downgraded)
+        vocal_behavior has been decided."""
+        if behavior != VocalBehavior.NONE:
+            self.last_vocal_behavior = behavior
+            self.segments_since_last_vocal_behavior = 0
+            self.total_vocal_behavior_used += 1
+        else:
+            self.segments_since_last_vocal_behavior += 1
+
+
+def _apply_delivery_guardrails(
+    intent: SegmentIntent,
+    state: Optional[VocalBehaviorGuardrailState],
+) -> SegmentIntent:
+    """
+    Deterministically enforce the vocal_behavior cooldown/ceiling guardrails
+    on an already-validated `SegmentIntent`. The LLM's request is advisory
+    only — this function has the final say, always, regardless of the
+    LLM's own `confidence`. Never raises: any unexpected error degrades to
+    passing `intent` through unchanged (worst case: one extra vocal
+    behavior slips through on a genuinely unexpected error, never a crash
+    or a dropped/blocked response).
+
+    `emphasis_word` substring validity and "at most one vocal_behavior per
+    segment" are already guaranteed by `SegmentIntent`'s own construction
+    (`humanization_intent.build_segment_intent`) — not re-validated here.
+    """
+    try:
+        behavior = intent.vocal_behavior
+        if behavior != VocalBehavior.NONE and state is not None:
+            if (
+                state.segments_since_last_vocal_behavior
+                < _VOCAL_BEHAVIOR_COOLDOWN_SEGMENTS
+            ):
+                behavior = VocalBehavior.NONE
+            elif state.total_vocal_behavior_used >= _VOCAL_BEHAVIOR_CALL_CEILING:
+                behavior = VocalBehavior.NONE
+
+        if state is not None:
+            state.record(behavior)
+
+        if behavior == intent.vocal_behavior:
+            return intent
+        return SegmentIntent(
+            text=intent.text,
+            emotion=intent.emotion,
+            vocal_behavior=behavior,
+            pause_after=intent.pause_after,
+            emphasis_word=intent.emphasis_word,
+            confidence=intent.confidence,
+        )
+    except Exception:
+        return intent
 
 
 class SentenceEndingType(str, Enum):
@@ -127,6 +214,12 @@ class HumanizationDecision:
     filler: FillerHint
     tts_stability_hint: float | None = None
     metadata: Dict[str, Any] = field(default_factory=dict)
+    # V-08: guardrailed LLM delivery intent for this segment, or None when
+    # VOICE_ENABLE_LLM_HUMANIZATION is off, no llm_intent was supplied, or
+    # parsing/guardrail evaluation failed. Provider realization
+    # (app.voice.tts_provider_capabilities) reads this field; nothing about
+    # `text`/`mood`/`pacing`/etc above changes based on its presence.
+    delivery: SegmentIntent | None = None
 
 
 def _neutral_decision(text: str) -> HumanizationDecision:
@@ -194,7 +287,24 @@ def _acknowledgement_hint(user_text: str) -> AcknowledgementHint:
     return AcknowledgementHint(eligible=eligible)
 
 
-def pause_frames_for_chunk(pacing: PacingHint | None, is_final: bool) -> int:
+# V-08: provider-neutral silence-frame counts (20ms each) for each semantic
+# PauseCategory the LLM can request. Same mechanism as the pre-existing
+# pacing-based pause below (literal 0xFF silence frames via the transport's
+# existing paced-send path) — never a new audio primitive.
+_PAUSE_CATEGORY_FRAMES: Dict[PauseCategory, int] = {
+    PauseCategory.NONE: 0,
+    PauseCategory.BREATH: 3,
+    PauseCategory.THINKING: 6,
+    PauseCategory.EMPHASIS: 2,
+}
+
+
+def pause_frames_for_chunk(
+    pacing: PacingHint | None,
+    is_final: bool,
+    *,
+    pause_after: PauseCategory | None = None,
+) -> int:
     """
     Phase 4C-2: how many extra 0xFF silence frames (20ms each) should follow
     this chunk's real audio, or 0 for none. Pure metadata decision — this
@@ -204,7 +314,15 @@ def pause_frames_for_chunk(pacing: PacingHint | None, is_final: bool) -> int:
     using their own existing paced-send mechanism; this only decides "how
     many", never "how".
 
-    Eligibility (all must hold, else 0):
+    `pause_after` (V-08, optional, keyword-only): when the LLM's delivery
+    intent requested a specific `PauseCategory` for this segment
+    (BREATH/THINKING/EMPHASIS) AND `VOICE_ENABLE_LLM_HUMANIZATION` is on,
+    that request takes precedence over the regex-derived pacing heuristic
+    below (still never on a final chunk). Passing None (the default — no
+    LLM intent, or LLM humanization disabled) preserves the EXACT
+    pre-existing pacing-only behavior, byte-for-byte.
+
+    Eligibility for the pacing-only path (all must hold, else 0):
     - `pacing` is present (not None — e.g. humanization disabled/failed)
     - VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES > 0 (default 0 = always inert)
     - `is_final` is False (the existing end-of-turn silence drain already
@@ -218,9 +336,21 @@ def pause_frames_for_chunk(pacing: PacingHint | None, is_final: bool) -> int:
     value) degrades to 0, so a pacing failure can never affect playback.
     """
     try:
-        if pacing is None or is_final:
+        if is_final:
             return 0
-        configured = int(getattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 0) or 0)
+
+        if (
+            pause_after is not None
+            and pause_after != PauseCategory.NONE
+            and bool(getattr(settings, "VOICE_ENABLE_LLM_HUMANIZATION", False))
+        ):
+            return _PAUSE_CATEGORY_FRAMES.get(pause_after, 0)
+
+        if pacing is None:
+            return 0
+        configured = int(
+            getattr(settings, "VOICE_TTS_INTERSENTENCE_PAUSE_FRAMES", 0) or 0
+        )
         if configured <= 0:
             return 0
         if pacing.ending_type == SentenceEndingType.NONE:
@@ -240,6 +370,8 @@ def analyze_response(
     booking_context_active: bool = False,
     is_final: bool = True,
     use_ssml: bool = False,
+    llm_intent: SegmentIntent | None = None,
+    guardrail_state: VocalBehaviorGuardrailState | None = None,
 ) -> HumanizationDecision:
     """
     Produce a HumanizationDecision for one assistant response/chunk.
@@ -257,6 +389,27 @@ def analyze_response(
     substitutions are a no-op whenever use_ssml is True (its calling
     convention, unchanged here) — passing a mismatched value would silently
     diverge from what the caller intended.
+
+    `llm_intent` (V-08, optional): an already-validated `SegmentIntent`
+    parsed by `app.voice.humanization_intent` from this segment's inline
+    `[DELIVERY ...]` tag. Only consulted when
+    `VOICE_ENABLE_LLM_HUMANIZATION` is True; otherwise (flag off, or this
+    argument is None — e.g. parsing failed upstream) the returned
+    `HumanizationDecision.delivery` is always None and every other field is
+    computed EXACTLY as before this parameter existed — this is the
+    regression contract callers rely on. When present and the flag is on,
+    its emotion/vocal_behavior/pause_after take precedence over what the
+    regex-based path would otherwise imply for THIS segment's delivery —
+    caller-mood detection (`turn_signals.detect_mood`, feeding
+    `turn_ctx.mood`/`tts_stability_hint` above) is unaffected either way.
+    Deterministic guardrails (cooldown/ceiling) are always enforced here,
+    never left to the LLM's own request.
+
+    `guardrail_state` (V-08, optional): per-call `VocalBehaviorGuardrailState`
+    used to enforce the vocal_behavior cooldown/ceiling across the whole
+    call. Passing None (e.g. a caller that hasn't wired call-scoped state)
+    skips cooldown/ceiling enforcement for this single call — callers on
+    the live streaming path always pass a real, per-call instance.
     """
     if not bool(getattr(settings, "VOICE_ENABLE_HUMANIZATION_ENGINE", True)):
         return _neutral_decision(text)
@@ -293,6 +446,19 @@ def analyze_response(
         except Exception:
             pacing = PacingHint()
 
+        # V-08: LLM-driven delivery — reachable ONLY when the flag is on AND
+        # a caller-supplied llm_intent is present, so a disabled deployment
+        # (or a caller that never passes llm_intent) never executes this
+        # branch and `delivery` stays None, matching pre-V-08 output exactly.
+        delivery: SegmentIntent | None = None
+        if isinstance(llm_intent, SegmentIntent) and bool(
+            getattr(settings, "VOICE_ENABLE_LLM_HUMANIZATION", False)
+        ):
+            try:
+                delivery = _apply_delivery_guardrails(llm_intent, guardrail_state)
+            except Exception:
+                delivery = None
+
         return HumanizationDecision(
             text=final_text,
             mood=turn_ctx.mood,
@@ -301,6 +467,7 @@ def analyze_response(
             acknowledgement=_acknowledgement_hint(user_text),
             filler=FillerHint(),
             tts_stability_hint=turn_ctx.tts_stability_hint,
+            delivery=delivery,
             metadata={
                 "conversation_phase": turn_ctx.conversation_phase,
                 "respond_briefly": turn_ctx.respond_briefly,

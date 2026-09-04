@@ -13,12 +13,15 @@ from app.services.agent_service import agent_service
 from app.services.token_budget_service import token_budget_service
 from app.utils.webhook_templating import render_template
 from app.utils.eleven_tts_text import (
-    build_elevenlabs_audio_tag_prompt_block,
-    get_elevenlabs_voice_prompt_rule_lines,
     strip_eleven_v3_style_tags_for_non_eleven_tts,
-    supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
+from app.voice.humanization_intent import (
+    build_delivery_prompt_block,
+    consume_delivery_tag,
+    segment_intent_from_tag_attrs,
+    strip_delivery_tags,
+)
 from app.services.llm_circuit_breaker import llm_circuit_breaker
 
 # F-05: Warm transfer phrase pool
@@ -82,6 +85,88 @@ class VoiceTunables:
 
 
 VOICE_TUNABLES = VoiceTunables()
+
+# Shared quick-ack cooldown: how many eligible turns must pass before we
+# roll the probability check again after the last ack. Both transports
+# reference this one constant (Twilio's BidirectionalStreamHandler exposes
+# it as a class attribute sourced from here, for backward-compatible test
+# access) so cooldown pacing never silently diverges between them.
+QUICK_ACK_COOLDOWN_TURNS = 3
+
+# Shared acknowledgement phrase pool — used identically by both transports.
+_QUICK_ACK_PHRASES: Tuple[str, ...] = (
+    "Got it",
+    "I see",
+    "Okay",
+    "Alright",
+    "Sure",
+    "Mm-hmm",
+    "Oh, okay",
+    "One moment",
+    "Hang on a sec",
+    "Let me check that",
+)
+
+
+def decide_quick_ack(
+    user_text: str,
+    *,
+    turns_since_last_ack: int,
+    last_phrase: str,
+    config: QuickAckConfig | None = None,
+    cooldown_turns: int = QUICK_ACK_COOLDOWN_TURNS,
+) -> Tuple[str | None, int, str]:
+    """
+    The ONE shared quick-acknowledgement decision both transports call, so
+    cooldown/variety/content gating can never drift between Twilio
+    (``BidirectionalStreamHandler._send_quick_acknowledgement``) and
+    LiveKit/browser (``ConversationOrchestrator.send_quick_acknowledgement``).
+
+    Applies, in order:
+    1. Content: never ack the caller's own short backchannel/confirmation
+       ("yes", "okay", "right", ...) — those aren't substantive turns.
+    2. Length/skip-phrase eligibility (``should_send_quick_ack``).
+    3. Cooldown: only roll the probability check every ``cooldown_turns``
+       eligible turns, so acks land occasionally rather than
+       (probabilistically) every turn.
+    4. Probability (``config.probability``).
+    5. Variety: never repeat the exact same phrase back-to-back.
+
+    Pure and side-effect-free: returns
+    ``(phrase_or_None, new_turns_since_last_ack, new_last_phrase)`` — it
+    never mutates anything. Callers own persisting the two counters onto
+    their own per-call state (Twilio: instance attributes; LiveKit:
+    ``ConversationOrchestrator`` instance attributes).
+
+    Turn-identity dedup (needed only by Twilio, which can evaluate the same
+    logical user turn twice — once on a qualifying interim, once on the STT
+    final — see ``bidirectional_stream.py``'s ``_turn_generation_id``) is a
+    transport-specific concern and NOT handled here; a caller that
+    double-invokes per turn must gate that separately before calling this.
+    """
+    cfg = config or VOICE_TUNABLES.quick_ack
+    text = (user_text or "").strip()
+    if not text:
+        return None, turns_since_last_ack, last_phrase
+
+    from app.voice.backchannel_classifier import is_known_non_actionable_backchannel
+
+    if is_known_non_actionable_backchannel(text):
+        return None, turns_since_last_ack, last_phrase
+
+    if not should_send_quick_ack(text, cfg):
+        return None, turns_since_last_ack, last_phrase
+
+    turns_since_last_ack += 1
+    if turns_since_last_ack < cooldown_turns:
+        return None, turns_since_last_ack, last_phrase
+
+    if random.random() >= cfg.probability:
+        return None, turns_since_last_ack, last_phrase
+
+    choices = [p for p in _QUICK_ACK_PHRASES if p != last_phrase] or list(_QUICK_ACK_PHRASES)
+    phrase = random.choice(choices)
+    return phrase, 0, phrase
 
 
 # ---------------------------------------------------------------------------
@@ -199,6 +284,12 @@ class ConversationOrchestrator:
         self._history_summary: str = ""
         self._last_summarized_turn_index: int = 0
 
+        # Quick-ack cooldown/variety state (see decide_quick_ack) — per-call,
+        # in-memory only, mirroring Twilio's equivalent instance attributes
+        # so both transports enforce identical pacing/repetition behavior.
+        self._quick_ack_turns_since_last: int = 0
+        self._quick_ack_last_phrase: str = ""
+
     # ---- Interim processing / barge-in gating -------------------------
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
@@ -211,33 +302,27 @@ class ConversationOrchestrator:
 
     async def send_quick_acknowledgement(self, user_text: str) -> None:
         """
-        Send instant acknowledgement for longer queries while generating full response.
-        Probability-based so we don't say "Got it" every time — more natural.
-        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
+        Send instant acknowledgement for longer queries while generating full
+        response. Delegates the actual decision (content/skip-phrase
+        eligibility, cooldown, probability, phrase variety) to the shared
+        ``decide_quick_ack`` — the SAME function Twilio's
+        ``BidirectionalStreamHandler._send_quick_acknowledgement`` calls —
+        so acknowledgement pacing/repetition never diverges between
+        transports. (Twilio additionally gates on turn-identity because it
+        can evaluate the same logical turn twice; this path calls
+        ``generate_and_stream_response`` only once per STT-final turn, so no
+        equivalent gate is needed here.)
         """
-        text = (user_text or "").strip()
-        if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
+        ack, self._quick_ack_turns_since_last, new_last_phrase = decide_quick_ack(
+            user_text,
+            turns_since_last_ack=self._quick_ack_turns_since_last,
+            last_phrase=self._quick_ack_last_phrase,
+        )
+        if not ack:
             return
-
-        # Apply probability filter so we don't say "Got it" every single time
-        if random.random() >= VOICE_TUNABLES.quick_ack.probability:
-            return
-
-        acks = [
-            "Got it",
-            "I see",
-            "Okay",
-            "Alright",
-            "Sure",
-            "Mm-hmm",
-            "Oh, okay",
-            "One moment",
-            "Hang on a sec",
-            "Let me check that",
-        ]
-        ack = random.choice(acks)
         if not self._h._tts_pipeline:
             return
+        self._quick_ack_last_phrase = new_last_phrase
         await self._h._tts_pipeline.queue_tts(
             {
                 "text": ack,
@@ -324,41 +409,22 @@ class ConversationOrchestrator:
         # Build system prompt with agent personality + history
         agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
         agent_language = self._h.agent.language if self._h.agent and self._h.agent.language else "en"
-        from app.core.agent_runtime import resolve_tts_runtime
 
-        tts_provider_slug = (
-            resolve_tts_runtime(
-                self._h.agent, db=getattr(self._h, "db", None)
-            ).adapter_slug
-            if self._h.agent
-            else ""
+        # Provider-independent: the LLM never emits bracketed tags itself under the
+        # V-08 architecture. Only the realization layer (tts_provider_capabilities.py)
+        # adds real provider-specific tags after the fact.
+        output_plain_text_rule = (
+            "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
+            "Prosody is handled by the system."
         )
-        elevenlabs_audio_tags_enabled = supports_elevenlabs_audio_tags(tts_provider_slug)
-        if elevenlabs_audio_tags_enabled:
-            output_plain_text_rule, no_ssml_rule_base, no_ssml_rule = (
-                get_elevenlabs_voice_prompt_rule_lines()
-            )
-        else:
-            output_plain_text_rule = (
-                "- OUTPUT PLAIN TEXT ONLY: Do NOT output SSML, XML, or any tags. "
-                "Prosody is handled by the system."
-            )
-            no_ssml_rule_base = (
-                "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
-            )
-            no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
-        elevenlabs_audio_tag_block = build_elevenlabs_audio_tag_prompt_block(tts_provider_slug)
-        # When ElevenLabs audio tags are enabled, the authoritative rule lives solely in
-        # elevenlabs_audio_tag_block above — do not also emit a contradictory generic
-        # "never use bracket tags" line. Only non-ElevenLabs (or disabled) calls need it.
+        no_ssml_rule_base = (
+            "4. NO SSML: Do NOT output <speak>, <prosody>, or any XML tags. Plain text only."
+        )
+        no_ssml_rule = "3. NO SSML: Plain text only. No <speak>, <prosody>, or XML."
         no_bracket_tags_line = (
-            ""
-            if elevenlabs_audio_tags_enabled
-            else (
-                "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
-                "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
-                "will be read aloud literally."
-            )
+            "- NO BRACKET TAGS: Never output bracketed tags like [pause], [laugh], [breathes], "
+            "[excited], [1], [2], or any similar annotation. These will not be rendered — they "
+            "will be read aloud literally."
         )
 
         # Base prompt for phone conversations (voice-first, plain text only, no SSML)
@@ -368,6 +434,8 @@ You are {agent_name}, having a real-time phone call with a human.
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
 - NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -386,8 +454,6 @@ Previous conversation:
 5. SERVICE SCOPE: Strictly follow "BUSINESS SCOPE & POLICY — STRICT RULES" in AUTHORITATIVE BUSINESS FACTS. Only offer the services listed there. If asked for anything else, decline politely and offer what we actually do.
 6. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, say a short goodbye, and end your response with exactly [END_CALL]. If Service Areas describe global/remote/worldwide coverage, never refuse based on location.
 {no_ssml_rule_base}
-
-{elevenlabs_audio_tag_block}
 
 # GOAL
 Continue the conversation based on the history above. Be {agent_name}."""
@@ -448,7 +514,9 @@ These rules override any conflicting custom instructions below. Never deviate fr
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
@@ -462,8 +530,6 @@ Previous conversation:
 2. NO REPETITION: Do not repeat questions already asked. Move to the next point.
 3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow your custom instructions. Continue from the history above. Be {agent_name}."""
@@ -489,7 +555,9 @@ These rules override any conflicting model instructions below. Never deviate fro
 
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 
@@ -502,8 +570,6 @@ Previous conversation:
 2. NO REPETITION: Do not repeat questions. Move to the next point.
 3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
-
-{elevenlabs_audio_tag_block}
 
 # GOAL
 Follow the model instructions. Continue from the history above. Be {agent_name}."""
@@ -903,6 +969,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 "System webhook variable injection (system prompt) failed: %s", exc
             )
 
+        # V-08: shared `# DELIVERY` instruction block (identical function
+        # also called by bidirectional_stream.py's prompt builder) — "" and
+        # a complete no-op unless VOICE_ENABLE_LLM_HUMANIZATION is on.
+        _delivery_block = build_delivery_prompt_block()
+        if _delivery_block:
+            system_prompt = system_prompt + "\n\n" + _delivery_block
+
         return system_prompt
 
     async def generate_and_stream_response(
@@ -1055,6 +1128,8 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
+            if hasattr(self._h, "_tts_play_start_ts"):
+                self._h._tts_play_start_ts = 0.0  # Clear dead-zone anchor from previous utterance
             # Reset ElevenLabs `previous_text` continuity tracking (Phase 4D-2).
             # Unconditional, every turn — NOT just on barge-in — because
             # cancel_current_and_clear_queue()'s reset only fires on an actual
@@ -1133,6 +1208,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 # V-07: fired once after the first TTS chunk is queued so summarization
                 # is detached from (and never on) the hot path.
                 _deferred_fired = False
+                # V-08: raw (unvalidated) attrs for the CURRENT in-progress
+                # segment's pending [DELIVERY ...] tag, or None. Built into a
+                # real SegmentIntent (via build_segment_intent) only once the
+                # segment's final text is known at flush time, then reset —
+                # each new segment starts with no pending tag. Fully inert
+                # (stays None forever) whenever VOICE_ENABLE_LLM_HUMANIZATION
+                # is off, since the LLM is never asked to emit the tag.
+                _pending_delivery_attrs: dict | None = None
+                _llm_humanization_on = bool(
+                    getattr(settings, "VOICE_ENABLE_LLM_HUMANIZATION", False)
+                )
 
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
@@ -1144,6 +1230,15 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     out = re.sub(r"\[BOOK_APPOINTMENT:[^\]]*\]", "", out)
                     # Strip all known audio tags so they are never spoken as literal words.
                     out = strip_eleven_v3_style_tags_for_non_eleven_tts(out)
+                    # V-08 defense-in-depth: catches a still-INCOMPLETE (never
+                    # closed) [DELIVERY ...] fragment left over once the LLM
+                    # stream has fully ended (e.g. max_tokens truncation) —
+                    # consume_delivery_tag() correctly leaves such a fragment
+                    # alone mid-stream so it can keep accumulating, but once
+                    # streaming is done nothing will ever close it. Also
+                    # catches any complete tag this call site didn't already
+                    # go through consume_delivery_tag for.
+                    out = strip_delivery_tags(out)
                     return out
 
                 def _find_flush_index(buf: str):
@@ -1171,6 +1266,17 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
                     response_accum += chunk
                     tts_buffer += chunk
+
+                    # V-08: pull a complete pending [DELIVERY ...] tag out of
+                    # the buffer as soon as it fully arrives, BEFORE any
+                    # flush-boundary search, so its bracket text is never
+                    # counted toward word/sentence boundaries and never
+                    # spoken. A partial (unclosed) tag is left untouched to
+                    # keep accumulating across more streamed tokens.
+                    if _llm_humanization_on:
+                        _attrs, tts_buffer = consume_delivery_tag(tts_buffer)
+                        if _attrs is not None:
+                            _pending_delivery_attrs = _attrs
 
                     if chunk:
                         _vm = getattr(self._h, "_voice_metrics", None)
@@ -1200,8 +1306,23 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     if flush_idx is not None and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                         to_speak = tts_buffer[:flush_idx].strip()
                         tts_buffer = tts_buffer[flush_idx:].lstrip()
+                        # V-08 defense-in-depth: even though consume_delivery_tag
+                        # above already drains every COMPLETE tag before this
+                        # flush runs, strip again here in case a flush boundary
+                        # ever lands inside a not-yet-recognized fragment — the
+                        # caller must never hear literal "[DELIVERY ...]" text.
+                        to_speak = strip_delivery_tags(to_speak)
                         if to_speak:
                             chunk_counter += 1
+                            # V-08: attach this segment's pending delivery
+                            # intent (if any), then reset — each NEW segment
+                            # starts with no pending tag of its own.
+                            _segment_intent = None
+                            if _pending_delivery_attrs is not None:
+                                _segment_intent = segment_intent_from_tag_attrs(
+                                    to_speak, _pending_delivery_attrs
+                                )
+                                _pending_delivery_attrs = None
                             await self._h._tts_pipeline.queue_tts(
                                 {
                                     "text": to_speak,
@@ -1209,6 +1330,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                     "use_ssml": self._h._use_ssml,
                                     "is_final": False,
                                     "end_call_after": False,
+                                    "_llm_delivery_intent": _segment_intent,
                                 }
                             )
                             _vm = getattr(self._h, "_voice_metrics", None)
@@ -1231,6 +1353,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 final_text = _strip_control_tokens(tts_buffer).strip()
                 if final_text and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
+                    _final_segment_intent = None
+                    if _pending_delivery_attrs is not None:
+                        _final_segment_intent = segment_intent_from_tag_attrs(
+                            final_text, _pending_delivery_attrs
+                        )
+                        _pending_delivery_attrs = None
                     await self._h._tts_pipeline.queue_tts(
                         {
                             "text": final_text,
@@ -1239,6 +1367,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             "is_final": True,
                             "end_call_after": end_call_after and not transfer_after,
                             "transfer_after": transfer_after,
+                            "_llm_delivery_intent": _final_segment_intent,
                         }
                     )
                     _vm = getattr(self._h, "_voice_metrics", None)
@@ -1285,7 +1414,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             )
                     except Exception as exc:
                         logger.debug("Token budget recording failed: %s", exc)
-                return response_accum
+                # V-08: strip any [DELIVERY ...] tags from the RAW accumulated
+                # text before it's used for the transcript / token-budget
+                # estimate above — already-spoken tags were incrementally
+                # removed from tts_buffer per-segment above, but
+                # response_accum keeps the untouched raw stream for these
+                # other consumers.
+                return strip_delivery_tags(response_accum)
 
             final_text = ""
             try:

@@ -23,9 +23,60 @@ from dataclasses import dataclass
 from typing import Any, Dict
 
 from app.voice.humanization_engine import HumanizationDecision
+from app.voice.humanization_intent import DeliveryEmotion, VocalBehavior
 
 _ELEVENLABS_STABILITY_MIN = 0.0
 _ELEVENLABS_STABILITY_MAX = 1.0
+
+# V-08: conservative ElevenLabs stability deltas per DeliveryEmotion,
+# extending the existing single-axis mood->stability dial
+# (turn_signals._tts_stability_for_mood) to the richer, LLM-driven enum.
+# Kept in the SAME 0.30-0.85 "consistency/expressiveness" band that dial
+# already documents — no aggressive swings, UPBEAT nudges down slightly
+# (more dynamic) rather than toward an unstable extreme.
+_ELEVEN_STABILITY_BY_EMOTION: Dict[DeliveryEmotion, float] = {
+    DeliveryEmotion.NEUTRAL: 0.50,
+    DeliveryEmotion.WARM: 0.55,
+    DeliveryEmotion.CALM: 0.60,
+    DeliveryEmotion.APOLOGETIC: 0.58,
+    DeliveryEmotion.UPBEAT: 0.45,
+}
+
+# V-08: small, conservative speaking-rate nudges for providers with a
+# `speaking_rate`/`speed` knob but no stability concept (Google, Rime, Hume,
+# xAI) — consolidates the previously-duplicated inline emotion->rate maps
+# in app.voice.tts_stream_mixin (two call sites) and
+# app.voice.livekit_browser_call_handler into this one function.
+_SPEAKING_RATE_BY_EMOTION: Dict[DeliveryEmotion, float] = {
+    DeliveryEmotion.NEUTRAL: 1.0,
+    DeliveryEmotion.WARM: 0.99,
+    DeliveryEmotion.CALM: 0.97,
+    DeliveryEmotion.APOLOGETIC: 0.96,
+    DeliveryEmotion.UPBEAT: 1.03,
+}
+
+# Pre-V-08 fallback: the EXACT values previously duplicated inline in
+# app.voice.tts_stream_mixin (two call sites) keyed off
+# app.utils.tts_preprocessing.detect_emotion's plain-string response_emotion
+# classification (happy/sad/uncertain/confident) — preserved verbatim here
+# so consolidating those call sites into this function does not change
+# existing (VOICE_ENABLE_LLM_HUMANIZATION=off) behavior.
+_SPEAKING_RATE_BY_RESPONSE_EMOTION: Dict[str, float] = {
+    "happy": 1.03,
+    "sad": 0.97,
+    "uncertain": 0.98,
+    "confident": 1.01,
+}
+
+# V-08: ElevenLabs-only native bracket-tag inners for each VocalBehavior,
+# reusing app.utils.eleven_tts_text's existing _ELEVEN_V3_TAG_INNERS
+# whitelist verbatim (chuckles/sighs/hesitates are already whitelisted
+# there) rather than inventing a parallel tag vocabulary.
+_VOCAL_BEHAVIOR_TAG_INNER: Dict[VocalBehavior, str] = {
+    VocalBehavior.SOFT_CHUCKLE: "chuckles",
+    VocalBehavior.BRIEF_SIGH: "sighs",
+    VocalBehavior.HESITATION: "hesitates",
+}
 
 
 @dataclass(frozen=True)
@@ -187,14 +238,120 @@ def build_voice_settings_overlay(
         return overlay
 
     caps = get_capabilities(provider_slug)
+    delivery = getattr(decision, "delivery", None)
 
     if caps.supports_stability_control:
-        hint = decision.tts_stability_hint
-        if isinstance(hint, (int, float)) and not isinstance(hint, bool):
+        # V-08: an LLM-requested delivery emotion takes precedence over the
+        # caller-mood-derived tts_stability_hint for THIS segment (still
+        # capability-gated, still clamped to the same safe band) — but only
+        # when there IS a delivery decision with a non-neutral-default
+        # emotion; NEUTRAL/absent falls through to the pre-existing hint so
+        # behavior is unchanged for every call that never enables V-08.
+        if (
+            delivery is not None
+            and delivery.emotion != DeliveryEmotion.NEUTRAL
+            and delivery.emotion in _ELEVEN_STABILITY_BY_EMOTION
+        ):
             overlay["stability"] = _clamp(
-                float(hint), _ELEVENLABS_STABILITY_MIN, _ELEVENLABS_STABILITY_MAX
+                _ELEVEN_STABILITY_BY_EMOTION[delivery.emotion],
+                _ELEVENLABS_STABILITY_MIN,
+                _ELEVENLABS_STABILITY_MAX,
             )
-        # Missing/invalid hint: no "stability" key added, so the caller's
-        # existing default (or explicit settings_json override) wins.
+        else:
+            hint = decision.tts_stability_hint
+            if isinstance(hint, (int, float)) and not isinstance(hint, bool):
+                overlay["stability"] = _clamp(
+                    float(hint), _ELEVENLABS_STABILITY_MIN, _ELEVENLABS_STABILITY_MAX
+                )
+            # Missing/invalid hint: no "stability" key added, so the
+            # caller's existing default (or explicit settings_json
+            # override) wins.
+    elif caps.supports_speaking_rate:
+        # V-08: providers with a rate knob but no stability concept
+        # (Google/Rime/Hume/xAI). Consolidates what used to be two
+        # independently-duplicated inline emotion->rate maps
+        # (app.voice.tts_stream_mixin ~lines 959-970/1384-1390 and
+        # app.voice.livekit_browser_call_handler's hardcoded 1.0) into this
+        # one function, replacing all three call sites.
+        #
+        # An explicit, non-neutral LLM delivery emotion takes precedence
+        # (same conservative deltas as the ElevenLabs stability branch
+        # above); otherwise this falls back to the SAME
+        # detect_emotion()-derived response_emotion heuristic and the SAME
+        # literal rate values (happy=1.03/sad=0.97/uncertain=0.98/
+        # confident=1.01) the old duplicated inline code used — so a
+        # deployment with VOICE_ENABLE_LLM_HUMANIZATION off (the default)
+        # sees byte-identical rate nudges to before this consolidation.
+        if (
+            delivery is not None
+            and delivery.emotion != DeliveryEmotion.NEUTRAL
+            and delivery.emotion in _SPEAKING_RATE_BY_EMOTION
+        ):
+            rate = _SPEAKING_RATE_BY_EMOTION[delivery.emotion]
+            if rate != 1.0:
+                overlay["speaking_rate"] = rate
+        else:
+            rate = _SPEAKING_RATE_BY_RESPONSE_EMOTION.get(decision.response_emotion)
+            if rate is not None and rate != 1.0:
+                overlay["speaking_rate"] = rate
 
     return overlay
+
+
+def apply_vocal_behavior_tag(
+    text: str,
+    provider_slug: str | None,
+    decision: HumanizationDecision | None,
+) -> str:
+    """
+    Realize `decision.delivery.vocal_behavior` (V-08) as a native
+    ElevenLabs bracket tag prefix (e.g. "[chuckles] ..."), reusing
+    `app.utils.eleven_tts_text`'s existing `_ELEVEN_V3_TAG_INNERS`
+    whitelist — never a new tag vocabulary.
+
+    Capability-gated via `caps.supports_native_expressive_tags`: for every
+    OTHER provider (Google, Rime, Hume, xAI — none of which have a native
+    audio-tag concept) this is a no-op, and DELIBERATELY never simulates
+    the effect with literal spoken text like "*sighs*". Returns `text`
+    unchanged whenever there is nothing safe to apply (no decision, no
+    delivery, NONE behavior, or an unsupported provider).
+    """
+    if not text or decision is None:
+        return text
+    delivery = getattr(decision, "delivery", None)
+    if delivery is None or delivery.vocal_behavior == VocalBehavior.NONE:
+        return text
+
+    caps = get_capabilities(provider_slug)
+    if not caps.supports_native_expressive_tags:
+        return text
+
+    tag_inner = _VOCAL_BEHAVIOR_TAG_INNER.get(delivery.vocal_behavior)
+    if not tag_inner:
+        return text
+
+    return f"[{tag_inner}] {text}"
+
+
+def apply_emphasis_word(
+    text: str,
+    provider_slug: str | None,
+    decision: HumanizationDecision | None,
+) -> str:
+    """
+    V-08 `emphasis_word` realization: intentionally a no-op for EVERY
+    provider today, including ElevenLabs.
+
+    Investigated and rejected: ElevenLabs' bracket-tag mechanism
+    (`app.utils.eleven_tts_text`) only carries whole-phrase mood/action
+    tags (e.g. "[excited]", "[sighs]") — there is no documented, reliable
+    native mechanism for stressing a single word within an otherwise
+    unmarked sentence via that same channel, and SSML `<emphasis>` is
+    stripped from every provider's live streaming path today (see
+    `TTSProviderCapabilities.supports_ssml`, False everywhere). Per this
+    feature's explicit instructions, a fake effect (e.g. wrapping the word
+    in asterisks/caps that would be read aloud literally) must never be
+    invented as a substitute — so this stays a documented no-op until a
+    provider adds a real per-word emphasis primitive to its streaming path.
+    """
+    return text

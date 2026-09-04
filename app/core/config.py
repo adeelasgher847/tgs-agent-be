@@ -179,9 +179,6 @@ class TtsSettings(BaseModel):
     elevenlabs_encryption_key: str = Field(
         default="", validation_alias="ELEVENLABS_ENCRYPTION_KEY"
     )
-    enable_audio_tags: bool = Field(
-        default=False, validation_alias="ENABLE_ELEVENLABS_AUDIO_TAGS"
-    )
     cloud_endpoint: str = Field(default="", validation_alias="CLOUD_TTS_ENDPOINT")
     google_voice_name: str = Field(default="", validation_alias="GOOGLE_TTS_VOICE_NAME")
     speed_min: float = Field(default=0.25, validation_alias="TTS_SPEED_MIN")
@@ -514,13 +511,6 @@ class Settings(BaseSettings):
     WEBHOOK_SECRET_ENCRYPTION_KEY: str = ""
     # Symmetric encryption key for OIDC client secrets (Fernet).
     SSO_ENCRYPTION_KEY: str = ""
-    # When True, voice LLM prompts may suggest bracketed audio tags for ElevenLabs TTS only
-    # ([breathes], [pause], [excited], [sad], …). Defaults to False because
-    # ElevenLabs Flash/Turbo/Multilingual conversational models do not parse
-    # bracket audio tags and read them aloud as literal words; set True to
-    # opt back in for a model/voice combination that does support them.
-    ENABLE_ELEVENLABS_AUDIO_TAGS: bool = False
-
     # HubSpot CRM OAuth (app/services/hubspot_service.py).
     # client_id/client_secret kept here as local-dev fallbacks only — in
     # staging/production they are read from Secret Manager (see
@@ -897,6 +887,20 @@ class Settings(BaseSettings):
     # neutral "no humanization" decision.
     VOICE_ENABLE_HUMANIZATION_ENGINE: bool = True
 
+    # V-08: LLM-driven delivery humanization ("Option C"). When True, both
+    # call transports inject a compact `# DELIVERY` instruction block into
+    # the system prompt (app.voice.humanization_intent.build_delivery_prompt_block)
+    # asking the LLM to prefix spoken segments with an inline
+    # `[DELIVERY emotion=... behavior=... pause=...]` tag as part of the
+    # SAME generation call (no second LLM call), which is then parsed into a
+    # SegmentIntent (app.voice.humanization_intent) and realized through
+    # deterministic, guardrailed policy (app.voice.humanization_engine) and
+    # provider-capability-gated settings (app.voice.tts_provider_capabilities).
+    # Default False: fully inert until explicitly enabled — no prompt tokens
+    # added, no tag parsing attempted, analyze_response()'s `delivery` output
+    # field always None.
+    VOICE_ENABLE_LLM_HUMANIZATION: bool = True
+
     # Phase 6-3: route ElevenLabs TTS chunks for a turn through a persistent
     # WebSocket `stream-input` session (app.services.elevenlabs_ws_session)
     # instead of one independent HTTP request per flushed chunk. Enabled by
@@ -1260,7 +1264,6 @@ class Settings(BaseSettings):
             hume_sample_rate_hz=self.HUME_TTS_SAMPLE_RATE_HZ,
             elevenlabs_api_key=self.ELEVENLABS_API_KEY,
             elevenlabs_encryption_key=self.ELEVENLABS_ENCRYPTION_KEY,
-            enable_audio_tags=self.ENABLE_ELEVENLABS_AUDIO_TAGS,
             cloud_endpoint=self.CLOUD_TTS_ENDPOINT,
             google_voice_name=self.GOOGLE_TTS_VOICE_NAME,
             speed_min=self.TTS_SPEED_MIN,
