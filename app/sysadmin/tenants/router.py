@@ -24,7 +24,7 @@ async def list_tenants(
     db: Session = Depends(get_sysadmin_db),
     _admin=Depends(get_current_sysadmin),
 ):
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
     from app.models.tenant import Tenant
 
     start, end = _30d_bounds()
@@ -74,7 +74,7 @@ async def tenant_stats(
 ):
     schema = validate_tenant_schema(schema)
     from app.sysadmin.stats.service import _month_bounds
-    from app.models.sysadmin_user import SysRequestLog, SysRequestStats
+    from app.models.sysadmin_log import SysRequestLog, SysRequestStats
     import uuid as _uuid
 
     m = month or datetime.now(timezone.utc).strftime("%Y-%m")
@@ -122,7 +122,7 @@ async def tenant_users(
     _admin=Depends(get_current_sysadmin),
 ):
     schema = validate_tenant_schema(schema)
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
     from app.models.user import User
     from app.sysadmin.stats.service import _month_bounds
     import uuid as _uuid

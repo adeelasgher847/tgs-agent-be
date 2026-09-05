@@ -16,6 +16,12 @@ def create_app() -> FastAPI:
     All runtime resources (DB pool, Redis, ARQ, secrets) are initialised inside
     the lifespan context manager, which only runs when the server starts.
     """
+    # Registers every SQLAlchemy model (pure import, no I/O) so cross-module
+    # string-based relationships resolve regardless of which router happens
+    # to import its models first. See app/db/base.py's own comment for the
+    # same rationale; app/scripts/*.py rely on this import for the same reason.
+    import app.db.base  # noqa: F401
+
     # Logging must be configured before any other import that uses the logger.
     from app.core.logger import setup_logging, logger
     setup_logging()

@@ -109,7 +109,7 @@ async def tenant_billing(
 ):
     m = month or datetime.now(timezone.utc).strftime("%Y-%m")
 
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
     from app.models.tenant import Tenant
 
     # Total requests across all tenants this month
