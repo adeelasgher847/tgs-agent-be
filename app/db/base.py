@@ -98,3 +98,7 @@ from app.models.phone_number_reputation import PhoneNumberReputation  # noqa: F4
 # the embedded-widget public-call-token / AllowedDomain flow)
 from app.models.call_flow_demo_link import CallFlowDemoLink  # noqa: F401
 from app.models.call_flow_demo_link_visitor_usage import CallFlowDemoLinkVisitorUsage  # noqa: F401
+
+# SysAdmin Portal
+from app.models.sysadmin_user import SysAdminUser, SysAdminApiKey  # noqa: F401
+from app.models.sysadmin_log import SysRequestLog, SysRequestStats, SysAuditLog  # noqa: F401
