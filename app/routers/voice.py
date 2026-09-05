@@ -217,6 +217,18 @@ async def handle_incoming_call(
                 "Sorry, this number is not configured for inbound service."
             )
 
+        # Reconnect detection: look for a recently dropped session from the
+        # same caller so we can open with a personalised reconnect greeting
+        # instead of the generic greeting_message.
+        _recent_dropped = None
+        if from_number:
+            try:
+                _recent_dropped = call_session_service.find_recent_dropped_session(
+                    db, from_number, phone_number.tenant_id, within_seconds=300
+                )
+            except Exception as _exc:
+                logger.warning("Reconnect detection failed: %s", _exc)
+
         if not settings.ALLOW_UNAUTHENTICATED_WEBHOOKS:
             is_valid_signature = False
             # Twilio signs form params as a dict — pass parsed fields, not raw body.

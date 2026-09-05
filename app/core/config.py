@@ -453,6 +453,10 @@ class Settings(BaseSettings):
     API_DOCS_USERNAME: str = ""
     API_DOCS_PASSWORD: str = ""
 
+    # SysAdmin Portal
+    SYSADMIN_JWT_SECRET: str = ""  # Falls back to SECRET_KEY + ':sysadmin' if empty
+    AWS_COST_EXPLORER_ENABLED: bool = False  # Must opt in — each call costs $0.01
+
     # CORS — comma-separated list of allowed origins.
     # Example: "https://app.example.com,https://admin.example.com"
     ALLOWED_ORIGINS: str = "http://localhost:5173,http://localhost:3000"

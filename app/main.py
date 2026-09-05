@@ -185,6 +185,26 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 logger.warning("Failed to schedule RAG embedding client warm-up: %s", exc)
 
+        # Fail fast if SYSADMIN_JWT_SECRET is not set in staging/production
+        sysadmin_jwt_secret = getattr(settings, "SYSADMIN_JWT_SECRET", "") or ""
+        if not sysadmin_jwt_secret and settings.ENVIRONMENT.lower() in ("staging", "production"):
+            raise RuntimeError(
+                "SYSADMIN_JWT_SECRET must be set in staging/production — "
+                "SysAdmin Portal JWT tokens would fall back to the tenant SECRET_KEY."
+            )
+
+        # SysAdmin nightly stats recompute (midnight UTC)
+        try:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            from app.sysadmin.scheduler import register_sysadmin_jobs
+            _sysadmin_scheduler = BackgroundScheduler(timezone="UTC")
+            register_sysadmin_jobs(_sysadmin_scheduler)
+            _sysadmin_scheduler.start()
+            app.state._sysadmin_scheduler = _sysadmin_scheduler
+            logger.info("SysAdmin nightly scheduler started")
+        except Exception as exc:
+            logger.warning("SysAdmin scheduler failed to start: %s", exc)
+
         if settings.API_DOCS_ENABLED:
             if settings.API_DOCS_USERNAME and settings.API_DOCS_PASSWORD:
                 logger.info(
@@ -200,6 +220,8 @@ def create_app() -> FastAPI:
         yield
 
         # ---- shutdown (SIGTERM / reload) ----
+        if hasattr(app.state, "_sysadmin_scheduler"):
+            app.state._sysadmin_scheduler.shutdown(wait=False)
         await dispose_async_db()
         await graceful_shutdown()
 
@@ -303,6 +325,8 @@ def create_app() -> FastAPI:
     # -------------------------------------------------------------------------
     _allowed_origins = [o.strip() for o in settings.ALLOWED_ORIGINS.split(",") if o.strip()]
 
+    from app.middleware.sysadmin_request_log_middleware import SysAdminRequestLogMiddleware
+    _app.add_middleware(SysAdminRequestLogMiddleware)
     _app.add_middleware(RateLimitMiddleware)
     _app.add_middleware(ApiKeyMiddleware)
     _app.add_middleware(PiiLoggingMiddleware)
@@ -332,6 +356,9 @@ def create_app() -> FastAPI:
     _app.include_router(health_router)
     _app.include_router(v2_router, prefix="/api/v2")
     _app.include_router(sso_auth_router, tags=["SSO Authentication"])  # SSO browser-facing redirects and callbacks
+
+    from app.sysadmin.router import sysadmin_router
+    _app.include_router(sysadmin_router)
 
     # -------------------------------------------------------------------------
     # v2 Swagger — filtered to /api/v2/ routes only.
