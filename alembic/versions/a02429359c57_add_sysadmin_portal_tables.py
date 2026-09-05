@@ -1,6 +1,6 @@
 """add_sysadmin_portal_tables
 
-Revision ID: b1c2d3e4f5a6
+Revision ID: a02429359c57
 Revises: 86f5457724a9
 Create Date: 2026-09-05 00:00:00.000000
 
@@ -11,7 +11,7 @@ from alembic import op
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
-revision = "b1c2d3e4f5a6"
+revision = "a02429359c57"
 down_revision = "86f5457724a9"
 branch_labels = None
 depends_on = None
