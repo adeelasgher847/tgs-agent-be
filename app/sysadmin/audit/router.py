@@ -22,7 +22,7 @@ async def get_audit_log(
     db: Session = Depends(get_sysadmin_db),
     _admin=Depends(get_current_sysadmin),
 ):
-    from app.models.sysadmin_user import SysAuditLog
+    from app.models.sysadmin_log import SysAuditLog
 
     stmt = select(SysAuditLog)
 

@@ -14,7 +14,7 @@ def record_audit(
     details: dict | None = None,
     ip_address: str | None = None,
 ) -> None:
-    from app.models.sysadmin_user import SysAuditLog
+    from app.models.sysadmin_log import SysAuditLog
 
     entry = SysAuditLog(
         admin_id=admin.id,

@@ -22,7 +22,7 @@ def _month_bounds(month: str) -> tuple[datetime, datetime]:
 
 
 def get_overview(db: Session, month: str) -> dict:
-    from app.models.sysadmin_user import SysRequestLog, SysRequestStats
+    from app.models.sysadmin_log import SysRequestLog, SysRequestStats
 
     start, end = _month_bounds(month)
 
@@ -55,7 +55,7 @@ def get_overview(db: Session, month: str) -> dict:
 def _compute_overview_raw(db: Session, start: datetime, end: datetime) -> dict:
     from sqlalchemy import Integer, cast
 
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
 
     base = select(SysRequestLog).where(
         SysRequestLog.created_at >= start,
@@ -77,7 +77,7 @@ def _compute_overview_raw(db: Session, start: datetime, end: datetime) -> dict:
 
 
 def _active_tenants(db: Session, start: datetime, end: datetime) -> int:
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
 
     result = db.execute(
         select(func.count(func.distinct(SysRequestLog.tenant_id))).where(
@@ -105,7 +105,7 @@ def _build_overview(total, success, errors, avg, p95, active_tenants) -> dict:
 
 
 def get_monthly_trend(db: Session, months: int = 6) -> list[dict]:
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
 
     rows = db.execute(
         text("""
@@ -126,7 +126,7 @@ def get_monthly_trend(db: Session, months: int = 6) -> list[dict]:
 
 def recompute_stats(db: Session, month: str) -> None:
     """Full recompute of sys_request_stats for a month — uses PERCENTILE_CONT."""
-    from app.models.sysadmin_user import SysRequestStats
+    from app.models.sysadmin_log import SysRequestStats
 
     start, end = _month_bounds(month)
 
@@ -183,7 +183,7 @@ def get_errors(
     page: int,
     limit: int,
 ) -> dict:
-    from app.models.sysadmin_user import SysRequestLog
+    from app.models.sysadmin_log import SysRequestLog
 
     stmt = select(SysRequestLog).where(SysRequestLog.status_code >= 500)
 
@@ -240,7 +240,7 @@ def _csv_safe(value: object) -> str:
 
 
 def get_top_endpoints(db: Session, month: str, limit: int) -> list[dict]:
-    from app.models.sysadmin_user import SysRequestStats
+    from app.models.sysadmin_log import SysRequestStats
 
     stmt = (
         select(
@@ -258,7 +258,7 @@ def get_top_endpoints(db: Session, month: str, limit: int) -> list[dict]:
 
 
 def get_slow_endpoints(db: Session, month: str, threshold_ms: int) -> list[dict]:
-    from app.models.sysadmin_user import SysRequestStats
+    from app.models.sysadmin_log import SysRequestStats
 
     stmt = (
         select(
