@@ -5,7 +5,7 @@ import re
 from datetime import datetime, timezone, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.orm import Session
 
 from app.sysadmin.deps import get_current_sysadmin, get_sysadmin_db, validate_tenant_schema
@@ -38,7 +38,7 @@ async def list_tenants(
             func.count().label("total"),
             func.avg(SysRequestLog.duration_ms).label("avg_ms"),
             func.sum(
-                (SysRequestLog.status_code >= 500).cast(type_=None)
+                case((SysRequestLog.status_code >= 500, 1), else_=0)
             ).label("errors_5xx"),
             func.max(SysRequestLog.created_at).label("last_request"),
         )
@@ -136,11 +136,10 @@ async def tenant_users(
             SysRequestLog.user_id,
             func.count().label("total_requests"),
             func.sum(
-                (SysRequestLog.status_code >= 200).cast(type_=None) *
-                (SysRequestLog.status_code < 300).cast(type_=None)
+                case((SysRequestLog.status_code.between(200, 299), 1), else_=0)
             ).label("success_count"),
             func.sum(
-                (SysRequestLog.status_code >= 500).cast(type_=None)
+                case((SysRequestLog.status_code >= 500, 1), else_=0)
             ).label("errors_5xx"),
             func.max(SysRequestLog.created_at).label("last_request"),
         )

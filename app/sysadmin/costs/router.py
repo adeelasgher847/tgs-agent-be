@@ -172,24 +172,24 @@ async def tenant_billing(
 
 def _get_stripe_revenue(db: Session, month: str) -> dict[str, float]:
     """Sum successful billing_transactions per tenant for the month."""
+    from sqlalchemy import text as _text
+
     from app.sysadmin.stats.service import _month_bounds
 
     start, end = _month_bounds(month)
     try:
-        result = db.execute(
-            select(
-                func.text("tenant_id"),
-                func.sum(func.text("amount")).label("total"),
-            )
-            .select_from(func.text("billing_transactions"))
-            .where(
-                func.text("status = 'success'"),
-                func.text("created_at >= :start"),
-                func.text("created_at <= :end"),
-            ),
+        rows = db.execute(
+            _text("""
+                SELECT tenant_id::text, SUM(amount) AS total
+                FROM billing_transactions
+                WHERE status = 'success'
+                  AND created_at >= :start
+                  AND created_at <= :end
+                GROUP BY tenant_id
+            """),
             {"start": start, "end": end},
         ).mappings().all()
-        return {str(r["tenant_id"]): float(r["total"]) for r in result}
+        return {r["tenant_id"]: float(r["total"]) for r in rows}
     except Exception:
         # billing_transactions may not exist in all environments
         return {}

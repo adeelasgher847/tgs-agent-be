@@ -5,17 +5,22 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from app.utils.rate_limiter import enforce_login_rate_limit
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.sysadmin.deps import get_current_sysadmin, get_sysadmin_db
 from app.sysadmin.security import (
+    _pwd_context,
     create_sysadmin_token,
     generate_api_key,
     hash_password,
     verify_password,
 )
+
+# Dummy hash used to prevent timing side-channel on unknown email
+_DUMMY_HASH = _pwd_context.hash("dummy-password-for-timing-parity")
 
 router = APIRouter(prefix="/auth", tags=["SysAdmin Auth"])
 
@@ -64,6 +69,7 @@ async def login(
     body: LoginRequest,
     request: Request,
     db: Session = Depends(get_sysadmin_db),
+    _rl: None = Depends(enforce_login_rate_limit),
 ):
     from app.models.sysadmin_user import SysAdminUser
     from app.sysadmin.audit_service import record_audit
@@ -71,7 +77,11 @@ async def login(
     stmt = select(SysAdminUser).where(SysAdminUser.email == body.email)
     admin = db.execute(stmt).scalar_one_or_none()
 
-    if not admin or not verify_password(body.password, admin.hashed_password):
+    # Always run bcrypt to prevent timing oracle on valid vs invalid email
+    candidate_hash = admin.hashed_password if admin else _DUMMY_HASH
+    password_ok = verify_password(body.password, candidate_hash)
+
+    if not admin or not password_ok:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
     if not admin.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account inactive")

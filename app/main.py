@@ -185,6 +185,14 @@ def create_app() -> FastAPI:
             except Exception as exc:
                 logger.warning("Failed to schedule RAG embedding client warm-up: %s", exc)
 
+        # Fail fast if SYSADMIN_JWT_SECRET is not set in staging/production
+        sysadmin_jwt_secret = getattr(settings, "SYSADMIN_JWT_SECRET", "") or ""
+        if not sysadmin_jwt_secret and settings.ENVIRONMENT.lower() in ("staging", "production"):
+            raise RuntimeError(
+                "SYSADMIN_JWT_SECRET must be set in staging/production — "
+                "SysAdmin Portal JWT tokens would fall back to the tenant SECRET_KEY."
+            )
+
         # SysAdmin nightly stats recompute (midnight UTC)
         try:
             from apscheduler.schedulers.background import BackgroundScheduler

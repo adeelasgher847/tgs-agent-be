@@ -1,12 +1,10 @@
 """
-Logs every API request into sys_request_log for the SysAdmin Portal.
-Captures tenant_id + user_id from request.state (set by ApiKeyMiddleware).
-Runs AFTER the response so duration_ms is accurate.
+Logs SysAdmin Portal requests into sysrequestlog.
+Scoped to /sysadmin/* only — never runs on voice, tenant, or health paths.
 """
 from __future__ import annotations
 
 import time
-import traceback
 import uuid as _uuid
 from typing import Callable
 
@@ -14,8 +12,8 @@ from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp
 
-# Paths that should never be logged (health checks, static assets)
-_SKIP_PREFIXES = ("/health", "/docs", "/redoc", "/openapi", "/favicon")
+_LOG_PREFIX = "/sysadmin"
+_SKIP_SUFFIXES = ("/health", "/docs", "/redoc", "/openapi", "/favicon")
 
 
 class SysAdminRequestLogMiddleware(BaseHTTPMiddleware):
@@ -24,24 +22,25 @@ class SysAdminRequestLogMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
         path = request.url.path
-        if any(path.startswith(p) for p in _SKIP_PREFIXES):
+
+        # Only log sysadmin traffic; skip noisy health/doc paths
+        if not path.startswith(_LOG_PREFIX) or any(path.startswith(s) for s in _SKIP_SUFFIXES):
             return await call_next(request)
 
         start = time.monotonic()
-        response: Response | None = None
+        status_code = 500
         error_message: str | None = None
-        stack_trace: str | None = None
 
         try:
             response = await call_next(request)
             status_code = response.status_code
         except Exception as exc:
-            status_code = 500
-            error_message = str(exc)
-            stack_trace = traceback.format_exc()
+            # Redact full exception text — store only the type name to avoid PII leakage
+            error_message = type(exc).__name__
             raise
         finally:
             duration_ms = int((time.monotonic() - start) * 1000)
+            # Fire-and-forget: don't block the response on the DB write
             _write_log(
                 request=request,
                 path=path,
@@ -49,7 +48,6 @@ class SysAdminRequestLogMiddleware(BaseHTTPMiddleware):
                 status_code=status_code,
                 duration_ms=duration_ms,
                 error_message=error_message,
-                stack_trace=stack_trace,
             )
 
         return response
@@ -63,11 +61,10 @@ def _write_log(
     status_code: int,
     duration_ms: int,
     error_message: str | None,
-    stack_trace: str | None,
 ) -> None:
     try:
         from app.db.session import SessionLocal
-        from app.models.sysadmin_user import SysRequestLog
+        from app.models.sysadmin_log import SysRequestLog
 
         tenant_id = getattr(request.state, "tenant_id", None)
         user_id = getattr(request.state, "user_id", None)
@@ -83,7 +80,6 @@ def _write_log(
             duration_ms=duration_ms,
             source="backend",
             error_message=error_message,
-            stack_trace=stack_trace,
             request_id=str(request_id)[:64] if request_id else None,
             ip_address=ip,
         )
@@ -95,7 +91,6 @@ def _write_log(
         finally:
             db.close()
     except Exception:
-        # Never let logging failures affect the API response
         pass
 
 

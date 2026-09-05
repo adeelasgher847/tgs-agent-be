@@ -27,7 +27,7 @@ def recompute_current_month() -> None:
 
 
 def register_sysadmin_jobs(scheduler) -> None:
-    """Register with the existing APScheduler instance from app/core/scheduler.py."""
+    """Register with the BackgroundScheduler created in app/main.py lifespan."""
     scheduler.add_job(
         recompute_current_month,
         trigger="cron",

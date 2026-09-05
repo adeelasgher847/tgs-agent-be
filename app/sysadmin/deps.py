@@ -59,14 +59,35 @@ def _get_admin_from_api_key(raw_key: str, db: Session) -> "SysAdminUser":  # typ
     if api_key_obj.expires_at and api_key_obj.expires_at < datetime.now(timezone.utc):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="API key expired")
 
-    # Update last_used_at
-    api_key_obj.last_used_at = datetime.now(timezone.utc)
-    db.commit()
-
     admin = db.get(SysAdminUser, api_key_obj.admin_id)
     if not admin or not admin.is_active:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sysadmin account inactive")
+
+    # Update last_used_at in a background thread so auth hot path stays non-blocking
+    _touch_api_key_last_used(api_key_obj.id)
     return admin
+
+
+def _touch_api_key_last_used(key_id: uuid.UUID) -> None:
+    import threading
+
+    def _update() -> None:
+        try:
+            from sqlalchemy import update as _update_stmt
+            from app.models.sysadmin_user import SysAdminApiKey as _ApiKey
+
+            db = SessionLocal()
+            try:
+                db.execute(
+                    _update_stmt(_ApiKey).where(_ApiKey.id == key_id).values(last_used_at=datetime.now(timezone.utc))
+                )
+                db.commit()
+            finally:
+                db.close()
+        except Exception:
+            pass
+
+    threading.Thread(target=_update, daemon=True).start()
 
 
 def get_current_sysadmin(

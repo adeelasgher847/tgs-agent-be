@@ -115,10 +115,11 @@ def get_monthly_trend(db: Session, months: int = 6) -> list[dict]:
                 SUM(CASE WHEN status_code >= 200 AND status_code < 300 THEN 1 ELSE 0 END) AS success_count,
                 SUM(CASE WHEN status_code >= 500 THEN 1 ELSE 0 END) AS error_count
             FROM sysrequestlog
-            WHERE created_at >= NOW() - INTERVAL ':months months'
+            WHERE created_at >= NOW() - (INTERVAL '1 month' * :months)
             GROUP BY 1
             ORDER BY 1 ASC
-        """).bindparams(months=months)
+        """),
+        {"months": months},
     ).mappings().all()
     return [dict(r) for r in rows]
 
@@ -143,6 +144,7 @@ def recompute_stats(db: Session, month: str) -> None:
                 PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)::INTEGER AS p95_duration_ms
             FROM sysrequestlog
             WHERE created_at >= :start AND created_at <= :end
+
             GROUP BY path, method, tenant_id
         """),
         {"start": start, "end": end},
@@ -150,7 +152,7 @@ def recompute_stats(db: Session, month: str) -> None:
 
     # Delete old stats for this month
     db.execute(
-        text("DELETE FROM sysrequeststats WHERE month = :month"),
+        text("DELETE FROM sysrequeststats WHERE month = :month"),  # noqa: auto-derived tablename
         {"month": month},
     )
 
@@ -222,8 +224,19 @@ def get_errors_csv(
     )
     writer.writeheader()
     for item in result["items"]:
-        writer.writerow({k: item.get(k, "") for k in writer.fieldnames})
+        writer.writerow({k: _csv_safe(item.get(k, "")) for k in writer.fieldnames})
     return buf.getvalue()
+
+
+_FORMULA_CHARS = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value: object) -> str:
+    """Prefix formula-injection characters with a tab to neutralise spreadsheet attacks."""
+    s = str(value) if value is not None else ""
+    if s and s[0] in _FORMULA_CHARS:
+        return "\t" + s
+    return s
 
 
 def get_top_endpoints(db: Session, month: str, limit: int) -> list[dict]:

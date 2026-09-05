@@ -27,8 +27,6 @@ from app.db.base_class import Base
 class SysRequestLog(Base):
     """Per-request log entry. Uses BIGSERIAL for high write volume."""
 
-    __tablename__ = "sys_request_log"
-
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("tenant.id", ondelete="SET NULL"), nullable=True, index=True
@@ -49,16 +47,14 @@ class SysRequestLog(Base):
     )
 
     __table_args__ = (
-        Index("ix_sys_request_log_tenant_created", "tenant_id", "created_at"),
-        Index("ix_sys_request_log_status_created", "status_code", "created_at"),
-        Index("ix_sys_request_log_path_method", "path", "method"),
+        Index("ix_sysrequestlog_tenant_created", "tenant_id", "created_at"),
+        Index("ix_sysrequestlog_status_created", "status_code", "created_at"),
+        Index("ix_sysrequestlog_path_method", "path", "method"),
     )
 
 
 class SysRequestStats(Base):
     """Pre-aggregated monthly stats per (path, method, tenant_id). Recomputed nightly."""
-
-    __tablename__ = "sys_request_stats"
 
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     month: Mapped[str] = mapped_column(String(7), nullable=False)  # 'YYYY-MM'
@@ -76,9 +72,8 @@ class SysRequestStats(Base):
     )
 
     __table_args__ = (
-        # Partial unique index handles nullable tenant_id correctly
         Index(
-            "uq_sys_request_stats_month_path_method_tenant",
+            "uq_sysrequeststats_month_path_method_tenant",
             "month", "path", "method", "tenant_id",
             unique=True,
         ),
@@ -88,12 +83,10 @@ class SysRequestStats(Base):
 class SysAuditLog(Base):
     """Immutable audit trail for all SysAdmin Portal actions."""
 
-    __tablename__ = "sys_audit_log"
-
     id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
     admin_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("sys_admin_users.id", ondelete="SET NULL"),
+        ForeignKey("sysadminuser.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

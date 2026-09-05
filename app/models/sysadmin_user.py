@@ -14,8 +14,6 @@ from app.db.base_class import Base
 class SysAdminUser(Base):
     """A system-administrator account (not a tenant user)."""
 
-    __tablename__ = "sys_admin_users"
-
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, default=uuid.uuid4
     )
@@ -41,13 +39,11 @@ class SysAdminUser(Base):
 class SysAdminApiKey(Base):
     """API key belonging to a SysAdminUser."""
 
-    __tablename__ = "sys_admin_api_keys"
-
     id: Mapped[uuid.UUID] = mapped_column(
         primary_key=True, default=uuid.uuid4
     )
     admin_id: Mapped[uuid.UUID] = mapped_column(
-        ForeignKey("sys_admin_users.id", ondelete="CASCADE"), nullable=False, index=True
+        ForeignKey("sysadminuser.id", ondelete="CASCADE"), nullable=False, index=True
     )
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     key_hash: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
