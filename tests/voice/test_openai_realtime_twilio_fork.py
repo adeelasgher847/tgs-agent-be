@@ -73,6 +73,10 @@ def _fake_handler(*, llm_model: str | None) -> Handler:
     h._full_shutdown = AsyncMock()
     h.websocket = MagicMock()
 
+    # V-07 history summarization pipeline state
+    h._history_summary = ""
+    h._last_summarized_turn_index = 0
+
     return h
 
 

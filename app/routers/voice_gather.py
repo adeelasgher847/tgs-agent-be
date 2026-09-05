@@ -93,11 +93,11 @@ def pre_generate_tts(text: str, language: str = "en", voice_type: str = "female"
             
             # Cache it
             audio_cache[cache_key] = audio_content
-            logger.debug(f"⚡ Pre-cached TTS ({voice_label}): '{text[:30]}...' ({len(audio_content)} bytes)")
+            logger.debug("⚡ Pre-cached TTS (%s): '%s...' (%s bytes)", voice_label, text[:30], len(audio_content))
 
     except Exception as e:
         # Non-critical - will generate on-demand if pre-generation fails
-        logger.warning(f"⚠️ TTS pre-cache failed: {e}")
+        logger.warning("⚠️ TTS pre-cache failed: %s", e)
 
 
 def get_call_duration_realtime(call_session) -> str:
@@ -166,7 +166,7 @@ async def add_to_transcript(
         
         return transcript_message
     except Exception as e:
-        logger.error(f"❌ Failed to add transcript message: {e}", exc_info=True)
+        logger.error("❌ Failed to add transcript message: %s", e, exc_info=True)
 
 
 @router.post("/gather/greeting", response_class=HTMLResponse, include_in_schema=False)
@@ -185,9 +185,9 @@ async def gather_greeting_webhook(
     """
     logger.info("=" * 80)
     logger.info("🎤 GATHER GREETING WEBHOOK - Low Latency Flow")
-    logger.info(f"📞 Call Session: {callSessionId}")
-    logger.info(f"🤖 Agent: {agentId}")
-    logger.info(f"⏰ Timestamp: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("📞 Call Session: %s", callSessionId)
+    logger.info("🤖 Agent: %s", agentId)
+    logger.info("⏰ Timestamp: %s", datetime.now(timezone.utc).isoformat())
     logger.info("=" * 80)
     
     try:
@@ -196,8 +196,8 @@ async def gather_greeting_webhook(
         call_sid = form_data.get("CallSid", "")
         call_status = form_data.get("CallStatus", "")
         
-        logger.info(f"📊 Call Status: {call_status}")
-        logger.info(f"📞 Call SID: {call_sid}")
+        logger.info("📊 Call Status: %s", call_status)
+        logger.info("📞 Call SID: %s", call_sid)
         
         # Get call session and agent
         call_session = None
@@ -213,9 +213,9 @@ async def gather_greeting_webhook(
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
                     if agent:
                         agent_name = agent.name
-                        logger.info(f"✅ Agent: {agent_name}")
+                        logger.info("✅ Agent: %s", agent_name)
             except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning("⚠️ Invalid call session ID: %s", callSessionId)
         
         # Create TwiML response
         response = VoiceResponse()
@@ -230,7 +230,7 @@ async def gather_greeting_webhook(
         tts_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/tts/google-tts/audio?text={quote(greeting_text)}&lang={lang}&voice={voice}&gemini_flash=true"
         response.play(tts_url)
         
-        logger.info(f"👋 Playing greeting: '{greeting_text}'")
+        logger.info("👋 Playing greeting: '%s'", greeting_text)
         
         # Add greeting to transcript
         if call_session:
@@ -243,7 +243,7 @@ async def gather_greeting_webhook(
                     message_type="greeting"
                 ))
             except Exception as e:
-                logger.warning(f"⚠️ Failed to add greeting to transcript: {e}")
+                logger.warning("⚠️ Failed to add greeting to transcript: %s", e)
         
         # Log call start event
         if call_session:
@@ -259,7 +259,7 @@ async def gather_greeting_webhook(
                     }
                 ))
             except Exception as e:
-                logger.warning(f"⚠️ Broadcast failed (non-critical): {e}")
+                logger.warning("⚠️ Broadcast failed (non-critical): %s", e)
         
         # Build callback URL for speech input
         callback_url = f"{settings.WEBHOOK_BASE_URL}/api/v1/voice/gather/speech-callback?agentId={agentId}&userId={userId}&callSessionId={callSessionId}"
@@ -305,12 +305,12 @@ async def gather_greeting_webhook(
         response.hangup()
         
         logger.info("✅ TwiML generated - Playing greeting and waiting for speech")
-        logger.debug(f"📝 TwiML: {str(response)[:300]}...")
+        logger.debug("📝 TwiML: %s...", str(response)[:300])
         
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        logger.error(f"❌ Error in greeting webhook: {e}", exc_info=True)
+        logger.error("❌ Error in greeting webhook: %s", e, exc_info=True)
         
         # Fallback response
         response = VoiceResponse()
@@ -344,9 +344,9 @@ async def gather_speech_callback_webhook(
 
     logger.info("=" * 80)
     logger.info("🎙️ GATHER SPEECH CALLBACK - Processing User Input")
-    logger.info(f"📞 Call Session: {callSessionId}")
-    logger.info(f"🤖 Agent: {agentId}")
-    logger.info(f"⏰ Processing Start: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("📞 Call Session: %s", callSessionId)
+    logger.info("🤖 Agent: %s", agentId)
+    logger.info("⏰ Processing Start: %s", datetime.now(timezone.utc).isoformat())
     logger.info("=" * 80)
     
     processing_start_time = datetime.now(timezone.utc)
@@ -360,9 +360,9 @@ async def gather_speech_callback_webhook(
         confidence = form_data.get("Confidence", "0")
         recording_url = form_data.get("RecordingUrl", "")  # Audio recording URL
         
-        logger.debug(f"📊 Twilio Speech Result: '{speech_result}'")
-        logger.debug(f"📊 Twilio Confidence: {confidence}")
-        logger.debug(f"🎵 Recording URL: {recording_url}")
+        logger.debug("📊 Twilio Speech Result: '%s'", speech_result)
+        logger.debug("📊 Twilio Confidence: %s", confidence)
+        logger.debug("🎵 Recording URL: %s", recording_url)
         
         # Get call session and agent
         call_session = None
@@ -378,16 +378,16 @@ async def gather_speech_callback_webhook(
                     agent = agent_service.get_agent_by_id(db, uuid.UUID(agentId), call_session.tenant_id)
                     if agent:
                         agent_name = agent.name
-                        logger.info(f"✅ Agent: {agent_name}")
+                        logger.info("✅ Agent: %s", agent_name)
             except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning("⚠️ Invalid call session ID: %s", callSessionId)
         
         # Get agent voice and language
         gather_language = TWILIO_GATHER_LANGUAGE
         
         # Get real-time call duration
         call_duration = get_call_duration_realtime(call_session) if call_session else "00:00"
-        logger.info(f"⏱️ Real-time Call Duration: {call_duration}")
+        logger.info("⏱️ Real-time Call Duration: %s", call_duration)
         
         # STEP 2: Download audio from Twilio (if available)
         transcript = ""
@@ -417,14 +417,14 @@ async def gather_speech_callback_webhook(
                     audio_content = audio_response.content
                     download_time = (datetime.now(timezone.utc) - download_start).total_seconds()
                     
-                    logger.info(f"✅ Downloaded {len(audio_content)} bytes in {download_time:.2f}s")
+                    logger.info("✅ Downloaded %s bytes in %ss", len(audio_content), format(download_time, '.2f'))
                     
                     # STEP 3 & 4: Convert and transcribe with Deepgram STT
                     stt_start = datetime.now(timezone.utc)
                     
                     stt_language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
                     
-                    logger.info(f"🎙️ Transcribing with Deepgram STT (language: {stt_language_code})...")
+                    logger.info("🎙️ Transcribing with Deepgram STT (language: %s)...", stt_language_code)
                     
                     stt_result = await deepgram_stt_service.transcribe_audio_chunk(
                         audio_content=audio_content,
@@ -435,18 +435,18 @@ async def gather_speech_callback_webhook(
                     stt_confidence = stt_result.get("confidence", 0.0)
                     stt_time = (datetime.now(timezone.utc) - stt_start).total_seconds()
                     
-                    logger.info(f"✅ Deepgram STT: '{transcript}' (confidence: {stt_confidence:.2f}, time: {stt_time:.2f}s)")
+                    logger.info("✅ Deepgram STT: '%s' (confidence: %s, time: %ss)", transcript, format(stt_confidence, '.2f'), format(stt_time, '.2f'))
                 else:
-                    logger.warning(f"⚠️ Failed to download audio: HTTP {audio_response.status_code}")
+                    logger.warning("⚠️ Failed to download audio: HTTP %s", audio_response.status_code)
             
             except Exception as e:
-                logger.error(f"⚠️ Error processing audio: {e}", exc_info=True)
+                logger.error("⚠️ Error processing audio: %s", e, exc_info=True)
         
         # Fallback to Twilio's transcript if Deepgram STT failed
         if not transcript and speech_result:
             transcript = speech_result
             stt_confidence = float(confidence)
-            logger.info(f"ℹ️ Using Twilio transcript as fallback: '{transcript}'")
+            logger.info("ℹ️ Using Twilio transcript as fallback: '%s'", transcript)
         
         # Check if we have a valid transcript
         if not transcript:
@@ -529,7 +529,7 @@ async def gather_speech_callback_webhook(
         )
         
         llm_time = (datetime.now(timezone.utc) - llm_start).total_seconds()
-        logger.info(f"✅ AI Response: '{response_text}' (time: {llm_time:.2f}s)")
+        logger.info("✅ AI Response: '%s' (time: %ss)", response_text, format(llm_time, '.2f'))
         
         # Add agent response to transcript (non-blocking - fire and forget)
         if call_session:
@@ -547,8 +547,8 @@ async def gather_speech_callback_webhook(
         # Get updated real-time call duration
         call_duration_end = get_call_duration_realtime(call_session) if call_session else "00:00"
         
-        logger.info(f"⏱️ Processing Latency: {processing_time:.2f}s")
-        logger.info(f"📞 Call Duration (Real-time): {call_duration_end}")
+        logger.info("⏱️ Processing Latency: %ss", format(processing_time, '.2f'))
+        logger.info("📞 Call Duration (Real-time): %s", call_duration_end)
         
         # Broadcast real-time duration update
         if call_session:
@@ -563,7 +563,7 @@ async def gather_speech_callback_webhook(
                     }
                 ))
             except Exception as e:
-                logger.warning(f"⚠️ Duration broadcast failed (non-critical): {e}")
+                logger.warning("⚠️ Duration broadcast failed (non-critical): %s", e)
         
         # STEP 7: Pre-generate TTS audio (OPTIMIZATION - eliminates 1s delay)
         lang = agent.language if agent and agent.language else "en"
@@ -578,7 +578,7 @@ async def gather_speech_callback_webhook(
                 cache_key = generate_cache_key(response_tts, lang, voice, True, output_fmt)
                 if cache_key not in audio_cache:
                     logger.debug(
-                        f"⚡ Pre-generating TTS audio with Chirp 3: HD: '{response_tts[:50]}...'"
+                        "⚡ Pre-generating TTS audio with Chirp 3: HD: '%s...'", response_tts[:50]
                     )
                     rate = 0.95
                     audio_content = google_tts_service.text_to_speech(
@@ -593,12 +593,12 @@ async def gather_speech_callback_webhook(
                     audio_cache[cache_key] = audio_content
                     tts_time = (datetime.now(timezone.utc) - tts_start).total_seconds()
                     logger.info(
-                        f"✅ TTS pre-generated: {len(audio_content)} bytes in {tts_time:.2f}s (cached)"
+                        "✅ TTS pre-generated: %s bytes in %ss (cached)", len(audio_content), format(tts_time, '.2f')
                     )
                 else:
-                    logger.debug(f"⚡ TTS already cached: '{response_tts[:50]}...'")
+                    logger.debug("⚡ TTS already cached: '%s...'", response_tts[:50])
         except Exception as e:
-            logger.warning(f"⚠️ TTS pre-generation failed (will generate on-demand): {e}")
+            logger.warning("⚠️ TTS pre-generation failed (will generate on-demand): %s", e)
         
         # Check if this is a goodbye
         is_goodbye = VoiceLoggingService._is_completion_goodbye(response_text)
@@ -620,7 +620,7 @@ async def gather_speech_callback_webhook(
         return HTMLResponse(str(response), media_type="application/xml")
     
     except Exception as e:
-        logger.error(f"❌ Error in speech callback webhook: {e}", exc_info=True)
+        logger.error("❌ Error in speech callback webhook: %s", e, exc_info=True)
         
         # Fallback response
         response = VoiceResponse()
@@ -674,8 +674,8 @@ async def streaming_greeting_webhook(
     """
     logger.info("=" * 80)
     logger.info("🎙️ BIDIRECTIONAL STREAMING WEBHOOK")
-    logger.info(f"📞 Call Session: {callSessionId}")
-    logger.info(f"🤖 Agent: {agentId}")
+    logger.info("📞 Call Session: %s", callSessionId)
+    logger.info("🤖 Agent: %s", agentId)
     logger.info("⚡ Using real-time WebSocket streaming")
     logger.info("=" * 80)
     
@@ -707,11 +707,11 @@ async def streaming_greeting_webhook(
             )
 
         # 🎯 WAIT FOR USER TO ANSWER - Only connect when call is answered!
-        logger.info(f"🔍 Streaming webhook - Call Status: '{call_status}'")
+        logger.info("🔍 Streaming webhook - Call Status: '%s'", call_status)
         
         if call_status and call_status not in ["answered", "in-progress"]:
             # Call not answered yet - return pause TwiML (wait for user to pick up)
-            logger.info(f"⏳ Call status is '{call_status}' - Returning pause TwiML...")
+            logger.info("⏳ Call status is '%s' - Returning pause TwiML...", call_status)
             
             response = VoiceResponse()
             # Short pause and redirect back to check status again
@@ -723,7 +723,7 @@ async def streaming_greeting_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
         
         # ✅ User answered! Return streaming TwiML
-        logger.info(f"✅ Call answered (status: '{call_status}') - Starting streaming!")
+        logger.info("✅ Call answered (status: '%s') - Starting streaming!", call_status)
 
         from twilio.twiml.voice_response import Connect, Stream
 
@@ -778,7 +778,7 @@ async def streaming_greeting_webhook(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error in streaming webhook: {e}", exc_info=True)
+        logger.error("❌ Error in streaming webhook: %s", e, exc_info=True)
 
         # Fallback response
         response = VoiceResponse()

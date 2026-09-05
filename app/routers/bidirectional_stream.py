@@ -111,6 +111,7 @@ from app.core.logger import logger
 # Deepgram STT is used via SttPipeline (app/voice/stt_pipeline.py).
 
 from app.services.call_session_service import call_session_service
+from app.services.token_budget_service import token_budget_service
 from app.services.voice_screening_qualification_service import (
     is_jd_recruitment_voice_context,
     persist_voice_screening_status_signal,
@@ -119,6 +120,7 @@ from app.services.agent_service import agent_service
 from app.services.voice_logging_service import VoiceLoggingService
 from app.services.openai_service import openai_service
 from app.services.vertex_gemini_service import VertexLlmError, vertex_gemini_service
+from app.services.llm_circuit_breaker import llm_circuit_breaker
 from app.core.agent_runtime import resolve_llm_runtime, resolve_stt_runtime, llm_service_for_provider
 from app.services.twilio_service import twilio_service
 from app.utils.voice_twilio_utils import (
@@ -135,6 +137,11 @@ from app.voice.conversation_orchestrator import (
     VOICE_TUNABLES,
     should_send_quick_ack,
 )
+from app.voice.backchannel_classifier import (
+    TurnClassification,
+    classify_turn,
+    is_known_non_actionable_backchannel,
+)
 from app.voice.voice_orchestrator import VoiceOrchestrator
 from app.voice.rag_context import build_rag_context_block_with_trace
 from app.voice.tts_only_session import TtsOnlySession
@@ -145,7 +152,6 @@ from app.utils.ssml_utils import (
     strip_ssml_tags
 )
 from app.services.bidirectional_stream_service import (
-    generate_mulaw_tts,
     build_streaming_twiml,  # noqa: F401 - re-exported for app.routers.voice / voice_gather
     build_tts_only_twiml,  # noqa: F401 - re-exported for app.routers.voice
 )
@@ -238,6 +244,14 @@ class _SystemPromptBuildResult:
     rag_trace: Any
 
 
+class _PrimaryLlmCircuitOpen(Exception):
+    """Sentinel raised internally when the LLM circuit breaker has the
+    primary provider's circuit OPEN, so generate_and_stream_response's
+    existing exception-driven fallback logic routes straight to the
+    secondary provider (or canned fallback for Gemini agents) without ever
+    attempting the doomed primary call — avoids dead air."""
+
+
 class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin, FlowPipelineMixin):
     """Handles real-time bidirectional voice streaming (400–500ms target, Vapi-style gapless TTS)."""
 
@@ -249,6 +263,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
     QUICK_ACK_MIN_WORDS = VOICE_TUNABLES.quick_ack.min_words
     QUICK_ACK_PROBABILITY = VOICE_TUNABLES.quick_ack.probability
     QUICK_ACK_SKIP_PHRASES = VOICE_TUNABLES.quick_ack.skip_phrases
+    # Cooldown: only roll the ack probability check every Nth eligible turn,
+    # so acks read as occasional natural backchanneling rather than firing
+    # (probabilistically) on every single turn.
+    QUICK_ACK_COOLDOWN_TURNS = 3
 
     # Conversation context: keep the prompt small for latency (voice calls)
     HISTORY_MAX_MESSAGES = VOICE_TUNABLES.history_max_messages
@@ -340,10 +358,17 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._twilio_buffer_primed = False   # Track if jitter buffer has been primed
         self._tts_pipeline: TtsPipeline | None = None
         self._use_ssml = True                # Enable SSML by default
-        # Quick-ack dedup guard: prevent repeated acknowledgements for the same
-        # user turn when interim/final regeneration paths overlap.
-        self._last_quick_ack_user_norm: str = ""
-        self._last_quick_ack_mono: float = 0.0
+        # Quick-ack turn-identity gate: `_turn_generation_id` is incremented
+        # exactly once per logical user turn (on the interim that starts it,
+        # or on the STT final when no interim ever started it -- see
+        # `_maybe_process_interim` / `_complete_llm_turn_after_stt_final`) so
+        # `_send_quick_acknowledgement` can dedup across the interim and
+        # final calls for the SAME turn without relying on fragile text
+        # comparison.
+        self._turn_generation_id: int = 0
+        self._last_quick_ack_turn_id: int = -1
+        self._turns_since_last_ack: int = 0
+        self._last_quick_ack_phrase: str = ""
         # Latency instrumentation timestamps (time.perf_counter() — single clock for all deltas)
         self._metric_stt_final_ts: float = 0.0        # STT final received
         self._metric_gen_start_ts: float = 0.0        # LLM generation started
@@ -386,14 +411,19 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             getattr(settings, "VOICE_STT_SOFT_MIN_WORDS", 2) or 2
         )
         self._stt_soft_min_words = max(1, min(6, self._stt_soft_min_words))
+        # Twilio Media Streams has no transport-level echo cancellation, so
+        # leaked/echoed TTS audio can produce spurious high-confidence
+        # Deepgram transcripts -- this path needs its own, materially higher
+        # floor than the browser/LiveKit path (which reads the shared
+        # VOICE_BARGE_IN_MIN_CONFIDENCE / _1W keys unchanged).
         self._barge_in_min_conf: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE", 0.26) or 0.26
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_TWILIO", 0.70) or 0.70
         )
-        self._barge_in_min_conf = max(0.15, min(0.5, self._barge_in_min_conf))
+        self._barge_in_min_conf = max(0.20, min(0.95, self._barge_in_min_conf))
         self._barge_in_min_conf_1w: float = float(
-            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W", 0.52) or 0.52
+            getattr(settings, "VOICE_BARGE_IN_MIN_CONFIDENCE_1W_TWILIO", 0.75) or 0.75
         )
-        self._barge_in_min_conf_1w = max(0.4, min(0.75, self._barge_in_min_conf_1w))
+        self._barge_in_min_conf_1w = max(0.40, min(0.95, self._barge_in_min_conf_1w))
         self._barge_in_min_words: int = int(
             getattr(settings, "VOICE_BARGE_IN_MIN_WORDS", 2) or 2
         )
@@ -407,6 +437,24 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._barge_in_dead_zone_ms: float = float(
             getattr(settings, "VOICE_BARGE_IN_DEAD_ZONE_MS", 600) or 600
         )
+        # Soft barge-in: Deepgram vad_events/SpeechStarted (see
+        # VoiceOrchestrator._on_speech_started -> _on_stt_speech_started
+        # below) dips TTS output volume for a short window instead of
+        # cutting playback -- confidence-free VAD onset must never hard-
+        # cancel a turn (that stays gated on classify_turn() above).
+        # Monotonic deadline; _resolve_voice_volume() (TtsStreamMixin)
+        # applies the duck gain while time.monotonic() is under it.
+        self._soft_duck_until_mono: float = 0.0
+        self._soft_duck_enabled: bool = bool(
+            getattr(settings, "VOICE_SOFT_DUCK_ENABLED", True)
+        )
+        self._soft_duck_ms: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_MS", 400) or 400
+        )
+        self._soft_duck_gain: float = float(
+            getattr(settings, "VOICE_SOFT_DUCK_GAIN", 0.35) or 0.35
+        )
+        self._soft_duck_gain = max(0.0, min(1.0, self._soft_duck_gain))
         self._audio_samples_needed = max(
             4, int(getattr(settings, "VOICE_PICKUP_SAMPLE_WINDOW", 6) or 6)
         )
@@ -450,6 +498,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._turn_response_seed_text = ""
         # In-flight LLM+TTS; wrapped in a task so barge-in can cancel while we await (like dev, but cancelable)
         self._llm_response_task: asyncio.Task | None = None
+        # True once the LAST call to generate_and_stream_response for the
+        # current turn (from any call site sharing this turn's state) has
+        # actually queued TTS + committed the transcript -- lets
+        # `_complete_llm_turn_after_stt_final` tell a genuinely-in-flight
+        # interim apart from one that failed/was cancelled/returned empty.
+        self._interim_task_response_produced = False
         self._auto_greeting_sent = False
         self._recording_started = False
         self._lk_caller_publisher = None
@@ -503,6 +557,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # Entries are (role, content) tuples matching the transcript filter rules.
         self._conversation_history_cache: list[tuple[str, str]] = []
 
+        # V-07 History Summarization Pipeline state.
+        # _history_summary holds the rolling compressed summary of turns that have been
+        # dropped from the active sliding window.  It is injected into build_system_prompt
+        # as an <earlier_conversation_summary> block so the agent retains full-call memory.
+        # _last_summarized_turn_index tracks the exclusive end of the range already fed to
+        # compress_history so we never re-summarize the same turns twice.
+        self._history_summary: str = ""
+        self._last_summarized_turn_index: int = 0
+
         # Final transcript bookkeeping (dedupe, DB writes): hold briefly — never across LLM+TTS.
         self._voice_transcript_lock = asyncio.Lock()
         # One completion at a time (interim/final regen policy, task awaits). Matches product
@@ -524,9 +587,11 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # self._conversation = ConversationOrchestrator(self)
         # ─────────────────────────────────────────────────────────────────────
 
-        # Pre-cache quick-ack phrases so they hit the LRU audio cache instead of
-        # paying TTS API latency on the first "Got it" / "Sure" of the call.
-        asyncio.create_task(self._precache_common_phrases())
+        # Pre-cached common phrases: disabled (see module docstring "Pre-cached
+        # Common Phrases (disabled — implementation commented in code)") --
+        # bulk Google TTS precaching on every call start added cost/latency
+        # without a clear win; re-enable only alongside restoring
+        # _precache_common_phrases() below.
 
         # Fetch KB/business-knowledge blocks in the background at call start.
         # These are agent-level and don't change per-turn; caching them here
@@ -627,7 +692,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 )
             self._flow_init()
         except Exception as e:
-            logger.error(f"Error loading session data: {e}", exc_info=True)
+            logger.error("Error loading session data: %s", e, exc_info=True)
 
     def _jd_recruitment_screening_active(self) -> bool:
         """JD-backed recruitment screening only — skips booking/general outbound calls."""
@@ -635,81 +700,12 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             return False
         return is_jd_recruitment_voice_context(self.call_session.call_metadata.get("jd_context"))
 
-    async def _precache_common_phrases(self):
-        """
-        Pre-generate and cache common phrases for instant playback.
-        Runs in background during initialization.
-        """
-        try:
-            # Let call setup/pickup settle first so warmup does not contend with
-            # first-turn STT/LLM/TTS work.
-            await asyncio.sleep(1.5)
-            # Common phrases for instant responses (greetings, confirmations, acknowledgements)
-            common_phrases = [
-                # Greetings
-                "Hello",
-                "Hi there",
-                "Hi",
-                "Good morning",
-                "Good afternoon",
-                "Good evening",
-                
-                # Acknowledgements (Quick feedback)
-                "Got it",
-                "I see",
-                "Okay",
-                "Sure",
-                "Alright",
-                "Perfect",
-                "Great",
-                "Understood",
-                
-                # Confirmations
-                "Yes",
-                "No",
-                "Absolutely",
-                "Of course",
-                
-                # Thinking/Processing
-                "Let me check that",
-                "One moment please",
-                "Just a second",
-                "Let me see",
-                
-                # Transitions
-                "Thank you",
-                "Thanks",
-                "You're welcome",
-                
-                # Closings
-                "Goodbye",
-                "Have a great day",
-                "Thank you for calling",
-                "Talk to you later",
-            ]
-            
-            lang = self.agent.language if self.agent and self.agent.language else "en"
-            voice = self.agent.voice_type if self.agent and self.agent.voice_type else "female"
-            
-            sem = asyncio.Semaphore(4)
-
-            async def _warm_phrase(phrase: str) -> None:
-                async with sem:
-                    try:
-                        await generate_mulaw_tts(
-                            text=phrase,
-                            lang=lang,
-                            voice=voice,
-                            use_chirp3_hd=True,
-                            speaking_rate=1.0,
-                            use_ssml=False,
-                        )
-                    except Exception:
-                        return
-
-            await asyncio.gather(*(_warm_phrase(phrase) for phrase in common_phrases))
-        except Exception as e:
-            logger.error(f"Error in precache_common_phrases: {e}")
+    # _precache_common_phrases (bulk Google TTS warmup of ~30 common phrases at
+    # call start) is intentionally removed -- see the "Pre-cached Common
+    # Phrases (disabled — implementation commented in code)" note in this
+    # module's docstring. Re-enable by restoring the method here and its
+    # asyncio.create_task(...) call in __init__ if the cost/latency tradeoff
+    # is revisited.
 
     async def _prefetch_kb_blocks_at_call_start(self) -> None:
         """
@@ -838,7 +834,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._voice_orchestrator.on_audio_chunk(audio_data)
 
         except Exception as e:
-            logger.error(f"Error handling media message: {e}", exc_info=True)
+            logger.error("Error handling media message: %s", e, exc_info=True)
 
     def _schedule_recreate_stt_for_email_collection(self, agent_text: str) -> None:
         """
@@ -864,6 +860,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         """Stop background LLM+TTS for this turn (barge-in or final regen)."""
         t = self._llm_response_task
         self._llm_response_task = None
+        self._interim_task_response_produced = False
+        # Quick-ack turn-identity gate: an interrupted/cancelled turn never
+        # produced a real ack decision worth remembering — clear it so a
+        # genuinely new turn isn't blocked by stale gate state. Turn ids are
+        # monotonically increasing, so this is mostly defensive; it does NOT
+        # touch `_turns_since_last_ack`, which must only change on a real
+        # eligibility evaluation/ack-sent, never on cancellation.
+        self._last_quick_ack_turn_id = -1
         if t and not t.done():
             t.cancel()
             try:
@@ -935,6 +939,9 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         # ── Phase 1: state check (inside lock, fast) ──────────────────────────
         _should_generate = False
         _need_cancel = False
+        _wait_for_interim_task = None
+        _baseline_answered_transcript: str | None = None
+        _baseline_answered_ts: float | None = None
 
         async with self._llm_turn_serial_lock:
             _now_m = time.monotonic()
@@ -942,14 +949,38 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # Duplicate-transcript gate: near-simultaneous STT finals for the
             # same utterance (Deepgram re-endpoints) all queue here.  Once the
             # first sets _llm_last_answered_transcript, the rest bail instantly.
-            if (
-                tstrip
-                and tstrip == self._llm_last_answered_transcript
-                and (_now_m - self._llm_last_answered_ts) < 10.0
-            ):
+            _last_answered = self._llm_last_answered_transcript
+            _since_answered = _now_m - self._llm_last_answered_ts
+            _is_exact_dup = tstrip and tstrip == _last_answered and _since_answered < 10.0
+            # Re-endpointing dup: Deepgram sometimes emits a SECOND final for
+            # the same spoken turn a few hundred ms after the first, where one
+            # transcript is a strict prefix/suffix/substring of the other
+            # (e.g. first final 'Hello there. Could I Hey. Hi. How are you
+            # today?' -- garbled/merged with stale text -- followed ~400ms
+            # later by the corrected 'Hey. Hi. How are you today?'). The exact-
+            # match check above never catches this since the strings differ,
+            # so both fired a full LLM+TTS turn and the caller heard the agent
+            # answer twice. Narrowly scoped to avoid dropping a genuine fast
+            # follow-up utterance: a short window (STT re-endpoint corrections
+            # land within ~1s; a caller speaking again takes longer) and a
+            # minimum word count on the shorter string (so a stray short word
+            # incidentally contained in an unrelated longer sentence doesn't
+            # false-positive).
+            _is_reendpoint_dup = False
+            if not _is_exact_dup and tstrip and _last_answered and _since_answered < 1.5:
+                _shorter, _longer = (
+                    (tstrip, _last_answered)
+                    if len(tstrip) <= len(_last_answered)
+                    else (_last_answered, tstrip)
+                )
+                if len(_shorter.split()) >= 3 and _shorter in _longer:
+                    _is_reendpoint_dup = True
+
+            if _is_exact_dup or _is_reendpoint_dup:
                 logger.info(
-                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago)",
-                    tstrip[:40], _now_m - self._llm_last_answered_ts,
+                    "[LLMlock] dropping duplicate transcript '%s' (answered %.1fs ago, %s)",
+                    tstrip[:40], _since_answered,
+                    "exact" if _is_exact_dup else "re-endpoint containment",
                 )
                 return
 
@@ -958,15 +989,40 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 self._turn_response_started = False
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
-                if should_regenerate:
+
+                interim_task = self._llm_response_task
+                if should_regenerate or interim_task is None:
                     _should_generate = True
                     _need_cancel = True
                     self._llm_last_answered_transcript = tstrip
                     self._llm_last_answered_ts = _now_m
+                elif interim_task.done():
+                    interim_res = None
+                    if not interim_task.cancelled() and interim_task.exception() is None:
+                        try:
+                            interim_res = interim_task.result()
+                        except Exception:
+                            interim_res = None
+
+                    if interim_res and str(interim_res).strip():
+                        # Interim LLM task for this turn completed with a valid, committed response.
+                        return
+                    else:
+                        # Interim finished without producing a valid response — generate for final!
+                        _should_generate = True
+                        _need_cancel = True
+                        self._llm_last_answered_transcript = tstrip
+                        self._llm_last_answered_ts = _now_m
                 else:
-                    # Interim LLM already running with the correct transcript —
-                    # let it finish without a second generation.
-                    return
+                    _wait_for_interim_task = interim_task
+                    # Snapshot the dedup guard's current state so that, if we
+                    # later re-acquire the lock after waiting on the interim
+                    # task outside it, we can detect whether a concurrent
+                    # final-transcript handler (for a different/newer turn)
+                    # has since advanced these fields — see the CAS check
+                    # right before the re-acquired write below.
+                    _baseline_answered_transcript = self._llm_last_answered_transcript
+                    _baseline_answered_ts = self._llm_last_answered_ts
             else:
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
@@ -974,7 +1030,90 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 _need_cancel = True  # cancel any stale task from a previous turn
                 self._llm_last_answered_transcript = tstrip
                 self._llm_last_answered_ts = _now_m
+                # Final-only turn (no interim ever started for it): this is a
+                # new logical turn for the quick-ack turn-identity gate.
+                self._turn_generation_id += 1
         # ── Lock released ──────────────────────────────────────────────────────
+
+        # If an interim task was in-flight and considered a continuation, wait for it outside the lock.
+        if _wait_for_interim_task is not None:
+            interim_res = None
+            if not _wait_for_interim_task.done():
+                try:
+                    interim_res = await asyncio.wait_for(
+                        asyncio.shield(_wait_for_interim_task), timeout=2.5
+                    )
+                except (asyncio.CancelledError, asyncio.TimeoutError, Exception) as exc:
+                    logger.debug(
+                        "[LLM] In-flight interim task failed/timed out/cancelled: %s", exc,
+                    )
+            elif not _wait_for_interim_task.cancelled() and _wait_for_interim_task.exception() is None:
+                try:
+                    interim_res = _wait_for_interim_task.result()
+                except Exception:
+                    interim_res = None
+
+            if interim_res and str(interim_res).strip():
+                # THIS specific interim task completed and committed a valid response!
+                return
+
+            # DUPLICATE-AUDIO GUARD: asyncio.shield() above means the 2.5s
+            # timeout only gives up on WAITING for the interim task — it does
+            # NOT stop the interim task itself, which keeps running (and may
+            # already be mid-playback) in the background. If it has already
+            # committed/queued a response for THIS turn (tracked via
+            # _interim_task_response_produced — set whenever the LAST call to
+            # generate_and_stream_response, from ANY call site sharing this
+            # turn's state, reaches its final queue_tts + transcript commit;
+            # not exclusive to the interim task, but structurally can't leak
+            # across turns — see the reset points right before each new
+            # interim spawns and on cancellation), the caller has already
+            # started hearing that answer. Cancelling here and falling
+            # through to a fresh regeneration would re-synthesize and
+            # re-speak the same (or near-identical) content on top of/after
+            # what was already played — the "same audio plays again"
+            # duplicate-playback bug. In that case, trust the in-flight
+            # interim and do not regenerate.
+            if self._interim_task_response_produced:
+                logger.debug(
+                    "[LLM] In-flight interim already produced/queued a response "
+                    "for this turn — skipping duplicate regeneration on final."
+                )
+                return
+
+            # Interim task did not produce a valid response (failed, cancelled, or empty) —
+            # Fall back and generate for the authoritative final transcript!
+            _should_generate = True
+            _need_cancel = True
+            async with self._llm_turn_serial_lock:
+                # TOCTOU guard: between releasing the lock above (to await the
+                # interim task) and re-acquiring it here, another final-
+                # transcript handler for a *different* (newer) turn may have
+                # already run its own Phase 1 and written a newer
+                # _llm_last_answered_transcript/_ts into the dedup guard.
+                # Blindly overwriting those now with this (older, stale)
+                # turn's values would corrupt the guard: a later duplicate
+                # final for the newer turn would no longer match
+                # _llm_last_answered_transcript and could trigger a second,
+                # duplicate LLM generation — or worse, silently clobber state
+                # a newer turn is relying on. Only write if nothing else
+                # touched the guard since our snapshot (simple CAS).
+                _guard_unchanged = (
+                    self._llm_last_answered_transcript == _baseline_answered_transcript
+                    and self._llm_last_answered_ts == _baseline_answered_ts
+                )
+                if _guard_unchanged:
+                    self._llm_last_answered_transcript = tstrip
+                    self._llm_last_answered_ts = time.monotonic()
+                else:
+                    logger.debug(
+                        "[LLMlock] skipping stale dedup-guard overwrite for %r — "
+                        "a newer turn already advanced _llm_last_answered_* "
+                        "(now=%r/%.3f) while we awaited the interim task",
+                        tstrip[:40],
+                        self._llm_last_answered_transcript[:40],
+                        self._llm_last_answered_ts,
+                    )
 
         if not _should_generate:
             return
@@ -993,13 +1132,14 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         if self._flow_executor and await self._flow_on_transcript(transcript, confidence):
             return
 
+        _turn_timeout = float(getattr(settings, "VOICE_TURN_TIMEOUT_SEC", 20.0) or 20.0)
         try:
             await asyncio.wait_for(
                 self.generate_and_stream_response(transcript, confidence, is_greeting=False),
-                timeout=12.0,
+                timeout=_turn_timeout,
             )
         except asyncio.TimeoutError:
-            logger.error("[LLM] generate_and_stream_response timed out (12s) — aborting turn")
+            logger.error("[LLM] generate_and_stream_response timed out (%.1fs) — aborting turn", _turn_timeout)
 
     async def _reject_with_reprompt(self) -> None:
         """F-01: Queue a varied re-prompt phrase instead of silence on STT rejection."""
@@ -1010,6 +1150,25 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         self._last_stt_reprompt = phrase
         if self._tts_pipeline:
             await self._tts_pipeline.queue_tts({"text": phrase, "priority": "high"})
+
+    def _schedule_reject_with_reprompt(self) -> None:
+        """
+        Fire-and-forget wrapper around `_reject_with_reprompt()` for
+        `_should_accept_final_transcript`, which is a sync gate called from
+        the (async) STT event-handling path and always has a running loop in
+        production. `asyncio.ensure_future()` needs one too, but falls back
+        to the deprecated implicit-loop machinery when called without a
+        running loop -- fragile outside a live call (e.g. sync unit tests
+        exercising this gate directly), where it can raise `RuntimeError`
+        instead of silently creating one. Guard rather than let a
+        transcript-acceptance gate crash on that.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("No running event loop; skipping STT re-prompt schedule")
+            return
+        asyncio.ensure_future(self._reject_with_reprompt())
 
     def _pick_llm_fallback(self, error_type: str, consecutive_failures: int) -> str:
         """F-03: Return a varied LLM fallback phrase based on error type and failure count."""
@@ -1032,10 +1191,10 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         if confidence >= self._stt_min_final_confidence:
             return True
         if not self._enable_soft_final_fallback:
-            asyncio.ensure_future(self._reject_with_reprompt())
+            self._schedule_reject_with_reprompt()
             return False
         if confidence < self._stt_soft_min_final_confidence:
-            asyncio.ensure_future(self._reject_with_reprompt())
+            self._schedule_reject_with_reprompt()
             return False
         words = text.split()
         if len(words) < self._stt_soft_min_words:
@@ -1066,6 +1225,26 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
         }
     )
 
+    async def _on_stt_speech_started(self) -> None:
+        """
+        Deepgram vad_events/SpeechStarted callback (VoiceOrchestrator._on_speech_started).
+        Pure VAD onset, no transcript/confidence -- only takes a low-risk
+        "soft" action (temporary TTS volume duck), never a hard cancel. The
+        real barge-in decision stays entirely on _should_barge_in_on_stt's
+        classify_turn() gating (interim/final transcript path) so ambient
+        noise/breath triggering VAD onset can't cut the agent's turn.
+        No-op when TTS isn't currently playing -- ducking silence achieves
+        nothing and would just needlessly touch shared state.
+        """
+        if not self._soft_duck_enabled or not self._is_tts_playing:
+            return
+        self._soft_duck_until_mono = time.monotonic() + (self._soft_duck_ms / 1000.0)
+        logger.debug(
+            "[Barge-in/soft] SpeechStarted -> ducking TTS output for %.0fms (gain=%.2f)",
+            self._soft_duck_ms,
+            self._soft_duck_gain,
+        )
+
     def _is_stt_filler_for_barge_in(self, transcript: str) -> bool:
         """Reject phantom Deepgram hits (uh/mm, uh huh) from cutting active TTS."""
         low = re.sub(r"[^a-z ]+", "", (transcript or "").lower()).strip()
@@ -1078,22 +1257,20 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
 
     def _should_barge_in_on_stt(self, transcript: str, confidence: float) -> bool:
         """
-        True when STT looks like real user speech over the agent (not noise/filler).
-
-        Gates (all required): non-empty text, not filler-only, word count ≥
-        VOICE_BARGE_IN_MIN_WORDS, and confidence at or above
-        VOICE_BARGE_IN_MIN_CONFIDENCE (multi-word) or VOICE_BARGE_IN_MIN_CONFIDENCE_1W
-        when min words is 1.
+        True when STT represents an actionable user turn or explicit interruption
+        over active TTS playback, rejecting known non-actionable backchannels.
         """
-        text = (transcript or "").strip()
-        if not text or self._is_stt_filler_for_barge_in(text):
+        if getattr(self, "_dtmf_suppress_stt", False):
             return False
-        word_count = len(text.split())
-        if word_count < self._barge_in_min_words:
-            return False
-        if word_count >= 2:
-            return confidence >= self._barge_in_min_conf
-        return confidence >= self._barge_in_min_conf_1w
+        classification = classify_turn(
+            transcript,
+            confidence,
+            is_tts_playing=True,
+            min_confidence=self._barge_in_min_conf,
+            min_words=self._barge_in_min_words,
+            min_confidence_1w=self._barge_in_min_conf_1w,
+        )
+        return classification == TurnClassification.BARGE_IN
 
     def _log_barge_in_suppressed(self, transcript: str, confidence: float, reason: str) -> None:
         """Staging/debug: count STT events that looked like speech but failed barge-in gates."""
@@ -1129,6 +1306,15 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 self._turn_response_seed_text = ""
                 self._last_interim_text = ""
                 # Fall through — still process transcript and generate new response.
+            elif self._is_tts_playing and is_known_non_actionable_backchannel(transcript):
+                # Final STT arrived while TTS was playing and was classified as a
+                # non-actionable backchannel (e.g. "Hey. Hi.", "Yeah yeah", "Thank you").
+                # Suppress LLM response so active playback completes undisturbed.
+                logger.info(
+                    "STT: suppressing non-actionable backchannel final while TTS is playing: %r",
+                    (transcript or "").strip()[:40],
+                )
+                return
 
             async with self._voice_transcript_lock:
                 if not self._should_accept_final_transcript(transcript, confidence):
@@ -1170,13 +1356,16 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                     await self._send_in_progress_status(transcript, confidence)
                     self._in_progress_sent = True
 
-                # Persist redacted client speech for post-call analysis; LLM uses original below.
-                from app.core.pii_redactor import redact_pii
-
-                transcript_for_db = redact_pii(transcript)
+                # Persist client speech as-is. `_add_to_transcript` (CallControlMixin)
+                # already resolves hipaa_enabled from self.call_flow and routes
+                # redaction decisions through the HIPAA-gated pipeline
+                # (transcript_service.add_and_broadcast_message -> dlp_service
+                # .redact_phi_if_hipaa) -- an unconditional redact_pii() call
+                # here would mask PII on every call regardless of the call
+                # flow's HIPAA setting, duplicating/conflicting with that gate.
                 await self._add_to_transcript(
                     "client",
-                    transcript_for_db if isinstance(transcript_for_db, str) else str(transcript_for_db),
+                    transcript,
                     "speech",
                     confidence,
                     defer_post_write=True,
@@ -1209,7 +1398,7 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             await self._complete_llm_turn_after_stt_final(transcript, confidence)
 
         except Exception as e:
-            logger.error(f"Error processing transcript: {e}", exc_info=True)
+            logger.error("Error processing transcript: %s", e, exc_info=True)
 
     async def _maybe_process_interim(self, transcript: str, confidence: float):
         """
@@ -1274,33 +1463,36 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # the result is ready (or nearly so) by the time generate_and_stream_response
             # would otherwise block waiting for Pinecone. Fires once per user turn
             # regardless of VOICE_ENABLE_INTERIM_LLM so even final-only mode benefits.
-            _prefetch = getattr(self, "_rag_prefetch_task", None)
-            if (
-                not _prefetch
-                and not self._turn_response_started
-                and word_count >= self._rag_prefetch_min_words
-                and confidence >= self._rag_prefetch_min_confidence
-            ):
-                self._rag_prefetch_user_text = transcript
-                self._rag_prefetch_task = asyncio.create_task(
-                    self._prefetch_rag_context(transcript)
-                )
+            # Never fire on the caller's own non-actionable backchannel/confirmation --
+            # those aren't genuine queries worth prefetching for.
+            if not is_known_non_actionable_backchannel(transcript):
+                _prefetch = getattr(self, "_rag_prefetch_task", None)
+                if (
+                    not _prefetch
+                    and not self._turn_response_started
+                    and word_count >= self._rag_prefetch_min_words
+                    and confidence >= self._rag_prefetch_min_confidence
+                ):
+                    self._rag_prefetch_user_text = transcript
+                    self._rag_prefetch_task = asyncio.create_task(
+                        self._prefetch_rag_context(transcript)
+                    )
 
-            # Speculative TTS prefetch: also fire on interim so synthesis starts during
-            # the Deepgram endpointing window (200ms), maximising overlap with LLM TTFT.
-            # Only fire once per turn (guard: task not already running).
-            if (
-                not self._turn_response_started
-                and word_count >= self._min_interim_words
-                and confidence >= self._min_interim_confidence
-                and (
-                    self._speculative_prefetch_task is None
-                    or self._speculative_prefetch_task.done()
-                )
-            ):
-                self._speculative_prefetch_task = asyncio.create_task(
-                    self._run_speculative_tts_prefetch(transcript)
-                )
+                # Speculative TTS prefetch: also fire on interim so synthesis starts during
+                # the Deepgram endpointing window (200ms), maximising overlap with LLM TTFT.
+                # Only fire once per turn (guard: task not already running).
+                if (
+                    not self._turn_response_started
+                    and word_count >= self._min_interim_words
+                    and confidence >= self._min_interim_confidence
+                    and (
+                        self._speculative_prefetch_task is None
+                        or self._speculative_prefetch_task.done()
+                    )
+                ):
+                    self._speculative_prefetch_task = asyncio.create_task(
+                        self._run_speculative_tts_prefetch(transcript)
+                    )
 
             # Final-only mode: do not start LLM from partials (barge-in already handled).
             if not self._enable_interim_llm:
@@ -1329,13 +1521,26 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             self._last_interim_sent_ts = now
             self._turn_response_started = True
             self._turn_response_seed_text = transcript
+            self._interim_task_response_produced = False
+            # New logical turn starting speculatively on this interim; see
+            # `_send_quick_acknowledgement`'s turn-identity gate.
+            self._turn_generation_id += 1
 
-            async def _run_interim() -> None:
-                await self.generate_and_stream_response(
-                    transcript,
-                    confidence,
-                    is_greeting=False,
-                )
+            async def _run_interim() -> str | None:
+                try:
+                    resp = await self.generate_and_stream_response(
+                        transcript,
+                        confidence,
+                        is_greeting=False,
+                    )
+                    if resp and str(resp).strip():
+                        return str(resp).strip()
+                    return None
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.error("Error processing interim: %s", exc, exc_info=True)
+                    return None
 
             if self._llm_response_task and not self._llm_response_task.done():
                 self._llm_response_task.cancel()
@@ -1348,29 +1553,71 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             # during the full 8-10s LLM+TTS cycle.
             self._llm_response_task = asyncio.create_task(_run_interim())
         except Exception as e:
-            logger.error(f"Error processing interim: {e}")
+            logger.error("Error processing interim: %s", e)
     
     async def _send_quick_acknowledgement(self, user_text: str):
         """
         Send instant acknowledgement for longer queries while generating full response.
-        Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time — more natural.
-        Skips emotional/serious content so we never ack with "Got it" to e.g. "I have an emergency".
+
+        `generate_and_stream_response` can be invoked more than once for the
+        same logical user turn -- once speculatively on a qualifying interim
+        (`_maybe_process_interim`), and again for the STT-finalized transcript
+        (`_complete_llm_turn_after_stt_final`). Both calls reach this method.
+        Four gates run in order so this fires at most once per turn, and only
+        when it reads as natural backchanneling rather than a verbal tic:
+
+        1. Turn-identity: `_turn_generation_id`/`_last_quick_ack_turn_id`
+           ensure at most one ack is ever sent per logical turn -- once one
+           call (interim or final) actually sends an ack for a turn, the
+           counterpart call for that same turn is a no-op. A call that
+           *doesn't* send one (e.g. the interim's text was too short for
+           `should_send_quick_ack` but the final's fuller text would pass)
+           does NOT lock the turn, so the later call gets a fair evaluation.
+        2. Content: never ack the caller's own short backchannel/confirmation
+           ("yes", "okay", "right", ...) -- those aren't substantive turns.
+        3. Cooldown: only roll the probability check every
+           QUICK_ACK_COOLDOWN_TURNS eligible turns, so acks land occasionally
+           rather than (probabilistically) every turn.
+        4. Variety: don't repeat the exact same ack phrase back-to-back.
+
+        Probability-based (QUICK_ACK_PROBABILITY) so we don't say "Got it" every time -- more natural.
+        Disabled by default (VOICE_QUICK_ACK_PROBABILITY=0.0) in Sprint 1 to prevent
+        semantically incorrect fillers and TTS concurrency load.
         """
         import random
-        
+
+        if getattr(settings, "VOICE_QUICK_ACK_PROBABILITY", 0.0) <= 0.0:
+            return
+
+        # Gate 1 (turn-identity): if an ack was already sent for this turn
+        # (by the interim or final call, whichever ran first), the
+        # counterpart call is a no-op. Locking happens only on actual send
+        # (below) -- not here -- so a call that falls through without acking
+        # (e.g. text too short) doesn't block a later, more-eligible call for
+        # the same turn.
+        turn_id = self._turn_generation_id
+        if self._last_quick_ack_turn_id == turn_id:
+            return
+
         text = (user_text or "").strip()
         if not text:
             return
-        now_mono = time.monotonic()
-        user_norm = self._normalize_turn_text(text)
-        if (
-            user_norm
-            and user_norm == self._last_quick_ack_user_norm
-            and (now_mono - self._last_quick_ack_mono) < 12.0
-        ):
+
+        # Gate 2 (content): never echo an ack onto the caller's own short
+        # confirmation/backchannel turn.
+        if is_known_non_actionable_backchannel(text):
             return
+
         # First check if this text is even eligible for a quick acknowledgement
         if not should_send_quick_ack(text, VOICE_TUNABLES.quick_ack):
+            return
+
+        # Gate 3 (cooldown/frequency): every turn that reaches this point
+        # counts toward the cooldown, whether or not it ends up producing an
+        # ack; only once the cooldown has elapsed do we roll the probability
+        # check below.
+        self._turns_since_last_ack += 1
+        if self._turns_since_last_ack < self.QUICK_ACK_COOLDOWN_TURNS:
             return
 
         # Apply probability filter so we don't say "Got it" every single time
@@ -1388,9 +1635,20 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             "Hang on a sec",
             "Let me check that",
         ]
-        ack = random.choice(acks)
+        # Gate 4 (variety): avoid repeating the exact same phrase back-to-back.
+        _ack_choices = [a for a in acks if a != self._last_quick_ack_phrase] or acks
+        ack = random.choice(_ack_choices)
         if not self._tts_pipeline:
             return
+        # Lock the turn now, synchronously, before the only `await` in this
+        # method -- everything above this point is synchronous (no await),
+        # so no concurrent call for the same turn_id can have observed an
+        # unlocked state past this point. Locking after the await instead
+        # would leave a window where two concurrent calls for the same turn
+        # both pass gates 1-4 and both queue an ack before either locks.
+        self._last_quick_ack_turn_id = turn_id
+        self._last_quick_ack_phrase = ack
+        self._turns_since_last_ack = 0
         await self._tts_pipeline.queue_tts({
             "text": ack,
             "chunk_id": "quick_ack",
@@ -1398,8 +1656,6 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             "is_acknowledgement": True,
             "is_final": False
         })
-        self._last_quick_ack_user_norm = user_norm
-        self._last_quick_ack_mono = now_mono
 
     async def _prefetch_rag_context(self, user_text: str) -> tuple:
         """
@@ -1430,17 +1686,20 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
             )
         except asyncio.TimeoutError:
             logger.debug("[RAG prefetch] timed out for '%s…'", user_text[:20])
+            # Fail open with a genuinely empty block -- do NOT re-invoke
+            # build_rag_context_block_with_trace(user_text="", ...) here: its
+            # empty-input branch returns a block that explicitly instructs
+            # the LLM to refuse ("respond that this information is not
+            # available..."), which is correct for a real "no KB entries
+            # exist" result but actively wrong for a purely technical
+            # retrieval failure/timeout, where the KB may well have the
+            # answer. Matches the browser/LiveKit path's timeout fallback
+            # (kb_retrieval_service.py), which just proceeds with an empty
+            # context block and no explicit instruction either way.
+            return "", {"status": "timeout", "timeout": True}
         except Exception as exc:
             logger.debug("[RAG prefetch] failed: %s", exc)
-        # Fallback: empty context (LLM still runs, just without RAG)
-        tenant_uuid = self.call_session.tenant_id if self.call_session else None
-        agent_uuid = self.agent.id if self.agent else None
-        rag_agent_scope = None if (self.agent and self.agent.is_inbound_agent) else agent_uuid
-        return build_rag_context_block_with_trace(
-            user_text="",
-            tenant_id=tenant_uuid,
-            agent_id=rag_agent_scope,
-        )
+            return "", {"status": "failure", "error": str(exc)}
 
     async def build_system_prompt(self, user_text: str, confidence: float) -> str:
         """Public string-returning entry point — see _build_system_prompt_full
@@ -1585,22 +1844,16 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                         timeout=_remaining_slowpath_budget(settings.RAG_RETRIEVAL_TIMEOUT_SEC),
                     )
             except asyncio.TimeoutError:
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "timeout"
-                rag_trace["timeout"] = True
+                # Fail open with a genuinely empty block -- do NOT re-invoke
+                # build_rag_context_block_with_trace(user_text="", ...): its
+                # empty-input branch returns an explicit refusal instruction
+                # ("respond that this information is not available...")
+                # appropriate for a real "no KB entries exist" result but
+                # wrong for a purely technical retrieval failure/timeout.
+                rag_context_block, rag_trace = "", {"status": "timeout", "timeout": True}
             except Exception as e:
                 logger.error("RAG context build failed unexpectedly: %s", e, exc_info=True)
-                rag_context_block, rag_trace = build_rag_context_block_with_trace(
-                    user_text="",
-                    tenant_id=tenant_uuid,
-                    agent_id=rag_agent_scope,
-                )
-                rag_trace["status"] = "failure"
-                rag_trace["error"] = str(e)
+                rag_context_block, rag_trace = "", {"status": "failure", "error": str(e)}
 
         # Use call-start-cached KB blocks (fetched once in _prefetch_kb_blocks_at_call_start).
         # These are agent/tenant-level and don't change during the call, so serving
@@ -1699,15 +1952,35 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 history_text = "\n".join(
                     f"{role.capitalize()}: {content}" for role, content in filtered
                 )
+
             except Exception:
                 history_text = ""
 
-        if _use_vertex_llm:
-            history_text = (
-                "(Prior conversation turns are provided separately — "
-                "maintain continuity; do not re-ask answered questions.)"
+        # V-07: Prepend rolling summary of dropped turns so the agent retains context
+        # from earlier in the call (caller name, problem, location, etc.) that has
+        # already scrolled out of the active window.  Applied unconditionally here so it
+        # works for normal calls, cache-empty/error paths, and the Vertex override below.
+        _v07_summary_block = ""
+        if self._history_summary:
+            _v07_summary_block = (
+                f"<earlier_conversation_summary>\n"
+                f"{self._history_summary.strip()}\n"
+                f"</earlier_conversation_summary>\n\n"
             )
-        
+
+        if _use_vertex_llm:
+            # Vertex calls provide turns natively — replace the recent-turns text with a
+            # short note.  Summary of dropped turns is still appended below since the
+            # native Vertex history only covers the active window.
+            history_text = (
+                "Prior conversation turns are provided separately — "
+                "maintain continuity; do not re-ask answered questions."
+            )
+
+        # Apply the summary block once, after any Vertex override.
+        if _v07_summary_block:
+            history_text = _v07_summary_block + history_text
+
         booking_memory_block = self._build_booking_memory_block()
 
         # Build system prompt with agent personality + history
@@ -1806,13 +2079,33 @@ class BidirectionalStreamHandler(BookingMixin, TtsStreamMixin, CallControlMixin,
                 "with each user message — apply grounding rules using that context.\n"
             )
 
+        # Backend-owned contact intake ("already collected, do not re-ask")
+        # block — deterministic complement to the "NO CONFIRMATION LOOPS"
+        # grounding rule below. Empty string when nothing is confirmed yet,
+        # so calls that never trigger contact intake see no prompt change.
+        contact_intake_block = ""
+        if self.call_session:
+            try:
+                from app.services.call_session_contact_state import (
+                    build_contact_intake_prompt_block,
+                    get_contact_intake,
+                )
+
+                contact_intake_block = build_contact_intake_prompt_block(
+                    get_contact_intake(self.call_session)
+                )
+            except Exception as exc:
+                logger.debug("Contact intake prompt block build failed: %s", exc)
+
         # Base prompt for phone conversations (voice-first, plain text only, no SSML)
         base_prompt = f"""# ROLE
 You are {agent_name}, having a real-time phone call with a human.
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
@@ -1823,11 +2116,12 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, location, issue, timing) is still valid — do not ask for it again. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information already given by the caller (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart from the beginning of your flow mid-call. If the caller corrects or updates a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript. Move to the next unanswered item only.
 3. HANDLING SILENCE: If the user says something vague, ask a single clarifying question.
 4. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
@@ -1863,6 +2157,8 @@ These rules override any conflicting custom instructions below. Never deviate fr
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. SELF-INTRODUCTION: If the caller asks who you are, what you do, or to tell about yourself, warmly introduce yourself as the voice assistant for this company and state what you can help with (e.g. services, appointments, or general questions). Never apologize or refuse to answer who you are.
+6. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 {_bk_block}
 
@@ -1871,7 +2167,9 @@ These rules override any conflicting custom instructions below. Never deviate fr
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").{greeting_instruction_block}
@@ -1880,11 +2178,12 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 {_recruitment_screening_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
 3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
@@ -1905,6 +2204,8 @@ These rules override any conflicting model instructions below. Never deviate fro
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. SELF-INTRODUCTION: If the caller asks who you are, what you do, or to tell about yourself, warmly introduce yourself as the voice assistant for this company and state what you can help with. Never apologize or refuse to answer who you are.
+6. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 {_bk_block}
 
@@ -1913,7 +2214,9 @@ These rules override any conflicting model instructions below. Never deviate fro
 {v_block}
 # STYLE & TONE
 - VOICE-FIRST: Output is for Text-to-Speech. Use short sentences (max 20 words unless explaining).
-- NATURAL: Use fillers like "uhm," "well," "I see" occasionally.
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
+- STRUCTURED INFO PACING: When reading a phone number, confirmation code, or similar digit sequence aloud, group the digits the way a person naturally would when saying them out loud, separated by commas (e.g. "five five five, one two three, four five six seven"), never as one fast unbroken string of digits.
+- TRANSITION PACING: Right after giving the caller a phone number, email address, or other specific detail they asked for, add one short acknowledgement word ("Great," "Got it," "Perfect,") before your next question — this is exactly the kind of genuinely-appropriate acknowledgement the NATURAL rule above allows. Do not move straight from the detail into the next sentence with no beat in between.
 {output_plain_text_rule}
 {no_bracket_tags_line}{greeting_instruction_block}
 # CONVERSATION STATE
@@ -1921,10 +2224,11 @@ Previous conversation:
 {history_text}
 
 {booking_memory_block}
+{contact_intake_block}
 {rag_context_block}
 {inbound_kb_docs_context_block}
 # CRITICAL RULES
-1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, location, issue, timing) is still valid — do not ask for it again, and do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave (name, phone, email, address, location, issue, timing) is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Never alternate between re-asking two fields you already acknowledged. Do not restart your intake flow from the beginning mid-call. If the caller corrects a previously given answer (e.g., corrects their name), acknowledge it and continue from the current step, not step one.
 2. NO REPETITION: Never ask a question that was already asked and answered in the transcript above. Move to the next unanswered item only.
 3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
@@ -1942,6 +2246,61 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         )
         if call_policy_block:
             system_prompt = call_policy_block + "\n" + system_prompt
+
+        # F-11: Call-drop reconnect recognition
+        if (
+            self.call_session is not None
+            and isinstance(self.call_session.call_metadata, dict)
+            and self.call_session.call_metadata.get("is_reconnect")
+        ):
+            reconnect_instruction = (
+                "\n\nIMPORTANT — RECONNECTING CALLER (CALL DROP): This caller was "
+                "disconnected less than 5 minutes ago. Acknowledge the reconnection "
+                "warmly (e.g. \"Welcome back! Looks like we got cut off — let's pick "
+                "up right where we left off.\"). Do NOT use a generic introductory "
+                "greeting, re-introduce yourself, or ask questions that were already "
+                "answered in the previous interaction.\n"
+            )
+            # Best-effort: pull a brief snippet from the dropped session's transcript,
+            # if reachable — fails open, never blocks the turn.
+            if self.db:
+                try:
+                    reconnect_from_id = self.call_session.call_metadata.get(
+                        "reconnect_from_session_id"
+                    )
+                    dropped = (
+                        call_session_service.get_call_session_by_id_and_tenant(
+                            self.db,
+                            uuid.UUID(reconnect_from_id),
+                            self.call_session.tenant_id,
+                        )
+                        if reconnect_from_id
+                        else None
+                    )
+                    if dropped and dropped.call_transcript:
+                        raw = dropped.call_transcript
+                        dropped_history = (
+                            json.loads(raw) if isinstance(raw, str) else list(raw)
+                        )
+                        snippet_lines = []
+                        for msg in dropped_history[-4:]:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "unknown")
+                                content = msg.get("content") or msg.get("message", "")
+                                if content:
+                                    snippet_lines.append(f"{role.capitalize()}: {content}")
+                        if snippet_lines:
+                            reconnect_instruction += (
+                                "\nContext from the dropped call (for your reference only, "
+                                "do not read this verbatim):\n"
+                                + "\n".join(snippet_lines)
+                                + "\n"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "F-11 reconnect transcript snippet lookup failed: %s", exc
+                    )
+            system_prompt = system_prompt + reconnect_instruction
 
         # Prepend current date/time so the agent knows what "today", "tomorrow",
         # and "past slots" mean. Also injected into appointment booking flow.
@@ -2015,16 +2374,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     and (self.call_session.call_type or "").lower() == "outbound"
                     and self._jd_recruitment_screening_active()
                 )
-                if self.agent and inbound:
-                    # Prefer a reconnect greeting injected at inbound-webhook time
-                    # when we detected a recently dropped session from this caller.
-                    _reconnect = (
-                        isinstance(self.call_session.call_metadata, dict)
-                        and self.call_session.call_metadata.get("reconnect_greeting")
+                # F-11: Call-drop reconnect recognition — override the scripted
+                # greeting when voice_inbound (app/routers/voice.py) linked this
+                # call to a recent dropped session from the same caller.
+                is_reconnect = bool(
+                    inbound
+                    and self.call_session is not None
+                    and isinstance(self.call_session.call_metadata, dict)
+                    and self.call_session.call_metadata.get("is_reconnect")
+                )
+                if is_reconnect:
+                    greeting_text = (
+                        "Welcome back! Looks like we got cut off there — let's "
+                        "pick up right where we left off."
                     )
-                    if _reconnect:
-                        greeting_text = _reconnect
-                    elif getattr(self.agent, "greeting_message", None):
+                elif self.agent and inbound:
+                    if getattr(self.agent, "greeting_message", None):
                         greeting_text = self.agent.greeting_message.strip()
                     elif getattr(self.agent, "first_message", None):
                         greeting_text = self.agent.first_message.strip()
@@ -2118,7 +2483,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._twilio_buffer_primed = False
 
                 return  # Done! No LLM needed for greeting
-            
+
+            if self.call_session and self.db:
+                try:
+                    within_budget, _usage, _limit = await token_budget_service.check_daily_budget(
+                        self.db, self.call_session.tenant_id
+                    )
+                except Exception as exc:
+                    logger.warning("Token budget check failed; failing open: %s", exc)
+                    within_budget = True
+                if not within_budget:
+                    refusal_text = (
+                        "This workspace has reached its daily AI usage limit. Please "
+                        "contact support or your administrator."
+                    )
+                    await self._add_to_transcript("agent", refusal_text, "system")
+                    if self._tts_pipeline:
+                        await self._tts_pipeline.queue_tts({
+                            "text": refusal_text,
+                            "chunk_id": "budget_exceeded",
+                            "use_ssml": self._use_ssml,
+                            "is_final": True,
+                        })
+                    self._twilio_buffer_primed = False
+                    return
+
             # Reset TTS state for new response generation
             self._tts_cancel.clear()
             self._prev_tts_tail = b""           # Reset crossfade state so new response starts clean
@@ -2158,7 +2547,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.10) or 0.10),
             )
             _time_flush_target_words = 3 if low_latency_fastpath else 4
-            logger.info(f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) for response to: '{user_text[:20]}...'")
+            logger.info("🧠 Calling LLM (%s) for response to: '%s...'", llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service', user_text[:20])
             
             async def try_stream(service, model: str, api_key_override: str = None) -> str:
                 nonlocal chunk_counter
@@ -2379,10 +2768,26 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             _is_gemini_agent = (_provider_slug or "").lower() == "gemini"
             # F-03: Use varied fallback pool; keep legacy env var as override
             _legacy_fallback = getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", None)
+            # A-05: distributed circuit breaker — trips OPEN across all calls/workers
+            # after consecutive failures, so a doomed provider isn't retried per-turn.
+            # Keyed by the actual resolved provider slug (openai/gemini/groq), not the
+            # binary gemini/else split — collapsing Groq into "openai" would let an
+            # OpenAI outage fast-fail healthy Groq tenants and vice versa.
+            _primary_provider = (_provider_slug or "openai").lower()
+            _breaker_open = not await llm_circuit_breaker.can_execute(_primary_provider)
+            if _breaker_open:
+                logger.warning(
+                    "[CircuitBreaker] %s circuit is OPEN — fast-failing to secondary provider without dead air",
+                    _primary_provider,
+                )
             try:
                 from app.services.vertex_gemini_service import VertexGeminiService as _VertexGeminiServiceCls
 
-                if self._calendly_enabled() and isinstance(llm_service, _VertexGeminiServiceCls):
+                if (
+                    not _breaker_open
+                    and self._calendly_enabled()
+                    and isinstance(llm_service, _VertexGeminiServiceCls)
+                ):
                     # Calendly-enabled agents resolve availability/booking via Gemini
                     # native function calling — bypass the legacy try_stream() +
                     # [CHECK_SLOTS:...]/[BOOK_APPOINTMENT:...] regex-token pipeline.
@@ -2395,6 +2800,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         temperature=temperature,
                         max_tokens=max_tokens,
                     )
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     chunk_counter += 1
                     if final_text and self._tts_pipeline and not self._tts_cancel.is_set():
                         safe_tts_text = self._prepare_tts_text(final_text)
@@ -2412,7 +2818,10 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
                 else:
+                    if _breaker_open:
+                        raise _PrimaryLlmCircuitOpen(_primary_provider)
                     final_text = await try_stream(llm_service, model_name, api_key)
+                    await llm_circuit_breaker.record_success(_primary_provider)
                     self._consecutive_llm_failures = 0  # F-03: reset on success
             except VertexLlmError as vertex_err:
                 # Vertex-specific errors (quota, timeout, content filter) — canned fallback only.
@@ -2422,6 +2831,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     vertex_err.error_type,
                     model_name,
                 )
+                await llm_circuit_breaker.record_failure(_primary_provider, vertex_err)
                 self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                 _etype = "timeout" if "timeout" in str(vertex_err.error_type).lower() else "quota" if "quota" in str(vertex_err.error_type).lower() else "general"
                 _fallback_msg = _legacy_fallback or self._pick_llm_fallback(_etype, self._consecutive_llm_failures)
@@ -2438,7 +2848,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         self._deferred_conversation_memory_update(turn_context, user_text)
                     )
             except Exception as e:
-                logger.warning(f"⚠️ Primary LLM failed ({model_name}): {e}. Attempting fallback...")
+                if isinstance(e, _PrimaryLlmCircuitOpen):
+                    # Already logged when the breaker was checked; don't count
+                    # this as a fresh failure — it wasn't an actual call attempt.
+                    pass
+                else:
+                    logger.warning("⚠️ Primary LLM failed (%s): %s. Attempting fallback...", model_name, e)
+                    await llm_circuit_breaker.record_failure(_primary_provider, e)
                 if _is_gemini_agent:
                     # Gemini agents: canned fallback only, no cross-provider attempt
                     logger.warning("⚠️ Gemini agent LLM error — using canned fallback (no AI Studio retry)")
@@ -2464,7 +2880,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                         else:
                             final_text = await try_stream(openai_service, "gpt-3.5-turbo", None)
                     except Exception as e:
-                        logger.warning(f"⚠️ Secondary LLM fallback failed: {e}. Attempting VoiceLoggingService fallback...")
+                        logger.warning("⚠️ Secondary LLM fallback failed: %s. Attempting VoiceLoggingService fallback...", e)
                         try:
                             final_text = await VoiceLoggingService.generate_agent_response(
                                 speech_text=user_text,
@@ -2491,7 +2907,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                         self._deferred_conversation_memory_update(turn_context, user_text)
                                     )
                         except Exception as e:
-                            logger.warning(f"⚠️ VoiceLoggingService fallback failed: {e}. Using ultimate fallback.")
+                            logger.warning("⚠️ VoiceLoggingService fallback failed: %s. Using ultimate fallback.", e)
                             self._consecutive_llm_failures = getattr(self, "_consecutive_llm_failures", 0) + 1
                             _fallback_msg = _legacy_fallback or self._pick_llm_fallback("general", self._consecutive_llm_failures)
                             final_text = _fallback_msg
@@ -2511,11 +2927,31 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                                 )
 
             if final_text:
+                if self.call_session:
+                    try:
+                        _estimated_tokens = int((len(system_prompt or "") + len(final_text or "")) / 3.8)
+                        if _estimated_tokens > 0:
+                            asyncio.create_task(
+                                token_budget_service.record_daily_tokens(
+                                    self.call_session.tenant_id, _estimated_tokens
+                                )
+                            )
+                    except Exception as exc:
+                        logger.debug("Token budget recording failed: %s", exc)
+
                 # Strip control tokens from transcript (never saved to history)
                 transcript_text = _RE_VOICE_END_CALL.sub(
                     "", self._strip_control_tokens_for_tts(final_text)
                 ).strip()
                 if transcript_text:
+                    # Mark this turn's response as committed/queued before the
+                    # (potentially slow) transcript write below -- see
+                    # `_complete_llm_turn_after_stt_final`'s duplicate-audio
+                    # guard, which trusts this flag to avoid re-synthesizing
+                    # and re-speaking content the caller may already be
+                    # hearing when an in-flight interim outlasts the final's
+                    # fallback wait timeout.
+                    self._interim_task_response_produced = True
                     await self._add_to_transcript(
                         "agent",
                         transcript_text,
@@ -2564,14 +3000,19 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         except asyncio.CancelledError:
             raise
         except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
 
     async def _deferred_conversation_memory_update(
         self, turn_context: TurnContext, user_text: str
     ) -> None:
         """
         Non-blocking hook after first TTS is queued. Extend with embeddings or summaries
-        without adding latency to STT → LLM → TTS.
+        without adding latency to STT -> LLM -> TTS.
+
+        V-07: Also triggers background history summarization when the conversation history
+        has grown past the active window and enough unsummarized dropped turns have
+        accumulated.  Summarization always runs as a **detached** asyncio.Task so this
+        hook returns immediately and never blocks the hot path.
         """
         try:
             logger.debug(
@@ -2583,7 +3024,73 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             )
         except Exception as e:  # pragma: no cover - defensive
             logger.warning("deferred conversation memory update failed: %s", e, exc_info=True)
-    
+
+        # ── V-07: History Summarization Pipeline ─────────────────────────────
+        # Runs completely out-of-band as a detached background task — zero impact
+        # on the STT -> LLM -> TTS hot path.
+        try:
+            from app.core.config import settings as _settings  # local import to avoid circulars
+
+            _summarization_enabled = getattr(_settings, "VOICE_HISTORY_SUMMARIZATION_ENABLED", True)
+            if not _summarization_enabled:
+                return
+
+            _max_msgs: int = getattr(self, "HISTORY_MAX_MESSAGES", 50)
+            _chunk_size: int = getattr(_settings, "VOICE_HISTORY_SUMMARY_CHUNK_SIZE", 10)
+            _total_turns: int = len(self._conversation_history_cache)
+
+            if _total_turns <= _max_msgs:
+                # History hasn't grown past the active window yet — nothing dropped.
+                return
+
+            # Index of the first turn that is currently OUTSIDE the active window
+            # (i.e., the last turn dropped by the sliding-window slice).
+            _drop_boundary: int = _total_turns - _max_msgs
+
+            # How many newly dropped turns haven't been summarized yet?
+            _unsummarized_count: int = _drop_boundary - self._last_summarized_turn_index
+            if _unsummarized_count < _chunk_size:
+                # Not enough new dropped turns to justify a mini-LLM call yet; wait for
+                # the next turn.
+                return
+
+            # Snapshot the turns to summarize (avoids holding a reference to the
+            # live list inside the background task).
+            _turns_to_compress: list[tuple[str, str]] = list(
+                self._conversation_history_cache[
+                    self._last_summarized_turn_index : _drop_boundary
+                ]
+            )
+            _current_summary: str = self._history_summary
+            _new_index: int = _drop_boundary
+
+            async def _background_summarize() -> None:
+                """Detached task: runs compress_history and updates handler state."""
+                try:
+                    from app.services.history_summarization_service import compress_history
+
+                    updated_summary = await compress_history(
+                        existing_summary=_current_summary,
+                        new_turns=_turns_to_compress,
+                    )
+                    # Write back to handler state atomically (GIL makes str assignment safe).
+                    self._history_summary = updated_summary
+                    self._last_summarized_turn_index = _new_index
+                    logger.debug(
+                        "[V-07] History summary updated: index=%d summary_len=%d",
+                        _new_index,
+                        len(updated_summary),
+                    )
+                except Exception as _bg_exc:  # pragma: no cover - defensive
+                    # Never let a background summarization failure affect the call.
+                    logger.debug("[V-07] Background summarization task failed: %s", _bg_exc)
+
+            asyncio.create_task(_background_summarize())
+
+        except Exception as _exc:
+            # Defensive: the deferred hook must never raise.
+            logger.debug("[V-07] History summarization scheduling failed: %s", _exc)
+
     # ── Booking and calendar token methods live in app/voice/booking_mixin.py ──
 
     # ── TTS streaming methods live in app/voice/tts_stream_mixin.py ──
@@ -2656,7 +3163,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             # Wait for first media packet (user actually picks up - VAPI-style)
 
         except Exception as e:
-            logger.error(f"Error in handle_start_message: {e}", exc_info=True)
+            logger.error("Error in handle_start_message: %s", e, exc_info=True)
     
     async def _handle_user_pickup(self):
         """Handle user pickup - called when actual user audio detected (not Twilio system messages)"""
@@ -2700,7 +3207,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 asyncio.create_task(self._schedule_outbound_screening_intro_after_delay())
         
         except Exception as e:
-            logger.error(f"Error in _handle_user_pickup: {e}", exc_info=True)
+            logger.error("Error in _handle_user_pickup: %s", e, exc_info=True)
 
     async def _schedule_outbound_screening_intro_after_delay(self) -> None:
         """Brief delay after pickup, then scripted recruitment intro via same path as inbound greeting."""
@@ -2901,7 +3408,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
         try:
             await self._full_shutdown()
         except Exception as e:
-            logger.error(f"Error in handle_stop_message: {e}", exc_info=True)
+            logger.error("Error in handle_stop_message: %s", e, exc_info=True)
 
 
 async def _receive_or_stop(
@@ -2962,7 +3469,7 @@ async def bidirectional_stream_websocket(
     try:
         await websocket.accept()
     except Exception as e:
-        logger.error(f"Failed to accept bidirectional WebSocket: {e}")
+        logger.error("Failed to accept bidirectional WebSocket: %s", e)
         return
     
     # Get database session
@@ -2984,7 +3491,7 @@ async def bidirectional_stream_websocket(
 
             if data is None:
                 # Internal end-call path triggered _full_shutdown + set _stop_event
-                logger.info(f"🛑 Internal stop event fired for session {callSessionId} — closing WebSocket")
+                logger.info("🛑 Internal stop event fired for session %s — closing WebSocket", callSessionId)
                 break
 
             message = json.loads(data)
@@ -3007,10 +3514,10 @@ async def bidirectional_stream_websocket(
                 pass  # Synchronization marks
     
     except WebSocketDisconnect:
-        logger.info(f"🔌 Bidirectional WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 Bidirectional WebSocket disconnected for session %s", callSessionId)
     
     except Exception as e:
-        logger.error(f"Unexpected error in bidirectional WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in bidirectional WebSocket: %s", e, exc_info=True)
     
     finally:
         # Ensure all pipelines are fully shut down (idempotent — safe if already done)
@@ -3018,7 +3525,7 @@ async def bidirectional_stream_websocket(
             try:
                 await handler._full_shutdown()
             except Exception as e:
-                logger.debug(f"Pipeline cleanup in finally: {e}")
+                logger.debug("Pipeline cleanup in finally: %s", e)
 
         # Explicitly close the WebSocket so Twilio gets an immediate close frame
         # instead of waiting for the TCP connection to time out.
@@ -3058,8 +3565,8 @@ async def tts_only_websocket(
     try:
         await session.run()
     except WebSocketDisconnect:
-        logger.info(f"🔌 TTS-ONLY WebSocket disconnected for session {callSessionId}")
+        logger.info("🔌 TTS-ONLY WebSocket disconnected for session %s", callSessionId)
     except Exception as e:
-        logger.error(f"Unexpected error in TTS-ONLY WebSocket: {e}", exc_info=True)
+        logger.error("Unexpected error in TTS-ONLY WebSocket: %s", e, exc_info=True)
     finally:
         db.close()

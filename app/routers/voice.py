@@ -579,34 +579,43 @@ async def handle_incoming_call(
         # Attach the resolved call flow + any webhook-provided variables so both
         # live-call handlers (Twilio / LiveKit) can key off them (call_flow_id
         # for settings, call_metadata.webhook_variables for {{key}} injection).
+        # Also detect + link a call-drop reconnect (F-11) via parent_call_id +
+        # call_metadata. The dropped-session lookup itself lives inside this
+        # same try block so a query failure here fails open exactly like the
+        # rest of this block, instead of bubbling up and failing the call.
         try:
             if resolved_flow is not None:
                 call_session.call_flow_id = resolved_flow.id
-            extra_meta: dict = {}
+            metadata_updates: dict = {}
             if webhook_variables:
-                extra_meta["webhook_variables"] = webhook_variables
-            if _recent_dropped is not None:
-                extra_meta["reconnect_greeting"] = (
-                    "Welcome back! It looks like we got disconnected a moment ago. "
-                    "No worries — I'm here and ready to continue where we left off. "
-                    "How can I help you?"
+                metadata_updates["webhook_variables"] = webhook_variables
+            dropped_session = call_session_service.find_recent_dropped_session(
+                db=db,
+                from_number=from_number,
+                tenant_id=phone_number.tenant_id,
+                within_seconds=300,
+            )
+            if dropped_session is not None:
+                call_session.parent_call_id = dropped_session.id
+                metadata_updates["is_reconnect"] = True
+                metadata_updates["reconnect_from_session_id"] = str(
+                    dropped_session.id
                 )
-                extra_meta["reconnect_from_session_id"] = str(_recent_dropped.id)
                 logger.info(
-                    "Reconnect detected for %s — prior session %s",
-                    from_number,
-                    _recent_dropped.id,
+                    "Detected call-drop reconnect: call_session=%s reconnect_from=%s",
+                    call_session.id,
+                    dropped_session.id,
                 )
-            if extra_meta:
+            if metadata_updates:
                 call_session.call_metadata = {
                     **(call_session.call_metadata or {}),
-                    **extra_meta,
+                    **metadata_updates,
                 }
-            if resolved_flow is not None or extra_meta:
+            if resolved_flow is not None or webhook_variables or dropped_session is not None:
                 db.commit()
         except Exception as exc:  # defensive — never let this break inbound calls
             logger.warning(
-                "Failed to attach call_flow/webhook_variables to call_session %s: %s",
+                "Failed to attach call_flow/webhook_variables/reconnect data to call_session %s: %s",
                 call_session.id,
                 exc,
             )
@@ -674,7 +683,7 @@ def _commit_terminal_call_session_status(
         db.commit()
     except Exception as e:
         logger.warning(
-            f"⚠️ Failed to persist call session status update (non-critical): {e}"
+            "⚠️ Failed to persist call session status update (non-critical): %s", e
         )
 
 
@@ -694,7 +703,7 @@ async def handle_call_events_webhook(
 ):
     logger.info("🔥🔥🔥 WEBHOOK CALLED! 🔥🔥🔥")
     logger.info("=== Call Events Webhook Started ===")
-    logger.info(f"Timestamp: {datetime.now(timezone.utc).isoformat()}")
+    logger.info("Timestamp: %s", datetime.now(timezone.utc).isoformat())
     from app.core.pii_redactor import prepare_request_log_context
 
     logger.info(
@@ -728,7 +737,7 @@ async def handle_call_events_webhook(
         )
         logger.info("✅ WebSocket broadcast queued at webhook start")
     except Exception as e:
-        logger.warning(f"⚠️ WebSocket broadcast failed (non-critical): {e}")
+        logger.warning("⚠️ WebSocket broadcast failed (non-critical): %s", e)
         # Don't print traceback - this is not critical for call processing
     try:
         logger.debug("Parsing request body...")
@@ -761,7 +770,7 @@ async def handle_call_events_webhook(
                 )
                 if call_session:
                     logger.info(
-                        f"✅ Found call session: {call_session.id} from query parameter"
+                        "✅ Found call session: %s from query parameter", call_session.id
                     )
 
                     # Fetch agent using call session's tenant_id
@@ -771,17 +780,17 @@ async def handle_call_events_webhook(
                         )
                         if agent:
                             logger.info(
-                                f"✅ Agent fetched: {agent.name} (ID: {agent.id})"
+                                "✅ Agent fetched: %s (ID: %s)", agent.name, agent.id
                             )
-                            logger.info(f"🏢 Tenant: {agent.tenant_id}")
+                            logger.info("🏢 Tenant: %s", agent.tenant_id)
                         else:
                             logger.warning(
-                                f"⚠️ Agent {agentId} not found in tenant {call_session.tenant_id}"
+                                "⚠️ Agent %s not found in tenant %s", agentId, call_session.tenant_id
                             )
                 else:
-                    logger.warning(f"⚠️ No call session found for ID: {callSessionId}")
+                    logger.warning("⚠️ No call session found for ID: %s", callSessionId)
             except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID format: {callSessionId}")
+                logger.warning("⚠️ Invalid call session ID format: %s", callSessionId)
         else:
             logger.info("⚠️ No callSessionId provided in query parameters")
 
@@ -792,7 +801,7 @@ async def handle_call_events_webhook(
             )
             if call_session:
                 logger.info(
-                    f"✅ Found call session via CallSid fallback: {call_session.id}"
+                    "✅ Found call session via CallSid fallback: %s", call_session.id
                 )
                 if not agent and call_session.agent_id:
                     try:
@@ -843,19 +852,19 @@ async def handle_call_events_webhook(
 
         # Log the call event
         logger.info(
-            f"Call Events Webhook - SID: {call_sid}, Status: {call_status}, From: {from_number}, To: {to_number}, Direction: {direction}"
+            "Call Events Webhook - SID: %s, Status: %s, From: %s, To: %s, Direction: %s", call_sid, call_status, from_number, to_number, direction
         )
-        logger.info(f"AgentId from query: {agentId}")
+        logger.info("AgentId from query: %s", agentId)
 
         # 🔍 DEBUG: Track all incoming statuses for troubleshooting
         logger.debug("=" * 60)
         logger.debug("🔍 DEBUG WEBHOOK RECEIVED:")
-        logger.debug(f"   Status: '{call_status}'")
-        logger.debug(f"   Direction: '{direction}'")
-        logger.debug(f"   Call SID: {call_sid}")
+        logger.debug("   Status: '%s'", call_status)
+        logger.debug("   Direction: '%s'", direction)
+        logger.debug("   Call SID: %s", call_sid)
         if call_session:
-            logger.debug(f"   Current DB Status: '{call_session.status}'")
-            logger.debug(f"   Call Session ID: {call_session.id}")
+            logger.debug("   Current DB Status: '%s'", call_session.status)
+            logger.debug("   Call Session ID: %s", call_session.id)
         else:
             logger.debug("   Call Session: Not found")
         logger.debug("=" * 60)
@@ -928,7 +937,7 @@ async def handle_call_events_webhook(
                     )
         elif call_session and call_status in ["answered", "in-progress"]:
             logger.debug(
-                f"🔍 DEBUG: Skipping automatic status update for '{call_status}' - will be set when media streaming starts"
+                "🔍 DEBUG: Skipping automatic status update for '%s' - will be set when media streaming starts", call_status
             )
 
         # Set end time and calculate duration when call completes
@@ -940,7 +949,7 @@ async def handle_call_events_webhook(
                 ).total_seconds()
                 call_session.duration = int(duration)
                 logger.info(
-                    f"⏰ Set end time and duration ({duration}s) for session {call_session.id}"
+                    "⏰ Set end time and duration (%ss) for session %s", duration, call_session.id
                 )
 
                 # Broadcast call ended event (non-blocking - fire and forget)
@@ -960,22 +969,22 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.info(
-                        f"✅ Queued call ended event for session {call_session.id}"
+                        "✅ Queued call ended event for session %s", call_session.id
                     )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Failed to queue call ended event (non-critical): {e}"
+                        "⚠️ Failed to queue call ended event (non-critical): %s", e
                     )
 
                 # Stop credit monitoring when call completes
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                     logger.info(
-                        f"✅ Stopped credit monitoring for call session {call_session.id}"
+                        "✅ Stopped credit monitoring for call session %s", call_session.id
                     )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Failed to stop credit monitoring (non-critical): {e}"
+                        "⚠️ Failed to stop credit monitoring (non-critical): %s", e
                     )
 
             # Update call session AND call log together (single commit)
@@ -1009,7 +1018,7 @@ async def handle_call_events_webhook(
                 logger.warning("Recording upload schedule failed: %s", _ru_exc)
 
             logger.info(
-                f"✅ Updated call session {call_session.id} status to: {call_status} with ended_reason: hung up"
+                "✅ Updated call session %s status to: %s with ended_reason: hung up", call_session.id, call_status
             )
 
             # Broadcast status update to WebSocket (SINGLE COMPREHENSIVE BROADCAST)
@@ -1021,7 +1030,7 @@ async def handle_call_events_webhook(
             else:
                 try:
                     logger.info(
-                        f"🚀 Broadcasting call status update: {call_status} for session {call_session.id}"
+                        "🚀 Broadcasting call status update: %s for session %s", call_status, call_session.id
                     )
 
                     # Prepare comprehensive metadata
@@ -1056,7 +1065,7 @@ async def handle_call_events_webhook(
                         metadata=metadata,
                     )
                     logger.debug(
-                        f"✅ Call status update sent: {call_status} for session {call_session.id}"
+                        "✅ Call status update sent: %s for session %s", call_status, call_session.id
                     )
 
                     # Also broadcast call ended event for completed calls (non-blocking - fire and forget)
@@ -1074,12 +1083,12 @@ async def handle_call_events_webhook(
                             )
                         )
                         logger.debug(
-                            f"✅ Queued call ended event for session {call_session.id}"
+                            "✅ Queued call ended event for session %s", call_session.id
                         )
 
                 except Exception as e:
                     logger.error(
-                        f"❌ Failed to broadcast call status update: {e}", exc_info=True
+                        "❌ Failed to broadcast call status update: %s", e, exc_info=True
                     )
         else:
             if not call_session:
@@ -1097,12 +1106,12 @@ async def handle_call_events_webhook(
 
         # Handle different call statuses and trigger agent logic
         logger.info(
-            f"Processing call status: '{call_status}' with direction: '{direction}'"
+            "Processing call status: '%s' with direction: '%s'", call_status, direction
         )
 
         if call_status == "initiated" and direction == "outbound-api":
             # Call has been initiated - just log and return empty response
-            logger.info(f"Call initiated - SID: {call_sid}")
+            logger.info("Call initiated - SID: %s", call_sid)
 
             # Broadcast call initiated event (non-blocking - fire and forget)
             if call_session:
@@ -1120,10 +1129,10 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Broadcasted call initiated event for session {call_session.id}"
+                        "✅ Broadcasted call initiated event for session %s", call_session.id
                     )
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call initiated event: {e}")
+                    logger.error("❌ Failed to broadcast call initiated event: %s", e)
 
                 # Fire call.started webhook
                 try:
@@ -1148,7 +1157,7 @@ async def handle_call_events_webhook(
 
         elif call_status == "ringing" and direction == "outbound-api":
             # Outbound call is ringing - just log, don't play any audio
-            logger.info(f"🔔 CALL IS RINGING - SID: {call_sid}")
+            logger.info("🔔 CALL IS RINGING - SID: %s", call_sid)
 
             # Broadcast call ringing event (non-blocking - fire and forget)
             if call_session:
@@ -1165,10 +1174,10 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Broadcasted call ringing event for session {call_session.id}"
+                        "✅ Broadcasted call ringing event for session %s", call_session.id
                     )
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call ringing event: {e}")
+                    logger.error("❌ Failed to broadcast call ringing event: %s", e)
 
             # Return empty response - no audio should play while ringing
             return HTMLResponse("", media_type="application/xml")
@@ -1205,12 +1214,12 @@ async def handle_call_events_webhook(
 
             return HTMLResponse("", media_type="application/xml")
         elif call_status == "in-progress" and direction == "inbound":
-            logger.info(f"📞 INBOUND CALL IN-PROGRESS - SID: {call_sid}")
+            logger.info("📞 INBOUND CALL IN-PROGRESS - SID: %s", call_sid)
             return HTMLResponse("", media_type="application/xml")
 
         elif call_status == "completed":
             # Call completed
-            logger.info(f"📞 CALL COMPLETED - SID: {call_sid}")
+            logger.info("📞 CALL COMPLETED - SID: %s", call_sid)
 
             # Fire call.completed webhook
             if call_session:
@@ -1237,7 +1246,7 @@ async def handle_call_events_webhook(
 
         elif call_status == "failed":
             # Call failed - handle error
-            logger.error(f"Call failed - SID: {call_sid}")
+            logger.error("Call failed - SID: %s", call_sid)
 
             # Persist the "failed" status set earlier in this function (Blocker B
             # follow-up: previously never committed for this branch).
@@ -1279,7 +1288,7 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Queued call failed event for session {call_session.id}"
+                        "✅ Queued call failed event for session %s", call_session.id
                     )
 
                     # Also broadcast call ended event for failed calls (non-blocking - fire and forget)
@@ -1296,20 +1305,20 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Queued call ended (failed) event for session {call_session.id}"
+                        "✅ Queued call ended (failed) event for session %s", call_session.id
                     )
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call failed event: {e}")
+                    logger.error("❌ Failed to broadcast call failed event: %s", e)
 
                 # Stop credit monitoring when call fails
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                     logger.debug(
-                        f"✅ Stopped credit monitoring for failed call session {call_session.id}"
+                        "✅ Stopped credit monitoring for failed call session %s", call_session.id
                     )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Failed to stop credit monitoring (non-critical): {e}"
+                        "⚠️ Failed to stop credit monitoring (non-critical): %s", e
                     )
 
                 try:
@@ -1328,7 +1337,7 @@ async def handle_call_events_webhook(
             # completed" business effects as "failed" (GAP 4 follow-up): fire the
             # webhook, stop credit monitoring, and notify batch-call completion so
             # a canceled outbound batch call doesn't get stuck as permanently "active".
-            logger.info(f"Call canceled - SID: {call_sid}")
+            logger.info("Call canceled - SID: %s", call_sid)
 
             # Persist the "failed" status set earlier in this function (Blocker B
             # follow-up: previously never committed for this branch).
@@ -1373,7 +1382,7 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Queued call canceled event for session {call_session.id}"
+                        "✅ Queued call canceled event for session %s", call_session.id
                     )
 
                     asyncio.create_task(
@@ -1389,20 +1398,20 @@ async def handle_call_events_webhook(
                         )
                     )
                     logger.debug(
-                        f"✅ Queued call ended (canceled) event for session {call_session.id}"
+                        "✅ Queued call ended (canceled) event for session %s", call_session.id
                     )
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast call canceled event: {e}")
+                    logger.error("❌ Failed to broadcast call canceled event: %s", e)
 
                 # Stop credit monitoring when call is canceled
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                     logger.debug(
-                        f"✅ Stopped credit monitoring for canceled call session {call_session.id}"
+                        "✅ Stopped credit monitoring for canceled call session %s", call_session.id
                     )
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Failed to stop credit monitoring (non-critical): {e}"
+                        "⚠️ Failed to stop credit monitoring (non-critical): %s", e
                     )
 
                 try:
@@ -1418,7 +1427,7 @@ async def handle_call_events_webhook(
 
         elif call_status in ("busy", "no-answer"):
             # Both busy and no-answer → internal "no_answer" (per ticket spec)
-            logger.info(f"Call {call_status} (internal: no_answer) - SID: {call_sid}")
+            logger.info("Call %s (internal: no_answer) - SID: %s", call_status, call_sid)
 
             # Persist the "no_answer" status set earlier in this function (Blocker B
             # follow-up: previously never committed for this branch).
@@ -1476,12 +1485,12 @@ async def handle_call_events_webhook(
                         )
                     )
                 except Exception as e:
-                    logger.error(f"❌ Failed to broadcast no_answer event: {e}")
+                    logger.error("❌ Failed to broadcast no_answer event: %s", e)
                 try:
                     credit_service.stop_credit_monitoring(call_session.id)
                 except Exception as e:
                     logger.warning(
-                        f"⚠️ Failed to stop credit monitoring (non-critical): {e}"
+                        "⚠️ Failed to stop credit monitoring (non-critical): %s", e
                     )
 
                 try:
@@ -1497,7 +1506,7 @@ async def handle_call_events_webhook(
         else:
             # Default response for other statuses
             logger.info(
-                f"Unhandled call status: '{call_status}' - using default response"
+                "Unhandled call status: '%s' - using default response", call_status
             )
             response = VoiceResponse()
             text = "Thanks for calling! Have a great day!"
@@ -1508,7 +1517,7 @@ async def handle_call_events_webhook(
             return HTMLResponse(str(response), media_type="application/xml")
 
     except Exception as e:
-        logger.error(f"ERROR occurred: {str(e)}", exc_info=True)
+        logger.error("ERROR occurred: %s", str(e), exc_info=True)
         logger.error("=== Call Events Webhook Failed ===")
         raise
 
@@ -1604,8 +1613,8 @@ async def handle_recording_callback(
     This is the simple, synchronous approach similar to feature/openai branch.
     """
     logger.info("🎙️ RECORDING CALLBACK WEBHOOK - VAPI-style")
-    logger.debug(f"📞 Call Session: {callSessionId}")
-    logger.debug(f"🤖 Agent: {agentId}")
+    logger.debug("📞 Call Session: %s", callSessionId)
+    logger.debug("🤖 Agent: %s", agentId)
 
     try:
         form_data = await request.form()
@@ -1632,10 +1641,10 @@ async def handle_recording_callback(
                         db, uuid.UUID(agentId), call_session.tenant_id
                     )
                     logger.debug(
-                        f"✅ Found call session and agent: {agent.name if agent else 'Unknown'}"
+                        "✅ Found call session and agent: %s", agent.name if agent else 'Unknown'
                     )
             except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning("⚠️ Invalid call session ID: %s", callSessionId)
 
         form_params = dict(form_data)
         if not await _validate_transfer_webhook_signature(
@@ -1648,10 +1657,10 @@ async def handle_recording_callback(
             )
             raise HTTPException(status_code=403, detail="Invalid Twilio signature")
 
-        logger.debug(f"🎵 Recording URL: {recording_url}")
-        logger.debug(f"📝 Recording SID: {recording_sid}")
-        logger.debug(f"⏱️ Duration: {recording_duration}s")
-        logger.debug(f"📊 Status: {recording_status}")
+        logger.debug("🎵 Recording URL: %s", recording_url)
+        logger.debug("📝 Recording SID: %s", recording_sid)
+        logger.debug("⏱️ Duration: %ss", recording_duration)
+        logger.debug("📊 Status: %s", recording_status)
 
         # IMPORTANT: Twilio calls this webhook twice:
         # 1. 'action' callback (no status, has URL) - User finished speaking → PROCESS THIS for TTS
@@ -1661,7 +1670,7 @@ async def handle_recording_callback(
             # This is a status callback, not the action callback
             # We don't need to return TTS here, just acknowledge
             logger.debug(
-                f"ℹ️ Recording status callback (status={recording_status}) - acknowledging only, no TTS"
+                "ℹ️ Recording status callback (status=%s) - acknowledging only, no TTS", recording_status
             )
             return HTMLResponse("", media_type="application/xml")
 
@@ -1703,19 +1712,19 @@ async def handle_recording_callback(
 
                 if audio_response.status_code != 200:
                     logger.error(
-                        f"❌ Failed to download recording: HTTP {audio_response.status_code}"
+                        "❌ Failed to download recording: HTTP %s", audio_response.status_code
                     )
                     raise Exception(
                         f"Failed to download recording: HTTP {audio_response.status_code}"
                     )
 
                 audio_content = audio_response.content
-                logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
+                logger.debug("✅ Downloaded %s bytes of audio", len(audio_content))
 
                 language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
 
                 logger.debug(
-                    f"🎙️ Transcribing with Deepgram STT (language: {language_code})..."
+                    "🎙️ Transcribing with Deepgram STT (language: %s)...", language_code
                 )
 
                 from app.services.deepgram_stt_service import deepgram_stt_service
@@ -1727,8 +1736,8 @@ async def handle_recording_callback(
                 transcript = stt_result.get("transcript", "").strip()
                 confidence = stt_result.get("confidence", 0.0)
 
-                logger.info(f"📝 Deepgram STT Transcript: '{transcript}'")
-                logger.debug(f"📊 Confidence: {confidence:.2f}")
+                logger.info("📝 Deepgram STT Transcript: '%s'", transcript)
+                logger.debug("📊 Confidence: %s", format(confidence, '.2f'))
 
                 # If we have a transcript, process it
                 if transcript:
@@ -1770,7 +1779,7 @@ async def handle_recording_callback(
                         call_session_id=call_session.id,
                     )
 
-                    logger.info(f"✅ Agent response: '{response_text}'")
+                    logger.info("✅ Agent response: '%s'", response_text)
 
                     # Add agent response to transcript
                     await add_to_transcript(
@@ -1791,7 +1800,7 @@ async def handle_recording_callback(
                         response.hangup()
                         twiml_str = str(response)
                         logger.debug(
-                            f"📤 Returning TwiML (goodbye): {twiml_str[:200]}..."
+                            "📤 Returning TwiML (goodbye): %s...", twiml_str[:200]
                         )
                         return HTMLResponse(twiml_str, media_type="application/xml")
 
@@ -1812,7 +1821,7 @@ async def handle_recording_callback(
                     db.commit()
 
                     logger.debug(
-                        f"💾 Stored pending TTS in metadata: '{response_text[:50]}...'"
+                        "💾 Stored pending TTS in metadata: '%s...'", response_text[:50]
                     )
 
                     # Build TwiML for TTS-only WebSocket streaming + Recording
@@ -1827,7 +1836,7 @@ async def handle_recording_callback(
                     )
 
                     logger.debug("🎵 Returning TwiML with TTS WebSocket streaming")
-                    logger.debug(f"📤 TwiML: {twiml_str[:200]}...")
+                    logger.debug("📤 TwiML: %s...", twiml_str[:200])
                     return HTMLResponse(twiml_str, media_type="application/xml")
 
                 else:
@@ -1860,7 +1869,7 @@ async def handle_recording_callback(
                     return HTMLResponse(str(response), media_type="application/xml")
 
             except Exception as e:
-                logger.error(f"❌ Error processing recording: {e}", exc_info=True)
+                logger.error("❌ Error processing recording: %s", e, exc_info=True)
 
                 # Fallback response
                 response = VoiceResponse()
@@ -1914,7 +1923,7 @@ async def handle_recording_callback(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error in recording callback webhook: {e}", exc_info=True)
+        logger.error("❌ Error in recording callback webhook: %s", e, exc_info=True)
 
         # Ultimate fallback - use streaming TwiML if we have session info
         if call_session and agent:
@@ -1955,10 +1964,10 @@ async def handle_gather_speech_webhook(
         speech_result = form_data.get("SpeechResult", "")  # Twilio's transcription
         confidence = form_data.get("Confidence", "0")
 
-        logger.debug(f"📞 Call SID: {call_sid}")
-        logger.debug(f"🎤 Twilio Speech Result: {speech_result}")
-        logger.debug(f"📊 Confidence: {confidence}")
-        logger.debug(f"🎵 Recording URL: {recording_url}")
+        logger.debug("📞 Call SID: %s", call_sid)
+        logger.debug("🎤 Twilio Speech Result: %s", speech_result)
+        logger.debug("📊 Confidence: %s", confidence)
+        logger.debug("🎵 Recording URL: %s", recording_url)
 
         # Get call session
         call_session = None
@@ -1968,9 +1977,9 @@ async def handle_gather_speech_webhook(
                 call_session = call_session_service.get_call_session_by_id(
                     db, session_uuid
                 )
-                logger.debug(f"✅ Found call session: {call_session.id}")
+                logger.debug("✅ Found call session: %s", call_session.id)
             except ValueError:
-                logger.warning(f"⚠️ Invalid call session ID: {callSessionId}")
+                logger.warning("⚠️ Invalid call session ID: %s", callSessionId)
 
         # Get agent
         agent = None
@@ -1979,9 +1988,9 @@ async def handle_gather_speech_webhook(
                 agent = agent_service.get_agent_by_id(
                     db, uuid.UUID(agentId), call_session.tenant_id
                 )
-                logger.debug(f"✅ Agent: {agent.name}")
+                logger.debug("✅ Agent: %s", agent.name)
             except Exception as e:
-                logger.warning(f"⚠️ Error fetching agent: {e}")
+                logger.warning("⚠️ Error fetching agent: %s", e)
 
         form_params = dict(form_data)
         if not await _validate_transfer_webhook_signature(
@@ -2020,14 +2029,14 @@ async def handle_gather_speech_webhook(
                 audio_response = requests.get(auth_url, timeout=10)
                 audio_content = audio_response.content
 
-                logger.debug(f"✅ Downloaded {len(audio_content)} bytes of audio")
+                logger.debug("✅ Downloaded %s bytes of audio", len(audio_content))
 
                 from app.services.deepgram_stt_service import deepgram_stt_service
 
                 language_code = (settings.DEEPGRAM_STT_LANGUAGE or "en").strip()
 
                 logger.debug(
-                    f"🎙️ Transcribing with Deepgram STT (language: {language_code})..."
+                    "🎙️ Transcribing with Deepgram STT (language: %s)...", language_code
                 )
 
                 stt_result = await deepgram_stt_service.transcribe_audio_chunk(
@@ -2037,8 +2046,8 @@ async def handle_gather_speech_webhook(
                 dg_transcript = stt_result.get("transcript", "")
                 dg_confidence = stt_result.get("confidence", 0.0)
 
-                logger.info(f"📝 Deepgram STT Transcript: '{dg_transcript}'")
-                logger.debug(f"📊 Deepgram STT Confidence: {dg_confidence:.2f}")
+                logger.info("📝 Deepgram STT Transcript: '%s'", dg_transcript)
+                logger.debug("📊 Deepgram STT Confidence: %s", format(dg_confidence, '.2f'))
 
                 # Use Deepgram transcript (more accurate)
                 final_transcript = dg_transcript if dg_transcript else speech_result
@@ -2072,7 +2081,7 @@ async def handle_gather_speech_webhook(
                         message_type="agent_response",
                     )
 
-                    logger.info(f"✅ Generated agent response: '{response_text}'")
+                    logger.info("✅ Generated agent response: '%s'", response_text)
 
                     # Create response TwiML
                     response = VoiceResponse()
@@ -2115,11 +2124,11 @@ async def handle_gather_speech_webhook(
                         method="POST",
                     )
 
-                    logger.debug(f"📝 Response TwiML: {str(response)[:200]}...")
+                    logger.debug("📝 Response TwiML: %s...", str(response)[:200])
                     return HTMLResponse(str(response), media_type="application/xml")
 
             except Exception as e:
-                logger.error(f"❌ Error processing gathered speech: {e}", exc_info=True)
+                logger.error("❌ Error processing gathered speech: %s", e, exc_info=True)
 
         # Fallback response
         response = VoiceResponse()
@@ -2143,7 +2152,7 @@ async def handle_gather_speech_webhook(
         return HTMLResponse(str(response), media_type="application/xml")
 
     except Exception as e:
-        logger.error(f"❌ Error in gather speech webhook: {e}", exc_info=True)
+        logger.error("❌ Error in gather speech webhook: %s", e, exc_info=True)
         raise
 
 
@@ -2166,11 +2175,11 @@ async def handle_recording_status_webhook(
         recording_duration = form_data.get("RecordingDuration")
 
         logger.info("🎙️ RECORDING STATUS UPDATE")
-        logger.debug(f"Recording SID: {recording_sid}")
-        logger.debug(f"Call SID: {call_sid}")
-        logger.debug(f"Status: {recording_status}")
-        logger.debug(f"URL: {recording_url}")
-        logger.debug(f"Duration: {recording_duration}")
+        logger.debug("Recording SID: %s", recording_sid)
+        logger.debug("Call SID: %s", call_sid)
+        logger.debug("Status: %s", recording_status)
+        logger.debug("URL: %s", recording_url)
+        logger.debug("Duration: %s", recording_duration)
 
         # Find the call session
         call_session = (
@@ -2196,7 +2205,7 @@ async def handle_recording_status_webhook(
                     call_session.recording_url = recording_url
                     db.commit()
                     logger.info(
-                        f"✅ Updated call session {call_session.id} with recording URL"
+                        "✅ Updated call session %s with recording URL", call_session.id
                     )
 
                     # Broadcast call status update when recording is completed (non-blocking - fire and forget)
@@ -2214,18 +2223,18 @@ async def handle_recording_status_webhook(
                             )
                         )
                         logger.debug(
-                            f"✅ Queued recording completed status update for session {call_session.id}"
+                            "✅ Queued recording completed status update for session %s", call_session.id
                         )
                     except Exception as e:
                         logger.warning(
-                            f"⚠️ Failed to queue recording completed status update (non-critical): {e}"
+                            "⚠️ Failed to queue recording completed status update (non-critical): %s", e
                         )
                 else:
                     logger.debug(
-                        f"📝 Recording status: {recording_status} - URL not ready yet"
+                        "📝 Recording status: %s - URL not ready yet", recording_status
                     )
             else:
-                logger.warning(f"⚠️ Call session not found for SID: {call_sid}")
+                logger.warning("⚠️ Call session not found for SID: %s", call_sid)
 
         # Return empty TwiML response
         return HTMLResponse("", media_type="application/xml")
@@ -2233,7 +2242,7 @@ async def handle_recording_status_webhook(
     except HTTPException:
         raise
     except Exception as e:
-        logger.warning(f"⚠️ Error handling recording status webhook: {e}")
+        logger.warning("⚠️ Error handling recording status webhook: %s", e)
         return HTMLResponse("", media_type="application/xml")
 
 
@@ -2663,7 +2672,7 @@ async def end_call(
                 )
             )
         except Exception as e:
-            logger.warning(f"⚠️ Failed to broadcast call ended event: {e}")
+            logger.warning("⚠️ Failed to broadcast call ended event: %s", e)
 
         return SuccessResponse(
             data={
@@ -2679,7 +2688,7 @@ async def end_call(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error ending call: {e}", exc_info=True)
+        logger.error("❌ Error ending call: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to end call")
 
 
@@ -2727,14 +2736,14 @@ async def get_recording_access(
         # Create authenticated Twilio URL for server-side download
         authenticated_url = f"https://{account_sid}:{auth_token}@api.twilio.com/2010-04-01/Accounts/{account_sid}/Recordings/{recording_sid}.mp3"
 
-        logger.info(f"📥 Streaming recording for call session: {call_session_id}")
-        logger.debug(f"🎵 Recording SID: {recording_sid}")
+        logger.info("📥 Streaming recording for call session: %s", call_session_id)
+        logger.debug("🎵 Recording SID: %s", recording_sid)
 
         # Download recording from Twilio (server-side with auth)
         response = requests.get(authenticated_url, stream=True, timeout=30)
 
         if response.status_code != 200:
-            logger.error(f"❌ Failed to fetch recording: HTTP {response.status_code}")
+            logger.error("❌ Failed to fetch recording: HTTP %s", response.status_code)
             raise HTTPException(
                 status_code=500,
                 detail=f"Failed to fetch recording from Twilio: HTTP {response.status_code}",
@@ -2756,10 +2765,10 @@ async def get_recording_access(
     except HTTPException:
         raise
     except requests.RequestException as e:
-        logger.error(f"❌ Network error fetching recording: {e}")
+        logger.error("❌ Network error fetching recording: %s", e)
         raise HTTPException(status_code=500, detail=f"Network error: {str(e)}")
     except Exception as e:
-        logger.error(f"❌ Error streaming recording: {e}", exc_info=True)
+        logger.error("❌ Error streaming recording: %s", e, exc_info=True)
         raise HTTPException(
             status_code=500, detail=f"Failed to stream recording: {str(e)}"
         )

@@ -300,7 +300,7 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                 })
                 
     except Exception as e:
-        logger.error(f"Live voice WebSocket error: {e}", exc_info=True)
+        logger.error("Live voice WebSocket error: %s", e, exc_info=True)
     finally:
         # Update call session status when session ends
         try:
@@ -313,9 +313,9 @@ Always respond as {agent_name}, a real person, not as any kind of system or tool
                     ended_reason="WebSocket disconnected",
                     success_evaluation="success"
                 )
-                logger.info(f"Updated live voice call session {call_session.id} to completed")
+                logger.info("Updated live voice call session %s to completed", call_session.id)
         except Exception as e:
-            logger.error(f"Error updating call session on disconnect: {e}")
+            logger.error("Error updating call session on disconnect: %s", e)
         
         manager.disconnect(session_id)
 
@@ -533,7 +533,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             try:
                                 api_key = decrypt_api_key(model.api_key)
                             except Exception as e:
-                                logger.warning(f"⚠️ Failed to decrypt model API key: {e}")
+                                logger.warning("⚠️ Failed to decrypt model API key: %s", e)
                         
                         # Route to appropriate service
                         if 'gemini' in provider_name or 'google' in provider_name:
@@ -549,7 +549,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             )
                             ai_response_text = gemini_response["content"]
                             response_time = gemini_response["response_time"]
-                            logger.info(f"✅ Live voice: Used Vertex Gemini model {model_name} (provider: {provider_name})")
+                            logger.info("✅ Live voice: Used Vertex Gemini model %s (provider: %s)", model_name, provider_name)
                         
                         elif 'openai' in provider_name:
                             # Use OpenAI service
@@ -564,11 +564,11 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
                             )
                             ai_response_text = openai_response["response"]
                             response_time = openai_response["response_time"]
-                            logger.info(f"✅ Live voice: Used OpenAI model {model_name} (provider: {provider_name})")
+                            logger.info("✅ Live voice: Used OpenAI model %s (provider: %s)", model_name, provider_name)
                         
                         else:
                             # Unsupported provider - fall back to default OpenAI
-                            logger.warning(f"⚠️ Unsupported provider {provider_name}, falling back to default OpenAI")
+                            logger.warning("⚠️ Unsupported provider %s, falling back to default OpenAI", provider_name)
                             openai_response = openai_service.process_agent_conversation(
                                 user_input=user_input,
                                 agent_system_prompt=agent_data["agent_system_prompt"] or "You are a helpful assistant.",
@@ -610,7 +610,7 @@ async def process_with_ai_live(session_id: str, user_input: str, session_data: d
             response_time = openai_response["response_time"]
             
         except Exception as e:
-            logger.error(f"Error processing with AI: {e}", exc_info=True)
+            logger.error("Error processing with AI: %s", e, exc_info=True)
             # import traceback
             # traceback.print_exc()
             ai_response_text = "I'm sorry, but I'm having trouble processing your request right now. Please try again."

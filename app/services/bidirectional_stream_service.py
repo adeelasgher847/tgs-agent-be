@@ -94,7 +94,7 @@ async def generate_mulaw_tts(
         )
 
         if cache_key in audio_cache:
-            logger.debug(f"✅ Serving cached MULAW TTS ('{text[:30]}...')")
+            logger.debug("✅ Serving cached MULAW TTS ('%s...')", text[:30])
             return audio_cache[cache_key]
 
         if provider_slug == "google":
@@ -107,7 +107,7 @@ async def generate_mulaw_tts(
             # Use 8kHz MULAW for Twilio with Chirp 3: HD model - Optimized for small chunks
             # Google TTS auto-detects SSML if text starts with <speak>
             # Let SSML control prosody (use defaults when SSML present, don't override)
-            logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider=google, chirp3_hd={use_chirp3_hd}, ssml={use_ssml}]")
+            logger.info("🎤 Generating fresh MULAW TTS ('%s...') [provider=google, chirp3_hd=%s, ssml=%s]", text[:30], use_chirp3_hd, use_ssml)
             audio_content = google_tts_service.text_to_speech(
                 text=tts_text,
                 language=lang,
@@ -133,7 +133,7 @@ async def generate_mulaw_tts(
                 settings_json = dict(getattr(agent, "tts_settings_json", None) or {})
             settings_json.setdefault("output_format", "ulaw_8000")
             adapter = get_tts_adapter(provider_slug)
-            logger.info(f"🎤 Generating fresh MULAW TTS ('{text[:30]}...') [provider={provider_slug}]")
+            logger.info("🎤 Generating fresh MULAW TTS ('%s...') [provider=%s]", text[:30], provider_slug)
             # adapter.synthesize() is a blocking sync call (network round-trip
             # for Rime/ElevenLabs, or a bridged asyncio.run() for Rime's async
             # backend) — this function is awaited directly on the caller's
@@ -157,7 +157,7 @@ async def generate_mulaw_tts(
         audio_cache[cache_key] = audio_content
         return audio_content
     except Exception as e:
-        logger.error(f"❌ Error in generate_mulaw_tts: {e}", exc_info=True)
+        logger.error("❌ Error in generate_mulaw_tts: %s", e, exc_info=True)
         raise
 
 
@@ -184,7 +184,7 @@ def build_streaming_twiml(call_session_id: str, agent_id: str) -> str:
     connect.append(stream)
     vr.append(connect)
 
-    logger.debug(f"Built bidirectional streaming TwiML for session {call_session_id}")
+    logger.debug("Built bidirectional streaming TwiML for session %s", call_session_id)
     return str(vr)
 
 
@@ -236,6 +236,6 @@ def build_tts_only_twiml(call_session_id: str, agent_id: str, record_callback_ur
         transcribe=False
     )
     
-    logger.debug(f"🛠️ Built TTS-only TwiML for session {call_session_id}")
+    logger.debug("🛠️ Built TTS-only TwiML for session %s", call_session_id)
     return str(vr)
 

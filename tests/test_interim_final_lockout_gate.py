@@ -12,6 +12,7 @@ import uuid
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.core.config import settings
 from app.routers.bidirectional_stream import BidirectionalStreamHandler
 
 class DummyWebSocket:
@@ -49,8 +50,9 @@ async def test_case_a_interim_valid_no_duplicate():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     assert handler._turn_response_started is True
     assert handler._llm_response_task is not None
 
@@ -62,7 +64,7 @@ async def test_case_a_interim_valid_no_duplicate():
 
     # Verify: LLM was called ONCE (by interim) and NOT duplicated by speech_final
     assert len(llm_generated_texts) == 1
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
 
 @pytest.mark.asyncio
 async def test_case_b_interim_empty_final_generated():
@@ -83,7 +85,7 @@ async def test_case_b_interim_empty_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             # Interim produces empty/no response
             return ""
         return "Final response for interview scheduling."
@@ -94,8 +96,9 @@ async def test_case_b_interim_empty_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     await handler._llm_response_task
 
     # 2. Final arrives ("I want to schedule an interview.")
@@ -103,7 +106,7 @@ async def test_case_b_interim_empty_final_generated():
 
     # Verify: Final LLM was generated because interim produced empty response!
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
@@ -125,7 +128,7 @@ async def test_case_c_interim_failed_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             raise RuntimeError("Primary LLM network timeout")
         return "Final response for interview scheduling."
 
@@ -135,8 +138,9 @@ async def test_case_c_interim_failed_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     try:
         await handler._llm_response_task
     except Exception:
@@ -147,7 +151,7 @@ async def test_case_c_interim_failed_final_generated():
 
     # Verify: Final LLM was generated because interim failed!
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
@@ -169,7 +173,7 @@ async def test_case_d_interim_cancelled_final_generated():
 
     async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
         llm_generated_texts.append(user_text)
-        if user_text == "I want to":
+        if user_text == "I want to schedule an":
             await asyncio.sleep(1.0) # Long running task to be cancelled
             return "Should not reach here"
         return "Final response for interview scheduling."
@@ -180,8 +184,9 @@ async def test_case_d_interim_cancelled_final_generated():
     handler._run_speculative_tts_prefetch = AsyncMock()
     handler._should_accept_final_transcript = MagicMock(return_value=True)
 
-    # 1. Interim arrives ("I want to")
-    await handler._maybe_process_interim("I want to", 0.90)
+    # 1. Interim arrives ("I want to schedule an", 5 words -- satisfies the
+    # VOICE_MIN_INTERIM_WORDS=4 default gate).
+    await handler._maybe_process_interim("I want to schedule an", 0.90)
     await asyncio.sleep(0.01)  # Yield to let interim task start
 
     # Cancel the interim task
@@ -197,7 +202,7 @@ async def test_case_d_interim_cancelled_final_generated():
     # Verify: Final LLM was generated because interim was cancelled!
     assert "I want to schedule an interview." in llm_generated_texts
     assert len(llm_generated_texts) == 2
-    assert llm_generated_texts[0] == "I want to"
+    assert llm_generated_texts[0] == "I want to schedule an"
     assert llm_generated_texts[1] == "I want to schedule an interview."
 
 @pytest.mark.asyncio
@@ -535,6 +540,295 @@ async def test_case_f_slow_but_valid_interim_not_duplicated_under_latency():
         f"even when the interim is slower than the 2.5s fallback timeout, "
         f"got {len(calls)} calls: {calls} (duplicate-audio-under-latency regression)"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Configurable turn timeout (VOICE_TURN_TIMEOUT_SEC)
+#
+# `_complete_llm_turn_after_stt_final` used to hardcode
+# `asyncio.wait_for(self.generate_and_stream_response(...), timeout=12.0)`.
+# It now resolves the timeout from `settings.VOICE_TURN_TIMEOUT_SEC` (falling
+# back to 20.0, matching both the Settings field's own default in
+# app/core/config.py and the browser handler's fallback, so the two
+# transports share one real-world default). See the equivalent `_timeout`
+# resolution in
+# app/voice/livekit_browser_call_handler.py::_complete_llm_turn_after_stt_final.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_plain_final_handler() -> BidirectionalStreamHandler:
+    """A handler with no interim in-flight, ready to go straight through
+    `_complete_llm_turn_after_stt_final`'s Phase-2 generate-and-wait path."""
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.agent = MagicMock()
+    handler._enable_interim_llm = False
+    handler._add_to_transcript = AsyncMock()
+    handler._prefetch_rag_context = AsyncMock()
+    handler._run_speculative_tts_prefetch = AsyncMock()
+    handler._should_accept_final_transcript = MagicMock(return_value=True)
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_uses_configured_setting_value(monkeypatch, caplog):
+    """When VOICE_TURN_TIMEOUT_SEC is overridden (e.g. to 0.05s), that value
+    -- not the old hardcoded 12.0 -- gates asyncio.wait_for."""
+    monkeypatch.setattr(settings, "VOICE_TURN_TIMEOUT_SEC", 0.05, raising=False)
+
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        # Longer than the configured 0.05s timeout, but far shorter than the
+        # old hardcoded 12.0s -- only fails/times out if the new setting is
+        # actually being honored.
+        await asyncio.sleep(0.3)
+        return "late answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    start = time.monotonic()
+    with caplog.at_level("ERROR"):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, f"expected wait_for to bail around 0.05s, took {elapsed:.2f}s"
+    assert any(
+        "generate_and_stream_response timed out" in r.message and "0.1s" in r.message
+        for r in caplog.records
+    ), f"expected timeout log reflecting the configured 0.05s value, got: {[r.message for r in caplog.records]}"
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_falls_back_to_twenty_seconds_when_falsy(monkeypatch):
+    """When VOICE_TURN_TIMEOUT_SEC is explicitly falsy (e.g. 0.0), the `or`
+    fallback kicks in and resolves to 20.0 -- verified here by patching
+    asyncio.wait_for directly (a real multi-second sleep is impractical in a
+    unit test) and asserting the timeout kwarg it was called with."""
+    monkeypatch.setattr(settings, "VOICE_TURN_TIMEOUT_SEC", 0.0, raising=False)
+
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        return "quick answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    captured_timeout = {}
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(aw, timeout=None):
+        captured_timeout["value"] = timeout
+        return await real_wait_for(aw, timeout=timeout)
+
+    with patch("app.routers.bidirectional_stream.asyncio.wait_for", side_effect=spy_wait_for):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+
+    assert captured_timeout.get("value") == 20.0
+
+
+@pytest.mark.asyncio
+async def test_turn_timeout_uses_real_default_setting_when_not_overridden():
+    """Regression guard: with settings.VOICE_TURN_TIMEOUT_SEC left completely
+    unpatched (its real Settings-field default), the resolved timeout must
+    equal that real default -- not a stale hardcoded literal that would
+    silently diverge from app/core/config.py's actual default over time."""
+    handler = _make_plain_final_handler()
+
+    async def mock_generate(user_text: str, confidence: float = 1.0, is_greeting: bool = False):
+        return "quick answer"
+
+    handler.generate_and_stream_response = mock_generate
+
+    captured_timeout = {}
+    real_wait_for = asyncio.wait_for
+
+    async def spy_wait_for(aw, timeout=None):
+        captured_timeout["value"] = timeout
+        return await real_wait_for(aw, timeout=timeout)
+
+    with patch("app.routers.bidirectional_stream.asyncio.wait_for", side_effect=spy_wait_for):
+        await handler._complete_llm_turn_after_stt_final("hello there", 0.95)
+
+    assert captured_timeout.get("value") == settings.VOICE_TURN_TIMEOUT_SEC
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F-11: Call-drop reconnect recognition — Twilio path
+#
+# app/routers/voice.py::handle_incoming_call links a reconnected caller onto
+# the new CallSession (parent_call_id + call_metadata["is_reconnect"]).
+# BidirectionalStreamHandler (this file's target) is the handler that
+# actually serves Twilio calls, so it — not ConversationOrchestrator, which
+# only serves the LiveKit-browser demo-link transport — must read that flag
+# to ground the system prompt and override the scripted greeting.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_reconnect_handler(is_reconnect: bool) -> BidirectionalStreamHandler:
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    handler.call_session.call_type = "inbound"
+    handler.call_session.call_metadata = (
+        {"is_reconnect": True, "reconnect_from_session_id": str(uuid.uuid4())}
+        if is_reconnect
+        else {}
+    )
+    handler.agent = MagicMock()
+    handler.agent.greeting_message = "Hello! Welcome to Acme Support."
+    handler.agent.first_message = None
+    handler.agent.transfer_route = None
+    handler.agent.model = None
+    handler.db = None
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_includes_reconnect_instruction_when_flagged():
+    handler = _make_reconnect_handler(is_reconnect=True)
+
+    result = await handler._build_system_prompt_full("", 1.0)
+
+    assert "RECONNECTING CALLER" in result.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_omits_reconnect_instruction_when_not_flagged():
+    handler = _make_reconnect_handler(is_reconnect=False)
+
+    result = await handler._build_system_prompt_full("", 1.0)
+
+    assert "RECONNECTING CALLER" not in result.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_reconnect_greeting_overrides_static_greeting_on_twilio_path():
+    handler = _make_reconnect_handler(is_reconnect=True)
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+
+    await handler.generate_and_stream_response("", 1.0, is_greeting=True)
+
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert "cut off" in queued["text"].lower()
+    assert queued["text"] != handler.agent.greeting_message
+
+
+@pytest.mark.asyncio
+async def test_normal_greeting_used_when_not_reconnect_on_twilio_path():
+    handler = _make_reconnect_handler(is_reconnect=False)
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+
+    await handler.generate_and_stream_response("", 1.0, is_greeting=True)
+
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert queued["text"] == handler.agent.greeting_message
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-tenant daily LLM token budget gate (app.services.token_budget_service)
+#
+# generate_and_stream_response's non-greeting path calls
+# token_budget_service.check_daily_budget() right after the greeting
+# early-return, before building the system prompt / calling the LLM. This
+# reuses the `_make_reconnect_handler`-style fixture rather than the full
+# `db`-backed Postgres integration harness, since only the boolean gating
+# behavior (not the service's own Redis/DB logic — see
+# tests/services/test_token_budget_service.py) needs coverage here.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _make_budget_gate_handler() -> BidirectionalStreamHandler:
+    handler = BidirectionalStreamHandler(
+        websocket=DummyWebSocket(),
+        call_session_id=str(uuid.uuid4()),
+        agent_id=str(uuid.uuid4()),
+        db=None,
+    )
+    handler.call_session = MagicMock()
+    handler.call_session.id = uuid.uuid4()
+    handler.call_session.tenant_id = uuid.uuid4()
+    # Budget gate only runs when both call_session and db are truthy.
+    handler.db = MagicMock()
+    handler.agent = MagicMock()
+    handler.agent.greeting_message = "Hello! Welcome."
+    handler.agent.first_message = None
+    handler.agent.transfer_route = None
+    handler.agent.model = None
+    handler._add_to_transcript = AsyncMock()
+    handler._tts_pipeline = MagicMock()
+    handler._tts_pipeline.queue_tts = AsyncMock()
+    return handler
+
+
+@pytest.mark.asyncio
+async def test_budget_exceeded_blocks_turn_and_queues_refusal_without_llm():
+    handler = _make_budget_gate_handler()
+    handler._build_system_prompt_full = AsyncMock(
+        side_effect=AssertionError("LLM path must not be reached when budget is exceeded")
+    )
+
+    with patch(
+        "app.routers.bidirectional_stream.token_budget_service.check_daily_budget",
+        new=AsyncMock(return_value=(False, 999999, 500000)),
+    ):
+        await handler.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+
+    # Turn was short-circuited: refusal message queued via TTS, LLM never
+    # invoked.
+    handler._build_system_prompt_full.assert_not_awaited()
+    handler._tts_pipeline.queue_tts.assert_awaited_once()
+    queued = handler._tts_pipeline.queue_tts.await_args.args[0]
+    assert "daily AI usage limit" in queued["text"]
+    assert queued["chunk_id"] == "budget_exceeded"
+
+    handler._add_to_transcript.assert_awaited_once()
+    transcript_args = handler._add_to_transcript.await_args.args
+    assert transcript_args[0] == "agent"
+    assert "daily AI usage limit" in transcript_args[1]
+
+
+@pytest.mark.asyncio
+async def test_budget_within_limit_proceeds_past_gate_to_llm_path():
+    handler = _make_budget_gate_handler()
+
+    # Once the gate lets the turn through, generate_and_stream_response goes
+    # on to build the system prompt (the real LLM/TTS pipeline is
+    # intentionally not exercised here — see module docstring above; that's
+    # covered by the pre-existing turn-completion tests in this file).
+    # Raising here is caught by generate_and_stream_response's own top-level
+    # except-Exception handler, giving a clean, cheap "did we get past the
+    # gate?" signal without a heavy end-to-end LLM/TTS fixture.
+    handler._build_system_prompt_full = AsyncMock(side_effect=RuntimeError("stop after gate"))
+
+    with patch(
+        "app.routers.bidirectional_stream.token_budget_service.check_daily_budget",
+        new=AsyncMock(return_value=(True, 100, 500000)),
+    ):
+        await handler.generate_and_stream_response("Hello there", 0.9, is_greeting=False)
+
+    # Turn proceeded past the budget gate: system prompt building was
+    # reached (no regression — the gate did not block a within-budget turn).
+    handler._build_system_prompt_full.assert_awaited_once()
+    # No refusal message queued.
+    handler._tts_pipeline.queue_tts.assert_not_awaited()
 
 
 

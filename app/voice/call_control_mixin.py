@@ -159,7 +159,7 @@ class CallControlMixin:
                             )
                         except Exception as e:
                             logger.debug(
-                                f"WebSocket broadcast failed after goodbye: {e}"
+                                "WebSocket broadcast failed after goodbye: %s", e
                             )
 
                     # Shut down STT + LLM + TTS and signal the main loop to exit
@@ -167,7 +167,7 @@ class CallControlMixin:
                     return True
 
                 except Exception as e:
-                    logger.error(f"Error ending call after goodbye: {e}", exc_info=True)
+                    logger.error("Error ending call after goodbye: %s", e, exc_info=True)
                     return False
 
         return False
@@ -255,12 +255,12 @@ class CallControlMixin:
                         },
                     )
                 except Exception as e:
-                    logger.debug(f"WebSocket broadcast after [END_CALL]: {e}")
+                    logger.debug("WebSocket broadcast after [END_CALL]: %s", e)
 
             # Shut down STT + LLM + TTS and signal the main loop to exit
             asyncio.create_task(self._full_shutdown())
         except Exception as e:
-            logger.error(f"Error ending call after [END_CALL]: {e}", exc_info=True)
+            logger.error("Error ending call after [END_CALL]: %s", e, exc_info=True)
 
     async def _transfer_after_agent_request(self):
         """Redirect live Twilio call to human transfer TwiML after TTS (cold Dial or warm Conference)."""
@@ -570,7 +570,7 @@ class CallControlMixin:
                             )
                         except Exception as e:
                             logger.debug(
-                                f"WebSocket broadcast failed after voicemail detection: {e}"
+                                "WebSocket broadcast failed after voicemail detection: %s", e
                             )
 
                     # Shut down STT + LLM + TTS and signal the main loop to exit
@@ -579,7 +579,7 @@ class CallControlMixin:
 
                 except Exception as e:
                     logger.error(
-                        f"Error ending call after voicemail detection: {e}",
+                        "Error ending call after voicemail detection: %s", e,
                         exc_info=True,
                     )
                     return False
@@ -805,14 +805,14 @@ class CallControlMixin:
                                 )
                             except Exception as e:
                                 logger.debug(
-                                    f"WebSocket broadcast failed after IVR detection: {e}"
+                                    "WebSocket broadcast failed after IVR detection: %s", e
                                 )
 
                         asyncio.create_task(self._full_shutdown())
                         return True
                     except Exception as e:
                         logger.error(
-                            f"Error ending call after IVR detection: {e}", exc_info=True
+                            "Error ending call after IVR detection: %s", e, exc_info=True
                         )
                         return False
                 else:
@@ -1145,12 +1145,12 @@ class CallControlMixin:
                             )
                         except Exception as e:
                             logger.debug(
-                                f"WebSocket broadcast failed after DTMF limit exceeded: {e}"
+                                "WebSocket broadcast failed after DTMF limit exceeded: %s", e
                             )
 
                     asyncio.create_task(self._full_shutdown())
                 except Exception as e:
-                    logger.error(f"Error ending call on DTMF limit: {e}", exc_info=True)
+                    logger.error("Error ending call on DTMF limit: %s", e, exc_info=True)
                 return
             else:
                 self._dtmf_buffer = ""
@@ -1177,7 +1177,7 @@ class CallControlMixin:
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Error flushing DTMF buffer: {e}", exc_info=True)
+            logger.error("Error flushing DTMF buffer: %s", e, exc_info=True)
         finally:
             self._dtmf_suppress_stt = False
 
@@ -1347,20 +1347,20 @@ class CallControlMixin:
                                 )
                             except Exception as b_err:
                                 logger.debug(
-                                    f"WebSocket broadcast failed after silence timeout: {b_err}"
+                                    "WebSocket broadcast failed after silence timeout: %s", b_err
                                 )
 
                         asyncio.create_task(self._full_shutdown())
                     except Exception as end_e:
                         logger.error(
-                            f"Error ending call on silence timeout: {end_e}",
+                            "Error ending call on silence timeout: %s", end_e,
                             exc_info=True,
                         )
                     break
         except asyncio.CancelledError:
             pass
         except Exception as e:
-            logger.error(f"Unexpected error in silence watchdog: {e}", exc_info=True)
+            logger.error("Unexpected error in silence watchdog: %s", e, exc_info=True)
         finally:
             self._silence_retry_count = 0
 
@@ -1439,7 +1439,7 @@ class CallControlMixin:
                     )
                 except Exception as b_err:
                     logger.debug(
-                        f"WebSocket broadcast failed after max duration reached: {b_err}"
+                        "WebSocket broadcast failed after max duration reached: %s", b_err
                     )
 
             asyncio.create_task(self._full_shutdown())
@@ -1447,7 +1447,7 @@ class CallControlMixin:
             pass
         except Exception as e:
             logger.error(
-                f"Unexpected error in max duration watchdog: {e}", exc_info=True
+                "Unexpected error in max duration watchdog: %s", e, exc_info=True
             )
 
     async def _add_to_transcript(
@@ -1573,4 +1573,4 @@ class CallControlMixin:
                 )
 
         except Exception as e:
-            logger.error(f"Error in _add_to_transcript: {e}", exc_info=True)
+            logger.error("Error in _add_to_transcript: %s", e, exc_info=True)

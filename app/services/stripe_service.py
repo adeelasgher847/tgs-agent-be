@@ -322,12 +322,12 @@ class StripeService:
 
         tenant = db.query(Tenant).filter(Tenant.id == tenant_id).first()
         if not tenant:
-            logger.error(f"Tenant with ID {tenant_id} not found")
+            logger.error("Tenant with ID %s not found", tenant_id)
             return
 
         plan = db.query(Plan).filter(Plan.id == plan_id).first()
         if not plan:
-            logger.error(f"Plan with ID {plan_id} not found")
+            logger.error("Plan with ID %s not found", plan_id)
             return
 
         # Add credits from the plan to the tenant's account
@@ -336,7 +336,7 @@ class StripeService:
         db.commit()
         db.refresh(tenant)
 
-        logger.info(f"Added {plan.credits} credits to tenant {tenant.id}")
+        logger.info("Added %s credits to tenant %s", plan.credits, tenant.id)
 
     # -------------------------------------------------------------------------
     # In-call payment helpers (Sprint — Stripe PaymentIntent + Webhook)

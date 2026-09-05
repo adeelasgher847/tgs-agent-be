@@ -23043,6 +23043,9 @@ components:
           type: boolean
           title: Cancel At Period End
           default: false
+        llm_token_budget_daily:
+          type: integer
+          nullable: true
       type: object
       required:
       - minutes_used_this_cycle

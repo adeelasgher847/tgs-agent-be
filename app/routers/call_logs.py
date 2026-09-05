@@ -51,10 +51,10 @@ async def get_call_logs(
     """
     try:
         logger.info("📊 GETTING CALL LOGS")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
-        logger.debug(f"📄 Page: {page}, Per Page: {per_page}")
-        logger.debug(f"🔍 Filters: type={call_type}, success={success_evaluation}, agent={agent_id}")
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
+        logger.debug("📄 Page: %s, Per Page: %s", page, per_page)
+        logger.debug("🔍 Filters: type=%s, success=%s, agent=%s", call_type, success_evaluation, agent_id)
         
         # Create filters object
         filters = CallLogFilters(
@@ -76,8 +76,8 @@ async def get_call_logs(
             per_page=per_page
         )
         
-        logger.info(f"✅ Found {call_logs_result['total']} call logs")
-        logger.debug(f"📊 Stats: {call_logs_result['stats']}")
+        logger.info("✅ Found %s call logs", call_logs_result['total'])
+        logger.debug("📊 Stats: %s", call_logs_result['stats'])
         
         return create_success_response(
             call_logs_result,
@@ -85,7 +85,7 @@ async def get_call_logs(
         )
         
     except Exception as e:
-        logger.error(f"❌ Error getting call logs: {e}", exc_info=True)
+        logger.error("❌ Error getting call logs: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call logs: {str(e)}")
 
 
@@ -100,9 +100,9 @@ async def get_call_log_detail(
     """
     try:
         logger.info("📋 GETTING CALL LOG DETAIL")
-        logger.debug(f"🆔 Call Log ID: {call_log_id}")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug("🆔 Call Log ID: %s", call_log_id)
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
         
         # Get call log detail
         call_log = CallLogService.get_call_log_by_id(
@@ -114,10 +114,10 @@ async def get_call_log_detail(
         if not call_log:
             raise HTTPException(status_code=404, detail="Call log not found")
         
-        logger.info(f"✅ Found call log: {call_log.call_id}")
-        logger.debug(f"📞 Phone: {call_log.customer_phone_number}")
-        logger.debug(f"⏱️ Duration: {call_log.duration} seconds")
-        logger.debug(f"📊 Status: {call_log.success_evaluation}")
+        logger.info("✅ Found call log: %s", call_log.call_id)
+        logger.debug("📞 Phone: %s", call_log.customer_phone_number)
+        logger.debug("⏱️ Duration: %s seconds", call_log.duration)
+        logger.debug("📊 Status: %s", call_log.success_evaluation)
         
         return create_success_response(
             call_log,
@@ -127,7 +127,7 @@ async def get_call_log_detail(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error getting call log detail: {e}", exc_info=True)
+        logger.error("❌ Error getting call log detail: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call log detail: {str(e)}")
 
 
@@ -146,9 +146,9 @@ async def get_call_logs_stats(
     """
     try:
         logger.info("📈 GETTING CALL LOGS STATS")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
-        logger.debug(f"📅 Date Range: {date_from} to {date_to}")
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
+        logger.debug("📅 Date Range: %s to %s", date_from, date_to)
         
         # Get call logs statistics
         stats = CallLogService.get_call_logs_stats(
@@ -158,12 +158,12 @@ async def get_call_logs_stats(
             date_to=date_to
         )
         
-        logger.info(f"📊 Total Calls: {stats.total_calls}")
-        logger.debug(f"✅ Successful: {stats.successful_calls}")
-        logger.debug(f"❌ Failed: {stats.failed_calls}")
-        logger.debug(f"🔄 Transferred: {stats.transferred_calls}")
-        logger.debug(f"💰 Total Cost: ${stats.total_cost}")
-        logger.debug(f"⏱️ Avg Duration: {stats.average_duration} seconds")
+        logger.info("📊 Total Calls: %s", stats.total_calls)
+        logger.debug("✅ Successful: %s", stats.successful_calls)
+        logger.debug("❌ Failed: %s", stats.failed_calls)
+        logger.debug("🔄 Transferred: %s", stats.transferred_calls)
+        logger.debug("💰 Total Cost: $%s", stats.total_cost)
+        logger.debug("⏱️ Avg Duration: %s seconds", stats.average_duration)
         
         return create_success_response(
             stats,
@@ -171,7 +171,7 @@ async def get_call_logs_stats(
         )
         
     except Exception as e:
-        logger.error(f"❌ Error getting call logs stats: {e}", exc_info=True)
+        logger.error("❌ Error getting call logs stats: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get call logs stats: {str(e)}")
 
 
@@ -195,9 +195,9 @@ async def get_agent_call_logs(
     """
     try:
         logger.info("🤖 GETTING AGENT CALL LOGS")
-        logger.debug(f"🆔 Agent ID: {agent_id}")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
+        logger.debug("🆔 Agent ID: %s", agent_id)
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
         
         # Verify agent belongs to tenant
         agent = db.query(Agent).filter(
@@ -224,7 +224,7 @@ async def get_agent_call_logs(
             per_page=per_page
         )
         
-        logger.info(f"✅ Found {call_logs_result['total']} calls for agent: {agent.name}")
+        logger.info("✅ Found %s calls for agent: %s", call_logs_result['total'], agent.name)
         
         return create_success_response(
             {
@@ -241,7 +241,7 @@ async def get_agent_call_logs(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error getting agent call logs: {e}", exc_info=True)
+        logger.error("❌ Error getting agent call logs: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get agent call logs: {str(e)}")
 
 
@@ -256,9 +256,9 @@ async def get_recent_call_logs(
     """
     try:
         logger.info("🕐 GETTING RECENT CALL LOGS")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
-        logger.debug(f"📊 Limit: {limit}")
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
+        logger.debug("📊 Limit: %s", limit)
         
         # Get recent call logs
         recent_logs = CallLogService.get_recent_call_logs(
@@ -267,7 +267,7 @@ async def get_recent_call_logs(
             limit=limit
         )
         
-        logger.info(f"✅ Found {len(recent_logs)} recent call logs")
+        logger.info("✅ Found %s recent call logs", len(recent_logs))
         
         return create_success_response(
             {
@@ -278,7 +278,7 @@ async def get_recent_call_logs(
         )
         
     except Exception as e:
-        logger.error(f"❌ Error getting recent call logs: {e}", exc_info=True)
+        logger.error("❌ Error getting recent call logs: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get recent call logs: {str(e)}")
 
 
@@ -300,10 +300,10 @@ async def export_call_logs(
     """
     try:
         logger.info("📤 EXPORTING CALL LOGS")
-        logger.debug(f"👤 User: {user.email}")
-        logger.debug(f"🏢 Tenant: {user.current_tenant_id}")
-        logger.debug(f"📅 Date Range: {date_from} to {date_to}")
-        logger.debug(f"📄 Format: {format}")
+        logger.debug("👤 User: %s", user.email)
+        logger.debug("🏢 Tenant: %s", user.current_tenant_id)
+        logger.debug("📅 Date Range: %s to %s", date_from, date_to)
+        logger.debug("📄 Format: %s", format)
         
         # Get all call logs for export
         filters = CallLogFilters(
@@ -339,7 +339,7 @@ async def export_call_logs(
             )
         
     except Exception as e:
-        logger.error(f"❌ Error exporting call logs: {e}", exc_info=True)
+        logger.error("❌ Error exporting call logs: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to export call logs: {str(e)}")
 
 
@@ -391,7 +391,7 @@ async def send_call_analysis_email(
                     content = entry.get("content", "")
                     transcript_lines.append(f"{role}: {content}")
         except Exception as e:
-            logger.error(f"Failed to load transcript messages for session {session.id}: {e}", exc_info=True)
+            logger.error("Failed to load transcript messages for session %s: %s", session.id, e, exc_info=True)
             # As a final fallback, still try call_transcript
             session_transcript = session.call_transcript or []
             for entry in session_transcript:
@@ -410,9 +410,9 @@ async def send_call_analysis_email(
                 try:
                     api_key = decrypt_api_key(model.api_key)
                 except Exception as e:
-                    logger.error(f"Failed to decrypt API key for model '{model_name}': {e}", exc_info=True)
+                    logger.error("Failed to decrypt API key for model '%s': %s", model_name, e, exc_info=True)
         except Exception as e:
-            logger.error(f"Failed to load model configuration for '{model_name}': {e}", exc_info=True)
+            logger.error("Failed to load model configuration for '%s': %s", model_name, e, exc_info=True)
 
         if not api_key:
             raise HTTPException(
@@ -537,5 +537,5 @@ Call transcript (for reference):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"❌ Error sending call analysis email: {e}", exc_info=True)
+        logger.error("❌ Error sending call analysis email: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to send call analysis email: {str(e)}")

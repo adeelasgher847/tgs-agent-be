@@ -31,6 +31,7 @@ from app.models.tenant import Tenant
 from app.models.user import User
 from app.models.agent import Agent
 from app.models.call_session import CallSession
+from app.models.call_log import CallLog
 from app.models.usage_record import UsageRecord
 from app.services.credit_service import (
     CreditService,
@@ -59,6 +60,42 @@ class _CloseSafeSessionWrapper:
 def override_session_local(db):
     with patch("app.db.session.SessionLocal", lambda: _CloseSafeSessionWrapper(db)):
         yield
+
+
+class _FakeAsyncRedis:
+    """Minimal in-memory stand-in for the aioredis client used by
+    `_meter_tick_deduction`/`start_credit_monitoring`, implementing real
+    NX/INCRBYFLOAT semantics so wallet-sharing concurrency behavior can be
+    exercised without a live Redis server (mocking the external dependency
+    at the boundary, per repo testing conventions)."""
+
+    def __init__(self):
+        self.store: dict[str, float] = {}
+        self.ttls: dict[str, int] = {}
+        self.calls: list[tuple] = []
+
+    async def set(self, key, value, nx=False, ex=None):
+        self.calls.append(("set", key, float(value), nx, ex))
+        if nx and key in self.store:
+            return None
+        self.store[key] = float(value)
+        if ex is not None:
+            self.ttls[key] = ex
+        return True
+
+    async def exists(self, key):
+        self.calls.append(("exists", key))
+        return key in self.store
+
+    async def incrbyfloat(self, key, amount):
+        self.calls.append(("incrbyfloat", key, amount))
+        self.store[key] = self.store.get(key, 0.0) + amount
+        return self.store[key]
+
+    async def expire(self, key, ttl):
+        self.calls.append(("expire", key, ttl))
+        self.ttls[key] = ttl
+        return True
 
 
 @pytest.fixture
@@ -1508,3 +1545,439 @@ async def test_auto_recharge_task_tracked_and_cleaned_up_on_completion(
 
     assert seen_task_present.get("during") is True
     assert service._active_auto_recharge_tasks == {}
+
+
+# ---------------------------------------------------------------------------
+# Redis-metered real-time billing (_meter_tick_deduction / _pending_call_cost)
+#
+# Covers the production-bug fix: per-tick credit deductions during a live
+# call no longer write straight to Postgres (which caused row-lock
+# contention against concurrent transcript writes on the same `callsession`
+# row) — they're metered in Redis and settled in ONE DB write at call end.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_redis_path_decrements_without_db_write(
+    db, tenant, call_session, service
+):
+    """Happy path: Redis is available and already seeded — ticks must
+    decrement the Redis balance via INCRBYFLOAT, refresh the TTL, and
+    accumulate into `_pending_call_cost` WITHOUT touching Postgres."""
+    tenant.credits = Decimal("100")
+    db.commit()
+
+    call_log = CallLog(
+        call_session_id=call_session.id,
+        tenant_id=tenant.id,
+        call_id="short-id",
+        call_type="inbound",
+        cost=0.0,
+    )
+    db.add(call_log)
+    db.commit()
+
+    fake_redis = _FakeAsyncRedis()
+    key = service._redis_balance_key(tenant.id)
+    fake_redis.store[key] = 100.0
+    call_id_str = str(call_session.id)
+
+    with patch("app.utils.redis_client.get_redis", return_value=fake_redis):
+        success1, balance1 = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 6.0
+        )
+        success2, balance2 = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 4.0
+        )
+
+    assert success1 is True
+    assert balance1 == pytest.approx(94.0)
+    assert success2 is True
+    assert balance2 == pytest.approx(90.0)
+
+    # Accumulated across both ticks, ready for a single settlement at finalize.
+    assert service._pending_call_cost[call_id_str] == pytest.approx(10.0)
+
+    # No Postgres write happened for either tick.
+    db.refresh(tenant)
+    db.refresh(call_session)
+    db.refresh(call_log)
+    assert tenant.credits == Decimal("100")
+    assert float(call_session.cost or 0.0) == 0.0
+    assert float(call_log.cost or 0.0) == 0.0
+
+    incr_calls = [c for c in fake_redis.calls if c[0] == "incrbyfloat"]
+    assert incr_calls == [
+        ("incrbyfloat", key, -6.0),
+        ("incrbyfloat", key, -4.0),
+    ]
+    expire_calls = [c for c in fake_redis.calls if c[0] == "expire"]
+    assert len(expire_calls) == 2
+    assert fake_redis.ttls[key] == service.REDIS_BALANCE_TTL_SECONDS
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_redis_path_triggers_auto_recharge_mid_call(
+    db, tenant, call_session, service
+):
+    """A tenant crossing below their auto-recharge threshold on a
+    Redis-metered tick must still get a chance to be recharged BEFORE the
+    call is force-ended for insufficient credits — `deduct_credits` (and its
+    auto-recharge side effect) is now only called once at end-of-call for
+    this path, so `_meter_tick_deduction`'s Redis branch must trigger the
+    check itself on every tick, same as the pre-fix per-tick `deduct_credits`
+    call used to."""
+    tenant.credits = Decimal("10")
+    db.commit()
+    _auto_recharge_config(db, tenant, min_balance="8", recharge_amount="5")
+
+    fake_redis = _FakeAsyncRedis()
+    key = service._redis_balance_key(tenant.id)
+    fake_redis.store[key] = 10.0
+    call_id_str = str(call_session.id)
+
+    with patch("app.utils.redis_client.get_redis", return_value=fake_redis), patch.object(
+        service, "_execute_auto_recharge_charge"
+    ) as mock_charge:
+        # 10 -> 7, drops below min_balance (8) — must trigger the recharge
+        # check even though nothing was written to Postgres this tick.
+        success, balance = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 3.0
+        )
+
+    assert success is True
+    assert balance == pytest.approx(7.0)
+    mock_charge.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_reseeds_and_falls_back_to_db_when_key_missing(
+    db, tenant, call_session, service
+):
+    """If the Redis balance key doesn't exist (e.g. seeding at call-start
+    failed or raced), the tick must NOT blindly INCRBYFLOAT a phantom
+    auto-created zero-balance key — it must re-seed from the authoritative
+    DB balance and fall back to a real DB deduction for that tick only."""
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    fake_redis = _FakeAsyncRedis()  # empty store -> exists() is False
+    key = service._redis_balance_key(tenant.id)
+    call_id_str = str(call_session.id)
+
+    with patch("app.utils.redis_client.get_redis", return_value=fake_redis):
+        success, balance = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 5.0
+        )
+
+    assert success is True
+    assert balance == pytest.approx(45.0)
+
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("45")
+
+    # Re-seeded from the POST-deduction DB balance (not the stale
+    # pre-deduction balance) so Redis and Postgres agree going forward.
+    assert key in fake_redis.store
+    assert fake_redis.store[key] == pytest.approx(45.0)
+    assert all(c[0] != "incrbyfloat" for c in fake_redis.calls)
+
+    # This tick used the DB-fallback path, so nothing is deferred to finalize.
+    assert service._pending_call_cost.get(call_id_str, 0.0) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_redis_unavailable_falls_back_to_db(
+    db, tenant, call_session, service
+):
+    """Redis fully unconfigured/unreachable (`get_redis()` returns None):
+    the whole flow must still work correctly via the DB-deduction fallback —
+    same end behavior as before the fix, no double-deduction, no exception."""
+    tenant.credits = Decimal("20")
+    db.commit()
+    call_id_str = str(call_session.id)
+
+    with patch("app.utils.redis_client.get_redis", return_value=None):
+        success, balance = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 3.0
+        )
+
+    assert success is True
+    assert balance == pytest.approx(17.0)
+
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("17")
+    assert service._pending_call_cost.get(call_id_str, 0.0) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_redis_error_falls_back_to_db(
+    db, tenant, call_session, service
+):
+    """A Redis call raising mid-tick (e.g. a connection error on
+    INCRBYFLOAT) must be caught and gracefully fall back to a DB deduction
+    for that tick — no crash, no lost accounting."""
+    tenant.credits = Decimal("30")
+    db.commit()
+    call_id_str = str(call_session.id)
+
+    broken_redis = AsyncMock()
+    broken_redis.exists = AsyncMock(return_value=True)
+    broken_redis.incrbyfloat = AsyncMock(side_effect=ConnectionError("redis down"))
+
+    with patch("app.utils.redis_client.get_redis", return_value=broken_redis):
+        success, balance = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 2.5
+        )
+
+    assert success is True
+    assert balance == pytest.approx(27.5)
+
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("27.5")
+    assert service._pending_call_cost.get(call_id_str, 0.0) == 0.0
+    broken_redis.incrbyfloat.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_meter_tick_deduction_get_redis_raising_falls_back_to_db(
+    db, tenant, call_session, service
+):
+    """`get_redis()` itself raising (not just the returned client's methods)
+    must also be caught and fall back to the DB path, per
+    `_meter_tick_deduction`'s own outer try/except around the import+call."""
+    tenant.credits = Decimal("10")
+    db.commit()
+    call_id_str = str(call_session.id)
+
+    with patch(
+        "app.utils.redis_client.get_redis", side_effect=RuntimeError("boom")
+    ):
+        success, balance = await service._meter_tick_deduction(
+            db, tenant.id, call_id_str, 1.0
+        )
+
+    assert success is True
+    assert balance == pytest.approx(9.0)
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("9")
+
+
+# ---------------------------------------------------------------------------
+# _finalize_call_credits — settling Redis-metered pending cost in one write
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_finalize_settles_pending_redis_cost_in_single_db_write(
+    db, tenant, call_session, service
+):
+    """The sum of every prior tick's Redis-metered deduction
+    (`_pending_call_cost`) must be settled in exactly ONE `deduct_credits`
+    call at finalize — the single authoritative end-of-call DB write."""
+    tenant.credits = Decimal("50")
+    db.commit()
+
+    call_id_str = str(call_session.id)
+    service._pending_call_cost[call_id_str] = 8.0
+    service._accumulated_seconds[call_id_str] = 0.0
+
+    with patch.object(
+        service, "deduct_credits", side_effect=service.deduct_credits
+    ) as mock_deduct:
+        await service._finalize_call_credits(
+            db, call_session.id, tenant.id, "gpt-4o-mini", 12.0, call_session
+        )
+
+    mock_deduct.assert_called_once()
+    _, kwargs = mock_deduct.call_args
+    assert kwargs["amount"] == pytest.approx(8.0)
+
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("50") - Decimal("8")
+    assert service._pending_call_cost[call_id_str] == 0.0
+
+
+@pytest.mark.asyncio
+async def test_finalize_combines_pending_redis_cost_with_final_partial_tick(
+    db, tenant, user, call_session, service
+):
+    """Pending Redis-metered cost from earlier ticks plus the final
+    partial-tick amount (computed from `_accumulated_seconds`) must both be
+    folded into the single end-of-call `deduct_credits` amount."""
+    tenant.credits = Decimal("100")
+    db.commit()
+
+    call_id_str = str(call_session.id)
+    service._pending_call_cost[call_id_str] = 8.0
+    # 30s pay-as-you-go (no plan) at 12 credits/min => 6 credits for the
+    # final partial tick.
+    service._accumulated_seconds[call_id_str] = 30.0
+
+    with patch.object(
+        service, "deduct_credits", side_effect=service.deduct_credits
+    ) as mock_deduct:
+        await service._finalize_call_credits(
+            db, call_session.id, tenant.id, "gpt-4o-mini", 12.0, call_session
+        )
+
+    mock_deduct.assert_called_once()
+    _, kwargs = mock_deduct.call_args
+    assert kwargs["amount"] == pytest.approx(14.0)  # 8 carried over + 6 final tick
+
+    db.refresh(tenant)
+    assert tenant.credits == Decimal("100") - Decimal("14")
+    assert service._pending_call_cost[call_id_str] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# start_credit_monitoring — NX seeding under concurrency (wallet sharing)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_start_credit_monitoring_seeds_redis_only_once_for_concurrent_calls(
+    db, tenant, user, call_session, service
+):
+    """Two concurrent calls billed against the same tenant/wallet (e.g. a
+    sub-account sharing the parent's wallet) must only seed the Redis
+    balance key once — a second call's seed attempt (NX) must never clobber
+    a balance a sibling call has already started decrementing."""
+    tenant.credits = Decimal("100")
+    db.commit()
+
+    agent2 = Agent(tenant_id=tenant.id, name="Agent 2")
+    db.add(agent2)
+    db.commit()
+    db.refresh(agent2)
+
+    cs2 = CallSession(
+        user_id=user.id,
+        agent_id=agent2.id,
+        tenant_id=tenant.id,
+        start_time=datetime.now(timezone.utc),
+        status="active",
+        call_type="inbound",
+        twilio_call_sid="CA_test_concurrent_2",
+    )
+    db.add(cs2)
+    db.commit()
+    db.refresh(cs2)
+
+    fake_redis = _FakeAsyncRedis()
+    key = service._redis_balance_key(tenant.id)
+
+    with patch(
+        "app.utils.redis_client.get_redis", return_value=fake_redis
+    ), patch.object(service, "_monitor_and_deduct_credits", new=AsyncMock()):
+        await service.start_credit_monitoring(
+            db, call_session.id, tenant.id, call_session.agent_id
+        )
+
+        # Simulate call 1's monitoring ticks having already decremented the
+        # balance before call 2 (sharing the same billing tenant) starts.
+        fake_redis.store[key] -= 20.0
+
+        await service.start_credit_monitoring(db, cs2.id, tenant.id, agent2.id)
+
+    # Not clobbered back to the stale starting DB balance (100) by call 2's
+    # NX seed attempt.
+    assert fake_redis.store[key] == pytest.approx(80.0)
+
+    set_calls = [c for c in fake_redis.calls if c[0] == "set"]
+    assert len(set_calls) == 2
+    assert all(c[3] is True for c in set_calls)  # both attempted with nx=True
+
+
+# ---------------------------------------------------------------------------
+# End-to-end monitor loop: Redis-metered ticks + single finalize write +
+# _pending_call_cost cleanup
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_monitor_loop_redis_metered_single_finalize_write_and_cleanup(
+    db, tenant, call_session, service
+):
+    """Full tick-by-tick run through `_monitor_and_deduct_credits` with
+    Redis available: multiple ticks must be metered purely in Redis (no
+    mid-call Postgres write), and exactly one `deduct_credits` call must
+    happen at finalize for the combined total. `_pending_call_cost` must be
+    cleaned up once the monitor loop's teardown runs."""
+    # Pay-as-you-go (no active plan) so every second is billable.
+    tenant.credits = Decimal("100")
+    db.commit()
+
+    call_log = CallLog(
+        call_session_id=call_session.id,
+        tenant_id=tenant.id,
+        call_id="short-id-2",
+        call_type="inbound",
+        cost=0.0,
+    )
+    db.add(call_log)
+    db.commit()
+
+    call_id_str = str(call_session.id)
+    past = datetime.now(timezone.utc) - timedelta(seconds=30)
+    service._call_start_times[call_id_str] = past
+    service._last_deduction_time[call_id_str] = past
+    service._accumulated_seconds[call_id_str] = 0.0
+
+    fake_redis = _FakeAsyncRedis()
+    key = service._redis_balance_key(tenant.id)
+    fake_redis.store[key] = 100.0
+
+    calls = {"n": 0}
+
+    async def _fake_sleep(_interval):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            # Force a second ~30s tick.
+            service._last_deduction_time[call_id_str] = datetime.now(
+                timezone.utc
+            ) - timedelta(seconds=30)
+        elif calls["n"] >= 3:
+            fresh = (
+                db.query(CallSession).filter(CallSession.id == call_session.id).first()
+            )
+            fresh.status = "completed"
+            fresh.ended_reason = "Customer hung up"
+            db.commit()
+
+    with patch("asyncio.sleep", side_effect=_fake_sleep), patch.object(
+        service, "_end_twilio_call", new=AsyncMock()
+    ), patch(
+        "app.routers.general_websocket.broadcast_call_status_update", new=AsyncMock()
+    ), patch(
+        "app.utils.redis_client.get_redis", return_value=fake_redis
+    ), patch.object(
+        service, "deduct_credits", side_effect=service.deduct_credits
+    ) as mock_deduct:
+        await service._monitor_and_deduct_credits(
+            call_session.id, tenant.id, "gpt-4o-mini", 12.0
+        )
+
+    # Two ~30s ticks * 12 credits/min = 6 credits each = 12 credits total,
+    # all metered via Redis and settled in ONE deduct_credits call.
+    mock_deduct.assert_called_once()
+    _, kwargs = mock_deduct.call_args
+    # Small wall-clock drift between timestamp captures (real `datetime.now()`
+    # calls, not mocked here) means each ~30s tick can be a few ms over —
+    # allow a generous absolute tolerance rather than asserting exact credits.
+    total_charged = kwargs["amount"]
+    assert total_charged == pytest.approx(12.0, abs=0.01)
+
+    db.refresh(tenant)
+    db.refresh(call_session)
+    db.refresh(call_log)
+    assert float(tenant.credits) == pytest.approx(100.0 - total_charged)
+    assert float(call_session.cost or 0.0) == pytest.approx(total_charged)
+    assert float(call_log.cost or 0.0) == pytest.approx(total_charged)
+
+    # Cleaned up alongside the other per-call tracking dicts once the
+    # monitor loop's teardown runs.
+    assert call_id_str not in service._pending_call_cost
+    assert call_id_str not in service._accumulated_seconds
+    assert call_id_str not in service._call_start_times
+    assert call_id_str not in service._last_deduction_time

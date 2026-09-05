@@ -45,11 +45,15 @@ class LiveKitRecordingService:
         room_name = f"room_{call_id}"
         url, api_key, api_secret = self._get_credentials()
 
+        # No static access_key/secret: LiveKit's own AWS SDK assumes
+        # LIVEKIT_S3_ASSUME_ROLE_ARN (via STS AssumeRole) when configured, or
+        # otherwise falls back to whatever ambient credentials the LiveKit
+        # server process has.
         s3_upload = api.S3Upload(
             bucket=settings.S3_RECORDINGS_BUCKET,
             region=settings.AWS_REGION_NAME,
-            access_key=settings.AWS_ACCESS_KEY_ID,
-            secret=settings.AWS_SECRET_ACCESS_KEY,
+            assume_role_arn=settings.LIVEKIT_S3_ASSUME_ROLE_ARN,
+            assume_role_external_id=settings.LIVEKIT_S3_ASSUME_ROLE_EXTERNAL_ID,
         )
 
         file_output = api.EncodedFileOutput(

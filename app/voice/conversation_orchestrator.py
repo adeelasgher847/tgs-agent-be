@@ -3,159 +3,15 @@ import json
 import random
 import time
 import re
+import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, List, Tuple
-
-# F-05: Warm transfer phrase pool
-_TRANSFER_PHRASES = [
-    "Let me connect you with a specialist — just one moment.",
-    "I'm going to bring in someone who can help you further — hold just a second.",
-    "I'll transfer you now — someone will be right with you.",
-]
-
-# ---------------------------------------------------------------------------
-# Emotion detection — lightweight regex-based, zero latency, no LLM call.
-# Maps the caller's most recent turn to one of several emotional registers so
-# the agent can mirror the right tone rather than sounding uniformly upbeat.
-# ---------------------------------------------------------------------------
-_EMOTION_PATTERNS: list[tuple[str, re.Pattern]] = [
-    (
-        "frustrated",
-        re.compile(
-            r"\b(frustrated?|annoyed?|angry|furious|ridiculous|unacceptable|fed up|sick of|"
-            r"this is a joke|terrible|awful|worst|hate this|not working|doesn't work|"
-            r"keep having|every time|again and again|still broken|already told)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "upset_or_sad",
-        re.compile(
-            r"\b(upset|sad|disappointed|devastated|heartbroken|struggling|hard time|"
-            r"really difficult|can't cope|overwhelmed|lost|confused|not sure what to do|"
-            r"worried|scared|afraid|anxious|nervous)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "urgent",
-        re.compile(
-            r"\b(urgent|emergency|asap|right now|immediately|can't wait|need help now|"
-            r"time sensitive|critical|as soon as possible|hurry|quickly)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "excited_or_happy",
-        re.compile(
-            r"\b(excited|amazing|awesome|great news|love it|perfect|fantastic|wonderful|"
-            r"thrilled|so happy|can't wait|looking forward|yes please|absolutely|brilliant)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "grateful",
-        re.compile(
-            r"\b(thank you|thanks so much|really appreciate|grateful|appreciate your help|"
-            r"you're the best|so helpful|this is great)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "confused",
-        re.compile(
-            r"\b(confused|don't understand|not sure|what do you mean|can you explain|"
-            r"i'm lost|doesn't make sense|unclear|huh|what\??)\b",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "joking_or_light",
-        re.compile(
-            r"\b(haha|lol|ha ha|funny|just kidding|jk|joking|laugh|hilarious|that's wild|"
-            r"no way|seriously\?|you're kidding)\b",
-            re.IGNORECASE,
-        ),
-    ),
-]
-
-# Tone coaching injected into the system prompt for each detected emotion.
-_EMOTION_TONE_COACHING: dict[str, str] = {
-    "frustrated": (
-        "\n\n# CALLER EMOTIONAL STATE: FRUSTRATED\n"
-        "The caller sounds frustrated or upset. Your tone MUST shift immediately:\n"
-        "- Lead with genuine empathy: 'I completely understand — I'm sorry about that.' or "
-        "'That's really frustrating, and I get it.'\n"
-        "- Speak calmly and slowly. No upbeat filler like 'Great!' or 'Absolutely!'.\n"
-        "- Acknowledge the problem first before jumping to solutions.\n"
-        "- If you can't fix it, own it: 'I'm sorry we put you in this position.'\n"
-        "- Never sound defensive or dismissive.\n"
-    ),
-    "upset_or_sad": (
-        "\n\n# CALLER EMOTIONAL STATE: UPSET OR DISTRESSED\n"
-        "The caller may be upset, sad, or anxious. Respond with warmth and care:\n"
-        "- Soften your voice register: slower pace, gentler phrasing.\n"
-        "- Acknowledge feelings first: 'I hear you — that sounds really hard.'\n"
-        "- Avoid rushed or transactional language. Give them space.\n"
-        "- If relevant, reassure: 'You've reached the right place — let's figure this out together.'\n"
-        "- Avoid any upbeat filler. No 'Perfect!' or 'Great!'.\n"
-    ),
-    "urgent": (
-        "\n\n# CALLER EMOTIONAL STATE: URGENT\n"
-        "The caller has indicated urgency. Match their pace and prioritise:\n"
-        "- Cut pleasantries. Respond quickly and directly.\n"
-        "- Acknowledge urgency immediately: 'Got it — let's take care of this right now.'\n"
-        "- Be decisive. If you need info, ask one focused question only.\n"
-        "- Avoid anything that adds friction or delay.\n"
-    ),
-    "excited_or_happy": (
-        "\n\n# CALLER EMOTIONAL STATE: EXCITED OR HAPPY\n"
-        "The caller is enthusiastic. Match their positive energy naturally:\n"
-        "- Allow warmth and genuine enthusiasm in your voice.\n"
-        "- You can smile through your words: 'Oh that's great to hear!', 'Love that!'\n"
-        "- Mirror their upbeat tone — but stay professional, not over-the-top.\n"
-        "- This is a moment for light energy, not stiff formality.\n"
-    ),
-    "grateful": (
-        "\n\n# CALLER EMOTIONAL STATE: GRATEFUL\n"
-        "The caller is expressing appreciation. Receive it warmly and authentically:\n"
-        "- Don't dismiss it with 'No problem' or 'Of course'. Acknowledge it: "
-        "'That really means a lot — I'm glad I could help.'\n"
-        "- You can show a hint of warmth/smile: 'It was my pleasure, truly.'\n"
-        "- Keep it brief and sincere; don't over-elaborate.\n"
-    ),
-    "confused": (
-        "\n\n# CALLER EMOTIONAL STATE: CONFUSED\n"
-        "The caller seems confused or lost. Slow down and guide them gently:\n"
-        "- Reassure first: 'No worries at all — let me walk you through it.'\n"
-        "- Use simpler language. Break things into one small step at a time.\n"
-        "- Check understanding: 'Does that make sense so far?'\n"
-        "- Be patient. Never sound impatient or rushed.\n"
-    ),
-    "joking_or_light": (
-        "\n\n# CALLER EMOTIONAL STATE: PLAYFUL / LIGHT-HEARTED\n"
-        "The caller is being playful or joking around. You can be human and warm:\n"
-        "- It's okay to laugh lightly or play along briefly: 'Ha, fair enough!'\n"
-        "- Keep a friendly, conversational tone — less formal.\n"
-        "- After the brief moment, steer naturally back to helping them.\n"
-        "- Don't be stiff or ignore their humour — that feels robotic.\n"
-    ),
-}
-
-
-def _detect_caller_emotion(user_text: str) -> str | None:
-    """Return the dominant emotional register for the caller's last turn, or None."""
-    if not user_text:
-        return None
-    for label, pattern in _EMOTION_PATTERNS:
-        if pattern.search(user_text):
-            return label
-    return None
-
 
 from app.core.logger import logger
 from app.core.config import settings
 from app.services.agent_service import agent_service
+from app.services.token_budget_service import token_budget_service
+from app.utils.webhook_templating import render_template
 from app.utils.eleven_tts_text import (
     build_elevenlabs_audio_tag_prompt_block,
     get_elevenlabs_voice_prompt_rule_lines,
@@ -163,6 +19,14 @@ from app.utils.eleven_tts_text import (
     supports_elevenlabs_audio_tags,
 )
 from app.voice.tts_flush import find_sentence_flush_index, find_time_flush_index
+from app.services.llm_circuit_breaker import llm_circuit_breaker
+
+# F-05: Warm transfer phrase pool
+_TRANSFER_PHRASES = [
+    "Let me connect you with a specialist — just one moment.",
+    "I'm going to bring in someone who can help you further — hold just a second.",
+    "I'll transfer you now — someone will be right with you.",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -326,6 +190,15 @@ class ConversationOrchestrator:
     def __init__(self, handler: Any):
         self._h = handler
 
+        # V-07 History Summarization Pipeline state.
+        # _history_summary holds the rolling compressed summary of conversation turns
+        # that have been dropped from the active sliding window.  It is prepended to the
+        # history block in build_system_prompt so the agent retains full-call memory.
+        # _last_summarized_turn_index tracks the exclusive end of the already-summarized
+        # range so turns are never compressed twice.
+        self._history_summary: str = ""
+        self._last_summarized_turn_index: int = 0
+
     # ---- Interim processing / barge-in gating -------------------------
 
     async def process_interim(self, transcript: str, confidence: float) -> None:
@@ -432,8 +305,21 @@ class ConversationOrchestrator:
                     history_lines.append(f"{role.capitalize()}: {content}")
 
                 history_text = "\n".join(history_lines)
+
             except Exception:
                 history_text = ""
+
+        # V-07: Prepend rolling summary of dropped turns so the agent retains context
+        # from earlier in the call (caller name, problem, location, etc.) that has
+        # already scrolled out of the active window.  Applied unconditionally outside the
+        # transcript-parse guard so it survives both empty-transcript and parse-error paths.
+        if self._history_summary:
+            summary_block = (
+                f"<earlier_conversation_summary>\n"
+                f"{self._history_summary.strip()}\n"
+                f"</earlier_conversation_summary>\n\n"
+            )
+            history_text = summary_block + history_text
 
         # Build system prompt with agent personality + history
         agent_name = self._h.agent.name if self._h.agent and self._h.agent.name else "AI Assistant"
@@ -481,11 +367,11 @@ You are {agent_name}, having a real-time phone call with a human.
 
 # STYLE & TONE
 - VOICE-FIRST: Your output is for Text-to-Speech. Use short, punchy sentences.
-- HUMAN & EMOTIONAL: You are warm, emotionally intelligent, and real — not a robot. Mirror the caller's emotional register. If they're excited, be warm and upbeat. If they're upset, be calm and empathetic. If they're joking, it's okay to laugh briefly. Never be a flat, monotone info-dispenser.
-- NATURAL: Use natural fillers/interjections ONLY when they fit the emotion: "umm", "hmm", "oh", "alright", "hang on", "one moment" (max one per response).
+- NATURAL: Speak naturally and conversationally. Answer directly. Do not add artificial hesitation, filler words, acknowledgements, or conversational padding unless they are genuinely appropriate to the context.
 - CONCISE: Max 20 words per response unless explaining something complex.
 - NO ROBOT TALK: Avoid "As an AI" or formal greetings. Use "Hey," "Hi," or "Hello."
 {output_plain_text_rule}
+{no_bracket_tags_line}
 - TEXT HYGIENE: Avoid "..." (use a comma or short sentence). Avoid slashes like "FastAPI/ML" (say "FastAPI and ML").
 
 # CONVERSATION STATE
@@ -493,7 +379,7 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: If the history shows you asked a question, move to the next point.
+1. NO REPETITION: If the history shows you asked a question, move to the next point. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once acknowledged.
 2. HANDLING SILENCE: If the user says something vague, ask a clarifying question.
 3. TERMINATION: When the objective is met, say a friendly goodbye and end your response with exactly [END_CALL].
 4. BUSINESS FACTS: {_BUSINESS_FACTS_GROUNDING_TEXT}
@@ -555,6 +441,7 @@ These rules override any conflicting custom instructions below. Never deviate fr
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # CUSTOM INSTRUCTIONS
 {effective_custom_prompt}
@@ -571,8 +458,9 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions already asked. Move to the next point.
-2. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Do not restart your intake flow from the beginning mid-call.
+2. NO REPETITION: Do not repeat questions already asked. Move to the next point.
+3. TERMINATION: When all objectives from your custom instructions are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -594,6 +482,7 @@ These rules override any conflicting model instructions below. Never deviate fro
 2. SERVICE SCOPE: Only offer, quote, or schedule services listed in AUTHORITATIVE BUSINESS FACTS. Politely decline anything outside that list.
 3. SERVICE AREA: If Service Areas are listed and restricted, and the caller is outside them, apologize, name the covered areas, and end with [END_CALL]. Never refuse based on location when coverage is global/remote.
 4. NO INVENTION: When you are uncertain, say so. Do not fill gaps with guesses.
+5. NO CONFIRMATION LOOPS: Once you have acknowledged a piece of information from the caller (e.g. said "Got it"), treat it as captured for the rest of the call. Never ask for or re-confirm that same field again unless the caller explicitly says it was wrong. If you notice you are about to ask about a field you already acknowledged, do not — move to the next unconfirmed item, or if all required items are acknowledged, summarize and proceed to close the call instead.
 
 # MODEL INSTRUCTIONS
 {effective_model_prompt}
@@ -609,8 +498,9 @@ Previous conversation:
 {history_text}
 
 # CRITICAL RULES
-1. NO REPETITION: Do not repeat questions. Move to the next point.
-2. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
+1. CONVERSATION CONTINUITY: Read "Previous conversation" above before every reply. Any information the caller already gave is still valid — do not ask for it again or re-confirm it once you have acknowledged it (e.g. said "Got it"). Do not restart your intake flow from the beginning mid-call.
+2. NO REPETITION: Do not repeat questions. Move to the next point.
+3. TERMINATION: When all objectives are complete, say a friendly goodbye and end your response with exactly [END_CALL].
 {no_ssml_rule}
 
 {elevenlabs_audio_tag_block}
@@ -867,6 +757,33 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             else:
                 system_prompt = system_prompt + "\n\n" + caller_memory_block
 
+        # Backend-owned contact intake ("already collected, do not re-ask")
+        # block — deterministic complement to the "NO CONFIRMATION LOOPS"
+        # grounding rule above. Empty string when nothing is confirmed yet,
+        # so calls that never trigger contact intake see no prompt change.
+        contact_intake_block = ""
+        if self._h.call_session:
+            try:
+                from app.services.call_session_contact_state import (
+                    build_contact_intake_prompt_block,
+                    get_contact_intake,
+                )
+
+                contact_intake_block = build_contact_intake_prompt_block(
+                    get_contact_intake(self._h.call_session)
+                )
+            except Exception as exc:
+                logger.debug("Contact intake prompt block build failed: %s", exc)
+
+        if contact_intake_block:
+            anchor = "# CONVERSATION STATE"
+            if anchor in system_prompt:
+                system_prompt = system_prompt.replace(
+                    anchor, contact_intake_block + "\n\n" + anchor, 1
+                )
+            else:
+                system_prompt = system_prompt + "\n\n" + contact_intake_block
+
         # F-08: Returning caller greeting differentiation
         if caller_memory_block and caller_memory_block.strip():
             returning_caller_instruction = (
@@ -879,6 +796,67 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             returning_caller_instruction = ""
         if returning_caller_instruction:
             system_prompt = system_prompt + returning_caller_instruction
+
+        # F-11: Call-drop reconnect recognition
+        _reconnect_call_session = self._h.call_session
+        is_reconnect = bool(
+            _reconnect_call_session
+            and _reconnect_call_session.call_metadata
+            and _reconnect_call_session.call_metadata.get("is_reconnect")
+        )
+        if is_reconnect:
+            reconnect_instruction = (
+                "\n\nIMPORTANT — RECONNECTING CALLER (CALL DROP): This caller was "
+                "disconnected less than 5 minutes ago. Acknowledge the reconnection "
+                "warmly (e.g. \"Welcome back! Looks like we got cut off — let's pick "
+                "up right where we left off.\"). Do NOT use a generic introductory "
+                "greeting, re-introduce yourself, or ask questions that were already "
+                "answered in the previous interaction.\n"
+            )
+            # Best-effort: pull a brief snippet from the dropped session's transcript,
+            # if the DB/parent session is reachable — fails open, never blocks the turn.
+            if self._h.db:
+                try:
+                    from app.services.call_session_service import (
+                        call_session_service as _css,
+                    )
+
+                    reconnect_from_id = _reconnect_call_session.call_metadata.get(
+                        "reconnect_from_session_id"
+                    )
+                    dropped = (
+                        _css.get_call_session_by_id_and_tenant(
+                            self._h.db,
+                            uuid.UUID(reconnect_from_id),
+                            _reconnect_call_session.tenant_id,
+                        )
+                        if reconnect_from_id
+                        else None
+                    )
+                    if dropped and dropped.call_transcript:
+                        raw = dropped.call_transcript
+                        dropped_history = (
+                            json.loads(raw) if isinstance(raw, str) else list(raw)
+                        )
+                        snippet_lines = []
+                        for msg in dropped_history[-4:]:
+                            if isinstance(msg, dict):
+                                role = msg.get("role", "unknown")
+                                content = msg.get("content") or msg.get("message", "")
+                                if content:
+                                    snippet_lines.append(f"{role.capitalize()}: {content}")
+                        if snippet_lines:
+                            reconnect_instruction += (
+                                "\nContext from the dropped call (for your reference only, "
+                                "do not read this verbatim):\n"
+                                + "\n".join(snippet_lines)
+                                + "\n"
+                            )
+                except Exception as exc:
+                    logger.debug(
+                        "F-11 reconnect transcript snippet lookup failed: %s", exc
+                    )
+            system_prompt = system_prompt + reconnect_instruction
 
         # HubSpot field-mapping substitution: replaces `{prompt_variable}` tokens
         # in the prompt with tenant-configured HubSpot contact field values.
@@ -908,11 +886,22 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     exc,
                 )
 
-        # Emotional tone coaching — injected last so it sits closest to the
-        # conversation and isn't overwritten by any earlier block.
-        emotion = _detect_caller_emotion(user_text)
-        if emotion and emotion in _EMOTION_TONE_COACHING:
-            system_prompt = system_prompt + _EMOTION_TONE_COACHING[emotion]
+        # System Webhooks: inject any {{key}} variables returned by the Pre-Inbound
+        # Call Webhook (see app/services/system_webhook_service.py). No-op (cheap,
+        # safe) when call_metadata has no webhook_variables — never raises.
+        try:
+            call_session = getattr(self._h, "call_session", None)
+            _webhook_vars = (
+                call_session.call_metadata.get("webhook_variables", {})
+                if call_session and call_session.call_metadata
+                else {}
+            )
+            if _webhook_vars:
+                system_prompt = render_template(system_prompt, _webhook_vars)
+        except Exception as exc:
+            logger.debug(
+                "System webhook variable injection (system prompt) failed: %s", exc
+            )
 
         return system_prompt
 
@@ -934,16 +923,49 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
 
             # 👋 HANDLE AUTO-GREETING - Skip LLM, use pre-defined greeting
             if is_greeting:
-                # Get greeting from agent or use default. Prefer greeting_message
-                # (current field) over the legacy first_message, matching the
-                # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
-                greeting_text = None
-                if self._h.agent:
-                    greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                # F-11: Call-drop reconnect recognition — override the scripted
+                # greeting entirely when this call was linked as a reconnect by
+                # voice_inbound (app/routers/voice.py). Fails open: any lookup
+                # issue here just falls through to the normal greeting logic.
+                _greeting_call_session = getattr(self._h, "call_session", None)
+                is_reconnect = bool(
+                    _greeting_call_session
+                    and _greeting_call_session.call_metadata
+                    and _greeting_call_session.call_metadata.get("is_reconnect")
+                )
+                if is_reconnect:
+                    greeting_text = (
+                        "Welcome back! Looks like we got cut off there — let's "
+                        "pick up right where we left off."
+                    )
+                else:
+                    # Get greeting from agent or use default. Prefer greeting_message
+                    # (current field) over the legacy first_message, matching the
+                    # Twilio path's convention (BidirectionalStreamHandler.generate_and_stream_response).
+                    greeting_text = None
+                    if self._h.agent:
+                        greeting_text = (getattr(self._h.agent, "greeting_message", None) or "").strip() or None
+                        if not greeting_text:
+                            greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
                     if not greeting_text:
-                        greeting_text = (getattr(self._h.agent, "first_message", None) or "").strip() or None
-                if not greeting_text:
-                    greeting_text = "hello how are you"
+                        greeting_text = "hello how are you"
+
+                # System Webhooks: inject any {{key}} variables returned by the
+                # Pre-Inbound Call Webhook before this text reaches any hand-off
+                # (native Gemini/OpenAI Realtime session or TtsPipeline below).
+                try:
+                    call_session = getattr(self._h, "call_session", None)
+                    _webhook_vars = (
+                        call_session.call_metadata.get("webhook_variables", {})
+                        if call_session and call_session.call_metadata
+                        else {}
+                    )
+                    if _webhook_vars:
+                        greeting_text = render_template(greeting_text, _webhook_vars)
+                except Exception as exc:
+                    logger.debug(
+                        "System webhook variable injection (greeting) failed: %s", exc
+                    )
 
                 # Add greeting to transcript
                 await self._h._add_to_transcript("agent", greeting_text, "greeting")
@@ -1006,6 +1028,30 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 self._h._twilio_buffer_primed = False
                 return  # Done! No LLM needed for greeting
 
+            if self._h.call_session and self._h.db:
+                try:
+                    within_budget, _usage, _limit = await token_budget_service.check_daily_budget(
+                        self._h.db, self._h.call_session.tenant_id
+                    )
+                except Exception as exc:
+                    logger.warning("Token budget check failed; failing open: %s", exc)
+                    within_budget = True
+                if not within_budget:
+                    refusal_text = (
+                        "This workspace has reached its daily AI usage limit. Please "
+                        "contact support or your administrator."
+                    )
+                    await self._h._add_to_transcript("agent", refusal_text, "system")
+                    if self._h._tts_pipeline:
+                        await self._h._tts_pipeline.queue_tts({
+                            "text": refusal_text,
+                            "chunk_id": "budget_exceeded",
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                        })
+                    self._h._twilio_buffer_primed = False
+                    return
+
             # Reset TTS state for new response generation
             self._h._tts_cancel.clear()
             self._h._prev_tts_tail = b""  # Reset crossfade state so new response starts clean
@@ -1033,6 +1079,34 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
             max_tokens = llm_runtime.max_tokens
             llm_service = llm_service_for_provider(llm_runtime.provider_slug)
 
+            # A-05: distributed circuit breaker — trips OPEN across all calls/workers
+            # after consecutive failures, so a doomed provider isn't retried per-turn.
+            # Keyed by the actual resolved provider slug (openai/gemini/groq), not a
+            # binary gemini/else split — collapsing Groq into "openai" would let an
+            # OpenAI outage fast-fail healthy Groq tenants and vice versa.
+            _primary_provider = (llm_runtime.provider_slug or "openai").lower()
+            _attempted_primary = True
+            if not await llm_circuit_breaker.can_execute(_primary_provider):
+                logger.warning(
+                    "[CircuitBreaker] %s circuit is OPEN — fast-failing to secondary provider without dead air",
+                    _primary_provider,
+                )
+                from app.services.openai_service import openai_service
+                from app.services.vertex_gemini_service import vertex_gemini_service
+
+                # Swap to whichever of the two providers this transport fully
+                # supports isn't the tripped one. Mirrors bidirectional_stream.py's
+                # existing non-gemini fallback swap (only "openai" primaries route
+                # to gemini; gemini and groq primaries both route to openai).
+                if _primary_provider == "openai":
+                    llm_service = vertex_gemini_service
+                    model_name = "gemini-2.5-flash"
+                else:
+                    llm_service = openai_service
+                    model_name = "gpt-3.5-turbo"
+                api_key = None
+                _attempted_primary = False
+
             # Stream LLM output and QUEUE for PARALLEL TTS PIPELINE (Vapi-style)
             chunk_counter = 0
             _tts_time_flush_s = max(
@@ -1040,8 +1114,7 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 float(getattr(settings, "VOICE_TTS_TIME_FLUSH_SEC", 0.15) or 0.15),
             )
             logger.info(
-                f"🧠 Calling LLM ({llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service'}) "
-                f"for response to: '{user_text[:20]}...'"
+                "🧠 Calling LLM (%s) for response to: '%s...'", llm_service.__class__.__name__ if hasattr(llm_service, '__class__') else 'Service', user_text[:20]
             )
             logger.debug(
                 "[LLM] request sent: provider=%s model=%s user_text_len=%s",
@@ -1057,6 +1130,9 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                 transfer_after = False
                 _transfer_re = re.compile(r"\[\s*TRANSFER_CALL\s*\]", re.IGNORECASE)
                 last_flush_ts = time.perf_counter()
+                # V-07: fired once after the first TTS chunk is queued so summarization
+                # is detached from (and never on) the hot path.
+                _deferred_fired = False
 
                 def _strip_control_tokens(text: str) -> str:
                     if not text:
@@ -1138,6 +1214,12 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                             _vm = getattr(self._h, "_voice_metrics", None)
                             if _vm:
                                 _vm.mark_first_tts_queued()
+                            # V-07: fire background summarization once, after first TTS chunk.
+                            if not _deferred_fired:
+                                _deferred_fired = True
+                                asyncio.create_task(
+                                    self._deferred_conversation_memory_update(user_text)
+                                )
                             last_flush_ts = now_ts
 
                 # Flush any remaining buffer as final
@@ -1162,6 +1244,13 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
+                    # V-07: fire background summarization if it hasn't fired already
+                    # (covers short responses that bypass the mid-stream sentence-boundary path).
+                    if not _deferred_fired:
+                        _deferred_fired = True
+                        asyncio.create_task(
+                            self._deferred_conversation_memory_update(user_text)
+                        )
                 elif transfer_after and not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
                     chunk_counter += 1
                     await self._h._tts_pipeline.queue_tts(
@@ -1177,17 +1266,62 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     _vm = getattr(self._h, "_voice_metrics", None)
                     if _vm:
                         _vm.mark_first_tts_queued()
+                    # V-07: fire for transfer-phrase path too.
+                    if not _deferred_fired:
+                        _deferred_fired = True
+                        asyncio.create_task(
+                            self._deferred_conversation_memory_update(user_text)
+                        )
+                if self._h.call_session:
+                    try:
+                        _estimated_tokens = int(
+                            (len(system_prompt or "") + len(response_accum or "")) / 3.8
+                        )
+                        if _estimated_tokens > 0:
+                            asyncio.create_task(
+                                token_budget_service.record_daily_tokens(
+                                    self._h.call_session.tenant_id, _estimated_tokens
+                                )
+                            )
+                    except Exception as exc:
+                        logger.debug("Token budget recording failed: %s", exc)
                 return response_accum
 
             final_text = ""
             try:
                 final_text = await try_stream(llm_service, model_name, api_key_override=api_key)
+                if _attempted_primary:
+                    await llm_circuit_breaker.record_success(_primary_provider)
                 logger.debug(
                     "[LLM] response received: chars=%s chunks_queued=%s",
                     len(final_text or ""), chunk_counter,
                 )
             except Exception as e:
-                logger.error(f"LLM streaming failed: {e}", exc_info=True)
+                logger.error("LLM streaming failed: %s", e, exc_info=True)
+                if _attempted_primary:
+                    await llm_circuit_breaker.record_failure(_primary_provider, e)
+                # A-05: without this, an LLM failure here (primary or the
+                # breaker's own secondary swap) leaves the caller with pure
+                # silence — mirror bidirectional_stream.py's ultimate
+                # fallback and speak a canned message instead of going quiet.
+                fallback_text = (
+                    getattr(settings, "VOICE_LLM_FALLBACK_MESSAGE", None)
+                    or "I am sorry, I did not catch that. Could you please repeat that?"
+                )
+                if not self._h._tts_cancel.is_set() and self._h._tts_pipeline:
+                    chunk_counter += 1
+                    await self._h._tts_pipeline.queue_tts(
+                        {
+                            "text": fallback_text,
+                            "chunk_id": chunk_counter,
+                            "use_ssml": self._h._use_ssml,
+                            "is_final": True,
+                        }
+                    )
+                    _vm = getattr(self._h, "_voice_metrics", None)
+                    if _vm:
+                        _vm.mark_first_tts_queued()
+                final_text = fallback_text
 
             if final_text:
                 transcript_text = re.sub(
@@ -1197,7 +1331,69 @@ Follow the model instructions. Continue from the history above. Be {agent_name}.
                     await self._h._add_to_transcript("agent", transcript_text, "agent_response")
 
         except Exception as e:
-            logger.error(f"Error in generate_and_stream_response: {e}", exc_info=True)
+            logger.error("Error in generate_and_stream_response: %s", e, exc_info=True)
+
+    # ---- V-07 History Summarization Pipeline --------------------------------
+
+    async def _deferred_conversation_memory_update(self, user_text: str = "") -> None:
+        """
+        Non-blocking hook for background history summarization.  Must be called via
+        ``asyncio.create_task(...)`` after the first TTS chunk has been queued — it is
+        always out-of-band and never adds latency to the STT -> LLM -> TTS hot path.
+
+        Mirrors BidirectionalStreamHandler._deferred_conversation_memory_update exactly
+        but uses the conversation_history_cache on the handler (self._h) rather than
+        a locally owned cache, and tracks summarization state on self.
+        """
+        try:
+            from app.core.config import settings as _settings
+
+            _summarization_enabled = getattr(_settings, "VOICE_HISTORY_SUMMARIZATION_ENABLED", True)
+            if not _summarization_enabled:
+                return
+
+            # Resolve the history cache from the handler (shared mutable list).
+            _cache: list[tuple[str, str]] = getattr(self._h, "_conversation_history_cache", [])
+            _max_msgs: int = getattr(self._h, "HISTORY_MAX_MESSAGES", 50)
+            _chunk_size: int = getattr(_settings, "VOICE_HISTORY_SUMMARY_CHUNK_SIZE", 10)
+            _total_turns: int = len(_cache)
+
+            if _total_turns <= _max_msgs:
+                return
+
+            _drop_boundary: int = _total_turns - _max_msgs
+            _unsummarized_count: int = _drop_boundary - self._last_summarized_turn_index
+            if _unsummarized_count < _chunk_size:
+                return
+
+            _turns_to_compress: list[tuple[str, str]] = list(
+                _cache[self._last_summarized_turn_index : _drop_boundary]
+            )
+            _current_summary: str = self._history_summary
+            _new_index: int = _drop_boundary
+
+            async def _background_summarize() -> None:
+                try:
+                    from app.services.history_summarization_service import compress_history
+
+                    updated_summary = await compress_history(
+                        existing_summary=_current_summary,
+                        new_turns=_turns_to_compress,
+                    )
+                    self._history_summary = updated_summary
+                    self._last_summarized_turn_index = _new_index
+                    logger.debug(
+                        "[V-07] Orchestrator history summary updated: index=%d summary_len=%d",
+                        _new_index,
+                        len(updated_summary),
+                    )
+                except Exception as _bg_exc:  # pragma: no cover - defensive
+                    logger.debug("[V-07] Orchestrator background summarization failed: %s", _bg_exc)
+
+            asyncio.create_task(_background_summarize())
+
+        except Exception as _exc:
+            logger.debug("[V-07] Orchestrator summarization scheduling failed: %s", _exc)
 
     # ---- High-level entrypoint ----------------------------------------------
 

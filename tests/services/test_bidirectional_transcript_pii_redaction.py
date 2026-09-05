@@ -70,6 +70,12 @@ def _handler_for_process_transcript() -> Handler:
     h._add_to_transcript = AsyncMock()  # captured / asserted on in tests
     h._update_booking_memory_from_user_turn = lambda *_a, **_k: None  # type: ignore[method-assign, assignment]
 
+    # Continuity/dup-reply-suppression state (unrelated feature, but
+    # `_process_transcript` reads it unconditionally after persisting the
+    # client turn) -- object.__new__() bypasses __init__, so stub the same
+    # empty-state default __init__ sets.
+    h._recent_agent_pairs = []
+
     h._speculative_prefetch_task = None
     h._run_speculative_tts_prefetch = AsyncMock()
     h._complete_llm_turn_after_stt_final = AsyncMock()

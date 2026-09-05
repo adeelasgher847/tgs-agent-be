@@ -184,10 +184,15 @@ async def get_call_insights(
     # Workspace isolation: verify this room belongs to the caller's workspace.
     call_session_id = _room_to_call_session_id(room_name)
     session: CallSession | None = db.get(CallSession, call_session_id)
-    if session is None or session.tenant_id != workspace.id:
+    if session is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Room not found or does not belong to this workspace.",
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Room not found.",
+        )
+    if session.tenant_id != workspace.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Room does not belong to this workspace.",
         )
 
     # Derive call duration

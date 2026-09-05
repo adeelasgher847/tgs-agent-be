@@ -172,6 +172,16 @@ class TestSilenceWatchdogRuntime:
 
         handler = DummyHostHandler(call_session=session, call_flow=flow)
 
+        # Humanized-recovery goodbye (F-06): the watchdog now speaks a warm
+        # goodbye and pauses for it to finish (~3.5s real time) before
+        # actually ending the call. Capture the real asyncio.sleep before
+        # patching the module's attribute so this test's own wait below
+        # keeps working while the watchdog's internal `asyncio.sleep(...)`
+        # calls (patched) resolve instantly -- end_call_after_reminder=0 and
+        # the busy-check sleep(1) are also no-ops here since the handler is
+        # never "busy".
+        real_sleep = asyncio.sleep
+
         with (
             patch(
                 "app.voice.call_control_mixin.call_session_service.update_call_session_status"
@@ -186,9 +196,12 @@ class TestSilenceWatchdogRuntime:
             patch(
                 "app.voice.call_control_mixin.broadcast_call_status_update"
             ) as mock_broadcast,
+            patch(
+                "app.voice.call_control_mixin.asyncio.sleep", new=AsyncMock()
+            ),
         ):
             handler._arm_silence_watchdog()
-            await asyncio.sleep(0.05)
+            await real_sleep(0.05)
 
         assert handler._call_ended is True
         mock_update.assert_called_once_with(

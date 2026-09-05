@@ -135,6 +135,10 @@ def _base_handler() -> Handler:
     h._cached_inbound_kb_block = ""
     h._kb_cache_ready = True
 
+    # V-07 history summarization pipeline state
+    h._history_summary = ""
+    h._last_summarized_turn_index = 0
+
     # Calendar booking state
     h._last_offered_calendar_slots = []
     h._last_requested_calendar_date = None

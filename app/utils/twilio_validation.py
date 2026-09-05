@@ -49,7 +49,7 @@ def validate_twilio_signature_with_token(
         return validator.validate(url, params, signature)
 
     except Exception as e:
-        logger.error(f"Error validating Twilio signature: {e}")
+        logger.error("Error validating Twilio signature: %s", e)
         return False
 
 

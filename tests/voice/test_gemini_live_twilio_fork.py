@@ -454,6 +454,8 @@ def _fake_handler_for_real_prompt_build(*, llm_model: str) -> Handler:
     h._cached_inbound_kb_block = ""
     h._jd_recruitment_screening_active = lambda: False
     h._send_quick_acknowledgement = AsyncMock()
+    h._history_summary = ""
+    h._last_summarized_turn_index = 0
     return h
 
 
@@ -765,9 +767,13 @@ class TestCalendlyToolCallWiring:
 
         fake_session.send_tool_response.assert_awaited_once()
         constructor_calls = genai_types.FunctionResponse.call_args_list
-        assert constructor_calls[0].kwargs["response"] == {
-            "error": "internal error executing tool call"
-        }
+        # F-07 (humanized recovery): tool-call failures now send a
+        # human-readable LLM instruction instead of a raw JSON error, so the
+        # agent apologizes naturally rather than exposing "internal error
+        # executing tool call" verbatim.
+        response = constructor_calls[0].kwargs["response"]
+        assert response["status"] == "unavailable"
+        assert "agent_instruction" in response
 
 
 class TestMidCallRagRefresh:

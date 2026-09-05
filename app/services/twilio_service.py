@@ -596,11 +596,11 @@ class TwilioService:
         
         try:
             client.calls(call_sid).update(status='completed')
-            logger.info(f"✅ Call {call_sid} ended successfully")
+            logger.info("✅ Call %s ended successfully", call_sid)
             return True
             
         except TwilioException as e:
-            logger.error(f"❌ Error ending call {call_sid}: {str(e)}")
+            logger.error("❌ Error ending call %s: %s", call_sid, str(e))
             return False
 
     def end_call_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
@@ -611,11 +611,11 @@ class TwilioService:
 
         try:
             client.calls(call_sid).update(status='completed')
-            logger.info(f"✅ Call {call_sid} ended successfully with explicit credentials")
+            logger.info("✅ Call %s ended successfully with explicit credentials", call_sid)
             return True
 
         except TwilioException as e:
-            logger.error(f"❌ Error ending call {call_sid} with explicit credentials: {str(e)}")
+            logger.error("❌ Error ending call %s with explicit credentials: %s", call_sid, str(e))
             return False
 
     def start_recording_with_credentials(self, call_sid: str, account_sid: str, auth_token: str) -> bool:
@@ -632,11 +632,11 @@ class TwilioService:
                 recording_status_callback=recording_status_callback_url,
                 recording_status_callback_method="POST",
             )
-            logger.info(f"✅ Recording started for call {call_sid} with explicit credentials")
+            logger.info("✅ Recording started for call %s with explicit credentials", call_sid)
             return True
 
         except TwilioException as e:
-            logger.error(f"❌ Error starting recording for call {call_sid}: {str(e)}")
+            logger.error("❌ Error starting recording for call %s: %s", call_sid, str(e))
             return False
     
     def redirect_call(self, call_sid: str, redirect_url: str, method: str = "POST") -> bool:
@@ -659,11 +659,11 @@ class TwilioService:
                 url=redirect_url,
                 method=method
             )
-            logger.info(f"✅ Call {call_sid} redirected to {redirect_url}")
+            logger.info("✅ Call %s redirected to %s", call_sid, redirect_url)
             return True
             
         except TwilioException as e:
-            logger.error(f"❌ Error redirecting call {call_sid}: {str(e)}")
+            logger.error("❌ Error redirecting call %s: %s", call_sid, str(e))
             return False
 
     def update_call_twiml(
@@ -685,10 +685,10 @@ class TwilioService:
 
         try:
             client.calls(call_sid).update(twiml=twiml)
-            logger.info(f"✅ Call {call_sid} updated with inline TwiML")
+            logger.info("✅ Call %s updated with inline TwiML", call_sid)
             return True
         except TwilioException as e:
-            logger.error(f"❌ Error updating call {call_sid} with TwiML: {str(e)}")
+            logger.error("❌ Error updating call %s with TwiML: %s", call_sid, str(e))
             return False
 
     def redirect_call_with_credentials(

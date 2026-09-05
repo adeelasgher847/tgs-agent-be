@@ -7,7 +7,7 @@ Coverage:
   3. GET /active-calls/{room_name}/insights — happy path: mocked Gemini returns valid JSON
   4. GET /active-calls/{room_name}/insights — Gemini error → fallback neutral response
   5. GET /active-calls/{room_name}/insights — no Redis transcript → fallback neutral response
-  6. GET /active-calls/{room_name}/insights — room belongs to different workspace → 401
+  6. GET /active-calls/{room_name}/insights — room belongs to different workspace → 403; unknown room → 404
   7. GET /active-calls/{room_name}/insights — rate limit exceeded → 429
   8. GET /active-calls/{room_name}/insights — malformed Gemini JSON → fallback neutral response
   9. GET /active-calls/{room_name}/insights — sentiment clamping (out-of-range score)
@@ -287,8 +287,8 @@ class TestCallInsights:
         assert resp.json()["sentiment"] == "neutral"
 
     @patch("app.api.v2.routers.active_calls._read_redis_transcript", new_callable=AsyncMock)
-    def test_workspace_isolation_returns_401(self, mock_redis):
-        """Room belonging to a different workspace must return 401."""
+    def test_workspace_isolation_returns_403(self, mock_redis):
+        """Room belonging to a different workspace must return 403."""
         mock_redis.return_value = []
 
         # Client authenticates as OTHER_WORKSPACE, but session belongs to WORKSPACE_ID
@@ -297,7 +297,15 @@ class TestCallInsights:
             ws_id=OTHER_WORKSPACE_ID,
         )
         resp = client.get(f"/active-calls/{ROOM_NAME}/insights")
-        assert resp.status_code == 401
+        assert resp.status_code == 403
+
+    @patch("app.api.v2.routers.active_calls._enforce_insights_rate_limit", new_callable=AsyncMock)
+    def test_unknown_room_returns_404(self, mock_rl):
+        """A room ID that matches no call session must return 404."""
+        mock_rl.return_value = None
+        client = _build_app(db_sessions=[], ws_id=WORKSPACE_ID)
+        resp = client.get(f"/active-calls/{ROOM_NAME}/insights")
+        assert resp.status_code == 404
 
     async def _rate_limit_raiser(self, ws_id: str):
         from fastapi import HTTPException, status
