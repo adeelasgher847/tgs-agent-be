@@ -29,6 +29,7 @@ def main():
         print("Error: password cannot be empty", file=sys.stderr)
         sys.exit(1)
 
+    import app.db.base  # noqa: F401 — registers all models (incl. SysAuditLog) before mapper configuration
     from app.db.session import SessionLocal
     from app.models.sysadmin_user import SysAdminUser
     from app.sysadmin.security import hash_password
